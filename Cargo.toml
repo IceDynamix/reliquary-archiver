@@ -1,0 +1,12 @@
+[package]
+name = "reliquary-archiver"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pcap = "1.2.0"
+reliquary = { git = "https://github.com/IceDynamix/reliquary" }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
