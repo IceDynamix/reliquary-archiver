@@ -3,18 +3,18 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
-use reliquary::network::gen::command_id;
-use reliquary::network::gen::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
-use reliquary::network::gen::proto::GetBagScRsp::GetBagScRsp;
-use reliquary::network::gen::proto::GetHeroBasicTypeInfoScRsp::GetHeroBasicTypeInfoScRsp;
-use reliquary::network::gen::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
-use tracing::info;
+use tracing::{info, instrument};
 
-use reliquary_archiver::export::optimizer::ExportForOptimizer;
+use reliquary_archiver::export::Exporter;
+use reliquary_archiver::export::optimizer::{Database, OptimizerExporter};
+
+const PACKET_FILTER: &str = "udp portrange 23301-23302";
 
 #[derive(Parser, Debug)]
 struct Args {
+    /// Path to output .json file to
     output: PathBuf,
+    /// Read packets from .pcap file instead of capturing live packets
     #[arg(long)]
     pcap: Option<PathBuf>,
 }
@@ -23,27 +23,32 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
+    info!("{args:?}");
 
-    match args.pcap {
-        Some(_) => {
-            file_capture(args);
-        }
-        None => {
-            live_capture(args);
-        }
-    }
+    let database = Database::new_from_online();
+    let sniffer = GameSniffer::new().set_initial_keys(database.keys().clone());
+    let exporter = OptimizerExporter::new(database);
+
+    let export = match args.pcap {
+        Some(_) => file_capture(&args, exporter, sniffer),
+        None => live_capture(&args, exporter, sniffer)
+    };
+
+    let file = File::create(&args.output).unwrap();
+    serde_json::to_writer_pretty(&file, &export).unwrap();
+
+    info!("wrote output to {}", &args.output.display());
 }
 
-fn file_capture(args: Args) {
-    info!("start reading pcap");
-
-    let mut capture = pcap::Capture::from_file(args.pcap.unwrap())
+#[instrument(skip_all)]
+fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> E::Export
+    where E: Exporter
+{
+    let mut capture = pcap::Capture::from_file(args.pcap.as_ref().unwrap())
         .expect("could not read pcap file");
 
-    capture.filter("udp portrange 23301-23302", false).unwrap();
+    capture.filter(PACKET_FILTER, false).unwrap();
 
-    let mut sniffer = GameSniffer::new();
-    let mut exporter = ExportForOptimizer::new_from_online();
     while let Ok(packet) = capture.next_packet() {
         match sniffer.receive_packet(packet.data.to_vec()) {
             Some(GamePacket::Connection(ConnectionPacket::Disconnected)) => {
@@ -52,45 +57,24 @@ fn file_capture(args: Args) {
             }
             Some(GamePacket::Commands(commands)) => {
                 for command in commands {
-                    match command.command_id {
-                        command_id::PlayerGetTokenScRsp => {
-                            exporter.write_uid(
-                                command.parse_proto::<PlayerGetTokenScRsp>().unwrap().uid.to_string()
-                            )
-                        }
-                        command_id::GetBagScRsp => {
-                            exporter.write_bag(
-                                command.parse_proto::<GetBagScRsp>().unwrap()
-                            )
-                        }
-                        command_id::GetAvatarDataScRsp => {
-                            exporter.write_characters(
-                                command.parse_proto::<GetAvatarDataScRsp>().unwrap()
-                            )
-                        }
-                        command_id::GetHeroBasicTypeInfoScRsp => {
-                            exporter.write_hero(
-                                command.parse_proto::<GetHeroBasicTypeInfoScRsp>().unwrap()
-                            )
-                        }
-                        _ => {}
-                    }
+                    exporter.read_command(command);
+                }
+
+                if exporter.is_finished() {
+                    info!("retrieved all relevant packets, stop reading capture");
+                    break;
                 }
             }
             _ => {}
         }
     }
 
-    info!("end reading pcap");
-
-    info!("exporting...");
-
-    let file = File::create(&args.output).unwrap();
-    serde_json::to_writer_pretty(&file, exporter.export()).unwrap();
-
-    info!("wrote output to {}", &args.output.display());
+    exporter.export()
 }
 
-fn live_capture(_args: Args) {
+#[instrument(skip_all)]
+fn live_capture<E>(_args: &Args, _exporter: E, _sniffer: GameSniffer) -> E::Export
+    where E: Exporter
+{
     todo!()
 }

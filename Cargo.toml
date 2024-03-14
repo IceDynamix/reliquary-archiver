@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+base64 = "0.22.0"
 clap = { version = "4.5.2", features = ["derive"] }
 pcap = "1.2.0"
 reliquary = { git = "https://github.com/IceDynamix/reliquary" }
