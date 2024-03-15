@@ -8,9 +8,9 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 
 ## run
 
-requires [npcap](https://npcap.com/) (windows) or `libpcap` (linux)
-
-optionally set `RUST_LOG` env variable to customize logs, see [here](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives)
+- requires [npcap](https://npcap.com/) (windows) or `libpcap` (linux)
+- download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
+- optionally set `RUST_LOG` env variable to customize logs, see [here](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives)
 
 ```
 Usage: reliquary-archiver [OPTIONS] [OUTPUT]
