@@ -10,7 +10,12 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 
 - requires [npcap](https://npcap.com/) (windows) or `libpcap` (linux)
 - download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
-- optionally set `RUST_LOG` env variable to customize logs, see [here](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives)
+- **make sure you're on the main menu screen before the train hyperdrive**
+- run the archiver executable
+- enter train hyperdrive
+- if successful, the archiver should output a file to `archiver_output.json`
+
+### cli usage
 
 ```
 Usage: reliquary-archiver [OPTIONS] [OUTPUT]
@@ -23,6 +28,8 @@ Options:
       --timeout <TIMEOUT>  How long to wait in seconds until timeout is triggered (for live capture) [default: 60]
   -h, --help               Print help
 ```
+
+optionally set `RUST_LOG` env variable to customize logging, see [here](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives)
 
 ## build from source
 
