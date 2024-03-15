@@ -66,11 +66,8 @@ impl OptimizerExporter {
         }
     }
 
-    pub fn set_uid(&mut self, uid: String) {
-        match uid.parse::<u32>() {
-            Ok(uid) => { self.uid = Some(uid); }
-            Err(e) => { warn!(e) }
-        }
+    pub fn set_uid(&mut self, uid: u32) {
+        self.uid = Some(uid);
     }
 
     pub fn add_trailblazer_data(&mut self, hero: GetHeroBasicTypeInfoScRsp) {
@@ -125,27 +122,51 @@ impl Exporter for OptimizerExporter {
         match command.command_id {
             command_id::PlayerGetTokenScRsp => {
                 debug!("detected uid");
-                self.set_uid(
-                    command.parse_proto::<PlayerGetTokenScRsp>().unwrap().uid.to_string()
-                )
+                let cmd = command.parse_proto::<PlayerGetTokenScRsp>();
+                match cmd {
+                    Ok(cmd) => {
+                        self.set_uid(cmd.uid)
+                    }
+                    Err(e) => {
+                        warn!(%e, "could not parse command");
+                    }
+                }
             }
             command_id::GetBagScRsp => {
                 debug!("detected inventory packet");
-                self.add_inventory(
-                    command.parse_proto::<GetBagScRsp>().unwrap()
-                )
+                let cmd = command.parse_proto::<GetBagScRsp>();
+                match cmd {
+                    Ok(cmd) => {
+                        self.add_inventory(cmd)
+                    }
+                    Err(e) => {
+                        warn!(%e, "could not parse command");
+                    }
+                }
             }
             command_id::GetAvatarDataScRsp => {
                 debug!("detected character packet");
-                self.add_characters(
-                    command.parse_proto::<GetAvatarDataScRsp>().unwrap()
-                )
+                let cmd = command.parse_proto::<GetAvatarDataScRsp>();
+                match cmd {
+                    Ok(cmd) => {
+                        self.add_characters(cmd)
+                    }
+                    Err(e) => {
+                        warn!(%e, "could not parse command");
+                    }
+                }
             }
             command_id::GetHeroBasicTypeInfoScRsp => {
                 debug!("detected trailblazer packet");
-                self.add_trailblazer_data(
-                    command.parse_proto::<GetHeroBasicTypeInfoScRsp>().unwrap()
-                )
+                let cmd = command.parse_proto::<GetHeroBasicTypeInfoScRsp>();
+                match cmd {
+                    Ok(cmd) => {
+                        self.add_trailblazer_data(cmd)
+                    }
+                    Err(e) => {
+                        warn!(%e, "could not parse command");
+                    }
+                }
             }
             _ => {
                 trace!(command_id=command.command_id, tag=command.get_command_name(), "ignored");
@@ -220,6 +241,7 @@ pub struct Database {
 impl Database {
     #[instrument(name = "config_map")]
     pub fn new_from_online() -> Self {
+        info!("initializing database from online sources, this might take a while...");
         Database {
             avatar_config: Self::load_online_config(),
             avatar_skill_tree_config: Self::load_online_config(),
@@ -254,7 +276,7 @@ impl Database {
     }
 
     fn get<T: DeserializeOwned>(url: String) -> T {
-        info!(url, "requesting from resource");
+        debug!(url, "requesting from resource");
         ureq::get(&url)
             .call()
             .unwrap()
@@ -277,29 +299,29 @@ impl Database {
 }
 
 #[tracing::instrument(name = "relic", skip_all, fields(id = proto.tid))]
-fn export_proto_relic(config: &Database, proto: &ProtoRelic) -> Option<Relic> {
-    let relic_config = config.relic_config.get(&proto.tid)?;
+fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
+    let relic_config = db.relic_config.get(&proto.tid)?;
 
-    let set_config = config.relic_set_config.get(&relic_config.SetID)?;
-    let main_affix_config = config.relic_main_affix_config.get(&relic_config.MainAffixGroup, &proto.main_affix_id).unwrap();
+    let set_config = db.relic_set_config.get(&relic_config.SetID)?;
+    let main_affix_config = db.relic_main_affix_config.get(&relic_config.MainAffixGroup, &proto.main_affix_id).unwrap();
 
     let id = proto.unique_id.to_string();
     let level = proto.level;
     let lock = proto.is_protected;
     let discard = proto.is_discarded;
-    let set = set_config.SetName.lookup(&config.text_map)
+    let set = set_config.SetName.lookup(&db.text_map)
         .map(|s| s.to_string())
         .unwrap_or("".to_string());
 
     let slot = slot_type_to_export(&relic_config.Type);
     let rarity = relic_config.MaxLevel / 3;
     let mainstat = main_stat_to_export(&main_affix_config.Property).to_string();
-    let location = config.lookup_avatar_name(proto.base_avatar_id).unwrap_or("".to_string());
+    let location = db.lookup_avatar_name(proto.base_avatar_id).unwrap_or("".to_string());
 
     debug!(rarity, set, slot, slot, mainstat, location, "detected");
 
     let substats = proto.sub_affix_list.iter()
-        .filter_map(|substat| export_substat(config, rarity, substat))
+        .filter_map(|substat| export_substat(db, rarity, substat))
         .collect();
 
 
@@ -318,8 +340,8 @@ fn export_proto_relic(config: &Database, proto: &ProtoRelic) -> Option<Relic> {
 }
 
 #[tracing::instrument(name = "substat", skip_all)]
-fn export_substat(config: &Database, rarity: u32, substat: &RelicAffix) -> Option<Substat> {
-    let cfg = config.relic_sub_affix_config.get(&rarity, &substat.affix_id)?;
+fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Substat> {
+    let cfg = db.relic_sub_affix_config.get(&rarity, &substat.affix_id)?;
     let key = sub_stat_to_export(&cfg.Property).to_string();
 
     let mut value = substat.cnt as f32 * *cfg.BaseValue
@@ -424,16 +446,16 @@ pub struct LightCone {
 }
 
 #[instrument(name = "light_cone", skip_all, fields(id = proto.tid))]
-fn export_proto_light_cone(config: &Database, proto: &ProtoLightCone) -> Option<LightCone> {
-    let cfg = config.equipment_config.get(&proto.tid)?;
-    let key = cfg.EquipmentName.lookup(&config.text_map).map(|s| s.to_string())?;
+fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<LightCone> {
+    let cfg = db.equipment_config.get(&proto.tid)?;
+    let key = cfg.EquipmentName.lookup(&db.text_map).map(|s| s.to_string())?;
 
     let level = proto.level;
     let superimposition = proto.rank;
 
     debug!(light_cone=key, level, superimposition, "detected");
 
-    let location = config.lookup_avatar_name(proto.base_avatar_id)
+    let location = db.lookup_avatar_name(proto.base_avatar_id)
         .unwrap_or("".to_string());
 
     Some(LightCone {
@@ -448,15 +470,15 @@ fn export_proto_light_cone(config: &Database, proto: &ProtoLightCone) -> Option<
 }
 
 #[instrument(name = "character", skip_all, fields(id = proto.base_avatar_id))]
-fn export_proto_character(config: &Database, proto: &ProtoCharacter) -> Option<Character> {
-    let key = config.lookup_avatar_name(proto.base_avatar_id)?;
+fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Character> {
+    let key = db.lookup_avatar_name(proto.base_avatar_id)?;
 
     let level = proto.level;
     let eidolon = proto.rank;
 
     debug!(character=key, level, eidolon, "detected");
 
-    let (skills, traces) = export_skill_tree(config, &proto.skilltree_list);
+    let (skills, traces) = export_skill_tree(db, &proto.skilltree_list);
 
     Some(Character {
         key,
@@ -468,7 +490,7 @@ fn export_proto_character(config: &Database, proto: &ProtoCharacter) -> Option<C
     })
 }
 
-fn export_proto_hero(config: &Database, proto: &HeroBasicTypeInfo) -> Option<Character> {
+fn export_proto_hero(db: &Database, proto: &HeroBasicTypeInfo) -> Option<Character> {
     use HeroBasicType::*;
 
     let path = proto.basic_type.enum_value().ok()?;
@@ -493,7 +515,7 @@ fn export_proto_hero(config: &Database, proto: &HeroBasicTypeInfo) -> Option<Cha
 
     trace!(character=key, "detected");
 
-    let (skills, traces) = export_skill_tree(config, &proto.skill_tree_list);
+    let (skills, traces) = export_skill_tree(db, &proto.skill_tree_list);
 
     // TODO: figure out where level/ascension is stored
     Some(Character {
@@ -506,7 +528,7 @@ fn export_proto_hero(config: &Database, proto: &HeroBasicTypeInfo) -> Option<Cha
     })
 }
 
-fn export_skill_tree(config: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces) {
+fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces) {
     let mut skills = Skills {
         basic: 0,
         skill: 0,
@@ -536,7 +558,7 @@ fn export_skill_tree(config: &Database, proto: &[ProtoSkillTree]) -> (Skills, Tr
         let span = info_span!("skill", id = skill.point_id, level);
         let _enter = span.enter();
 
-        let Some(skill_tree_config) = config.avatar_skill_tree_config
+        let Some(skill_tree_config) = db.avatar_skill_tree_config
             .get(&skill.point_id, &skill.level) else
         {
             warn!("could not look up skill tree config");

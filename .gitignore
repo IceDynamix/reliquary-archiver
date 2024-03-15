@@ -3,4 +3,4 @@
 Packet.lib
 wpcap.lib
 .idea
-output.json
+/*.json
