@@ -36,6 +36,8 @@ fn main() {
         )
         .init();
 
+    color_eyre::install().unwrap();
+
     let args = Args::parse();
     debug!(?args);
 
@@ -53,6 +55,9 @@ fn main() {
         serde_json::to_writer_pretty(&file, &export).unwrap();
         info!("wrote output to {}", &args.output.display());
     }
+
+    info!("press enter to close");
+    std::io::stdin().read_line(&mut String::new()).unwrap();
 }
 
 #[instrument(skip_all)]
@@ -72,8 +77,8 @@ fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
             if commands.is_empty() {
                 invalid += 1;
 
-                if invalid >= 10 {
-                    error!("received 10 packets that could not be segmented");
+                if invalid >= 50 {
+                    error!("received 50 packets that could not be segmented");
                     warn!("you probably started capturing when you were already in-game");
                     warn!("the capture needs to start on the main menu screen before hyperdrive");
                     return None;
@@ -115,6 +120,7 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
     }
 
     let mut invalid = 0;
+    let mut warning_sent = false;
 
     info!("instructions: go to main menu screen and go into train hyperdrive");
     info!("listening with a timeout of {} seconds...", args.timeout);
@@ -126,14 +132,14 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
                     if commands.is_empty() {
                         invalid += 1;
 
-                        if invalid >= 10 {
-                            error!("received a large number of packets that could not be segmented");
+                        if invalid >= 25 && !warning_sent {
+                            error!("received a large number of packets that could not be parsed");
                             warn!("you probably started capturing when you were already in-game");
-                            warn!("please go to the main menu screen and re-enter the game");
-                            invalid = -50;
+                            warn!("please log out and log back in");
+                            warning_sent = true;
                         }
                     } else {
-                        invalid -= 1;
+                        invalid -= 10;
 
                         for command in commands {
                             exporter.read_command(command);
