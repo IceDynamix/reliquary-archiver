@@ -5,9 +5,10 @@ use std::time::Duration;
 
 use clap::Parser;
 use pcap::{ConnectionStatus, Device};
-use reliquary::network::{GamePacket, GameSniffer};
+use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
+use reliquary::network::gen::command_id::PlayerLoginScRsp;
 use tracing::{debug, error, info, instrument, trace, warn};
-use tracing_subscriber::{EnvFilter, Layer, Registry, prelude::*};
+use tracing_subscriber::{EnvFilter, Layer, prelude::*, Registry};
 
 use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::optimizer::{Database, OptimizerExporter};
@@ -168,28 +169,47 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
     loop {
         match rx.recv_timeout(Duration::from_secs(args.timeout)) {
             Ok(data) => {
-                if let Some(GamePacket::Commands(commands)) = sniffer.receive_packet(data.to_vec()) {
-                    if commands.is_empty() {
-                        invalid += 1;
-
-                        if invalid >= 25 && !warning_sent {
-                            error!("received a large number of packets that could not be parsed");
-                            warn!("you probably started capturing when you were already in-game");
-                            warn!("please log out and log back in");
-                            warning_sent = true;
-                        }
-                    } else {
-                        invalid -= 10;
-
-                        for command in commands {
-                            exporter.read_command(command);
-                        }
-
-                        if exporter.is_finished() {
-                            info!("retrieved all relevant packets, stop listening");
-                            break;
+                match sniffer.receive_packet(data.to_vec()) {
+                    Some(GamePacket::Connection(c)) => {
+                        match c {
+                            ConnectionPacket::HandshakeEstablished => {
+                                info!("detected connection established");
+                            }
+                            ConnectionPacket::Disconnected => {
+                                // program is probably going to exit before this happens
+                                info!("detected connection disconnected");
+                            }
+                            _ => {}
                         }
                     }
+                    Some(GamePacket::Commands(commands)) => {
+                        if commands.is_empty() {
+                            invalid += 1;
+
+                            if invalid >= 25 && !warning_sent {
+                                error!("received a large number of packets that could not be parsed");
+                                warn!("you probably started capturing when you were already in-game");
+                                warn!("please log out and log back in");
+                                warning_sent = true;
+                            }
+                        } else {
+                            invalid -= 10;
+
+                            for command in commands {
+                                if PlayerLoginScRsp == command.command_id {
+                                    info!("detected login");
+                                }
+
+                                exporter.read_command(command);
+                            }
+
+                            if exporter.is_finished() {
+                                info!("retrieved all relevant packets, stop listening");
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
             Err(e) => {
