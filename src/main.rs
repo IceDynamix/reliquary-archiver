@@ -23,22 +23,32 @@ struct Args {
     #[arg(long)]
     pcap: Option<PathBuf>,
     /// How long to wait in seconds until timeout is triggered (for live capture)
-    #[arg(long, default_value_t = 60)]
+    #[arg(long, default_value_t = 120)]
     timeout: u64,
+    /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbose: u8,
 }
 
 fn main() {
+    color_eyre::install().unwrap();
+    let args = Args::parse();
+
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
-                .with_default_directive("reliquary_archiver=info".parse().unwrap())
+                .with_default_directive(
+                    match args.verbose {
+                        0 => "reliquary_archiver=info",
+                        1 => "info",
+                        2 => "debug",
+                        _ => "trace"
+                    }.parse().unwrap()
+                )
                 .from_env_lossy()
         )
         .init();
 
-    color_eyre::install().unwrap();
-
-    let args = Args::parse();
     debug!(?args);
 
     let database = Database::new_from_online();

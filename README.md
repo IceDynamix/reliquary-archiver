@@ -18,14 +18,15 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 ### cli usage
 
 ```
-Usage: reliquary-archiver [OPTIONS] [OUTPUT]
+Usage: reliquary-archiver.exe [OPTIONS] [OUTPUT]
 
 Arguments:
   [OUTPUT]  Path to output .json file to [default: archive_output.json]
 
 Options:
       --pcap <PCAP>        Read packets from .pcap file instead of capturing live packets
-      --timeout <TIMEOUT>  How long to wait in seconds until timeout is triggered (for live capture) [default: 60]
+      --timeout <TIMEOUT>  How long to wait in seconds until timeout is triggered (for live capture) [default: 120]
+  -v, --verbose...         How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
   -h, --help               Print help
 ```
 
