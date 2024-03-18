@@ -9,7 +9,6 @@ use reliquary::network::gen::proto::Gender::Gender;
 use reliquary::network::gen::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::gen::proto::GetBagScRsp::GetBagScRsp;
 use reliquary::network::gen::proto::GetHeroBasicTypeInfoScRsp::GetHeroBasicTypeInfoScRsp;
-use reliquary::network::gen::proto::HeroBasicType::HeroBasicType;
 use reliquary::network::gen::proto::HeroBasicTypeInfo::HeroBasicTypeInfo;
 use reliquary::network::gen::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::gen::proto::Relic::Relic as ProtoRelic;
@@ -293,8 +292,13 @@ impl Database {
             return None;
         }
 
-        let cfg = self.avatar_config.get(&avatar_id)?;
-        cfg.AvatarName.lookup(&self.text_map).map(|s| s.to_string())
+        // trailblazer
+        if avatar_id >= 8000 {
+            Some("Trailblazer".to_string())
+        } else {
+            let cfg = self.avatar_config.get(&avatar_id)?;
+            cfg.AvatarName.lookup(&self.text_map).map(|s| s.to_string())
+        }
     }
 }
 
@@ -491,24 +495,8 @@ fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Chara
 }
 
 fn export_proto_hero(db: &Database, proto: &HeroBasicTypeInfo) -> Option<Character> {
-    use HeroBasicType::*;
-
-    let path = proto.basic_type.enum_value().ok()?;
-    let path = match path {
-        BoyWarrior | GirlWarrior => "Destruction",
-        BoyKnight | GirlKnight => "Preservation",
-        BoyRogue | GirlRogue => "Hunt",
-        BoyMage | GirlMage => "Erudition",
-        BoyShaman | GirlShaman => "Harmony",
-        BoyWarlock | GirlWarlock => "Nihility",
-        BoyPriest | GirlPriest => "Abundance",
-        _ => {
-            debug!(?path, "unknown path");
-            return Option::None;
-        }
-    };
-
-    let key = format!("Trailblazer#{path}");
+    let path = trailblazer_id_to_path(proto.basic_type.value() as u32)?;
+    let key = format!("Trailblazer{}", path);
 
     let span = info_span!("character", key);
     let _enter = span.enter();
@@ -526,6 +514,22 @@ fn export_proto_hero(db: &Database, proto: &HeroBasicTypeInfo) -> Option<Charact
         skills,
         traces,
     })
+}
+
+fn trailblazer_id_to_path(id: u32) -> Option<&'static str> {
+    match id {
+        8001 | 8002 => Some("Destruction"),
+        8003 | 8004 => Some("Preservation"),
+        8005 | 8006 => Some("Hunt"),
+        8007 | 8008 => Some("Erudition"),
+        8009 | 8010 => Some("Harmony"),
+        8011 | 8012 => Some("Nihility"),
+        8013 | 8014 => Some("Abundance"),
+        _ => {
+            debug!(?id, "unknown path");
+            None
+        }
+    }
 }
 
 fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces) {
