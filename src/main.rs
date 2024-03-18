@@ -1,13 +1,13 @@
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
 use pcap::{ConnectionStatus, Device};
 use reliquary::network::{GamePacket, GameSniffer};
 use tracing::{debug, error, info, instrument, trace, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, Layer, Registry, prelude::*};
 
 use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::optimizer::{Database, OptimizerExporter};
@@ -28,26 +28,16 @@ struct Args {
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+    /// Path to output log to
+    #[arg(short, long)]
+    log_path: Option<PathBuf>,
 }
 
 fn main() {
     color_eyre::install().unwrap();
     let args = Args::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(
-                    match args.verbose {
-                        0 => "reliquary_archiver=info",
-                        1 => "info",
-                        2 => "debug",
-                        _ => "trace"
-                    }.parse().unwrap()
-                )
-                .from_env_lossy()
-        )
-        .init();
+    tracing_init(&args);
 
     debug!(?args);
 
@@ -64,10 +54,50 @@ fn main() {
         let file = File::create(&args.output).unwrap();
         serde_json::to_writer_pretty(&file, &export).unwrap();
         info!("wrote output to {}", &args.output.display());
+    } else {
+        warn!("skipped writing output");
+    }
+
+    if let Some(log_path) = args.log_path {
+        info!("wrote logs to {}", log_path.display());
     }
 
     info!("press enter to close");
     std::io::stdin().read_line(&mut String::new()).unwrap();
+}
+
+fn tracing_init(args: &Args) {
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(
+            match args.verbose {
+                0 => "reliquary_archiver=info",
+                1 => "info",
+                2 => "debug",
+                _ => "trace"
+            }.parse().unwrap()
+        )
+        .from_env_lossy();
+
+    let stdout_log = tracing_subscriber::fmt::layer()
+        .with_filter(env_filter);
+
+    let subscriber = Registry::default().with(stdout_log);
+
+    let file_log = if let Some(log_path) = &args.log_path {
+        let log_file = File::create(log_path).unwrap();
+        let file_log = tracing_subscriber::fmt::layer()
+            .json()
+            .with_writer(Mutex::new(log_file))
+            .with_filter(tracing::level_filters::LevelFilter::TRACE);
+        Some(file_log)
+    } else {
+        None
+    };
+
+    let subscriber = subscriber.with(file_log);
+
+    tracing::subscriber::set_global_default(subscriber)
+        .expect("unable to set up logging");
 }
 
 #[instrument(skip_all)]

@@ -4,3 +4,4 @@ Packet.lib
 wpcap.lib
 .idea
 /*.json
+/*.log

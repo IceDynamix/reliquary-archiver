@@ -18,7 +18,7 @@ pcap = "1.2.0"
 serde = { version = "1.0.197", features = ["derive"] }
 serde_json = "1.0.114"
 tracing = "0.1.40"
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 ureq = { version = "2.9.6", features = ["json"] }
 
 [dependencies.reliquary]
