@@ -133,9 +133,9 @@ checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
 
 [[package]]
 name = "clap"
-version = "4.5.2"
+version = "4.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b230ab84b0ffdf890d5a10abdbc8b83ae1c4918275daea1ab8801f71536b2651"
+checksum = "90bc066a67923782aa8515dbaea16946c5bcc5addbd668bb80af688e53e548a0"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -155,9 +155,9 @@ dependencies = [
 
 [[package]]
 name = "clap_derive"
-version = "4.5.0"
+version = "4.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "307bc0538d5f0f83b8248db3087aa92fe504e4691294d0c96c0eabc33f47ba47"
+checksum = "528131438037fd55894f62d6e9f068b8f45ac57ffa77517819645d10aed04f64"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -291,9 +291,9 @@ checksum = "4271d37baee1b8c7e4b708028c57d816cf9d2434acb33a549475f78c181f6253"
 
 [[package]]
 name = "heck"
-version = "0.4.1"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "95505c38b4572b2d910cecb0281560f54b440a19336cbbcb27bf6ce6adc6f5a8"
+checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
 name = "idna"
@@ -549,8 +549,8 @@ checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
 
 [[package]]
 name = "reliquary"
-version = "0.1.0"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v0.1.0#4ed0f2035d397777da6ae95bc2837afa1c733280"
+version = "0.1.1"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v0.1.1#fcf8d376e93d8591f4ebfe62de20715c73312102"
 dependencies = [
  "base64 0.22.0",
  "etherparse",
@@ -565,7 +565,7 @@ dependencies = [
 
 [[package]]
 name = "reliquary-archiver"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "base64 0.22.0",
  "clap",
@@ -582,7 +582,7 @@ dependencies = [
 [[package]]
 name = "reliquary-proc-macro"
 version = "0.1.0"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v0.1.0#4ed0f2035d397777da6ae95bc2837afa1c733280"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v0.1.1#fcf8d376e93d8591f4ebfe62de20715c73312102"
 dependencies = [
  "quote",
  "syn",
@@ -669,9 +669,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.114"
+version = "1.0.115"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5f09b1bd632ef549eaa9f60a1f8de742bdbc698e6cee2095fc84dde5f549ae0"
+checksum = "12dc5c46daa8e9fdf4f5e71b6cf9a53f2487da0e86e55808e2d35539666497dd"
 dependencies = [
  "itoa",
  "ryu",
