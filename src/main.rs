@@ -6,7 +6,7 @@ use std::time::Duration;
 use clap::Parser;
 use pcap::{ConnectionStatus, Device};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
-use reliquary::network::gen::command_id::PlayerLoginScRsp;
+use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use tracing::{debug, error, info, instrument, trace, warn};
 use tracing_subscriber::{EnvFilter, Layer, prelude::*, Registry};
 
@@ -166,7 +166,7 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
     info!("instructions: go to main menu screen and go into train hyperdrive");
     info!("listening with a timeout of {} seconds...", args.timeout);
 
-    loop {
+    'recv: loop {
         match rx.recv_timeout(Duration::from_secs(args.timeout)) {
             Ok(data) => {
                 match sniffer.receive_packet(data.to_vec()) {
@@ -196,8 +196,13 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
                             invalid -= 10;
 
                             for command in commands {
-                                if PlayerLoginScRsp == command.command_id {
+                                if command.command_id == PlayerLoginScRsp {
                                     info!("detected login");
+                                }
+
+                                if command.command_id == PlayerLoginFinishScRsp {
+                                    info!("detected login end, assume initialization is finished");
+                                    break 'recv;
                                 }
 
                                 exporter.read_command(command);
@@ -205,7 +210,7 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
 
                             if exporter.is_finished() {
                                 info!("retrieved all relevant packets, stop listening");
-                                break;
+                                break 'recv;
                             }
                         }
                     }
