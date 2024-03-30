@@ -1,6 +1,6 @@
 use reliquary::network::GameCommand;
 
-pub mod optimizer;
+pub mod fribbels;
 
 pub trait Exporter {
     type Export;

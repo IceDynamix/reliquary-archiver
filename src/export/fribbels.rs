@@ -1,9 +1,16 @@
+//! Output format based on the format used by [Fribbels HSR Optimizer],
+//! devised by [kel-z's HSR-Scanner].
+//!
+//! [Fribbels HSR Optimizer]: https://github.com/fribbels/hsr-optimizer
+//! [kel-z's HSR-Scanner]: https://github.com/kel-z/HSR-Scanner
 use std::collections::HashMap;
+
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
 use reliquary::network::GameCommand;
 use reliquary::network::gen::command_id;
 use reliquary::network::gen::proto::Avatar::Avatar as ProtoCharacter;
+use reliquary::network::gen::proto::AvatarSkillTree::AvatarSkillTree as ProtoSkillTree;
 use reliquary::network::gen::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::gen::proto::Gender::Gender;
 use reliquary::network::gen::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
@@ -12,10 +19,9 @@ use reliquary::network::gen::proto::GetHeroBasicTypeInfoScRsp::GetHeroBasicTypeI
 use reliquary::network::gen::proto::HeroBasicTypeInfo::HeroBasicTypeInfo;
 use reliquary::network::gen::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::gen::proto::Relic::Relic as ProtoRelic;
-use reliquary::network::gen::proto::AvatarSkillTree::AvatarSkillTree as ProtoSkillTree;
 use reliquary::network::gen::proto::RelicAffix::RelicAffix;
-use reliquary::resource::{ResourceMap};
 use reliquary::resource::excel::*;
+use reliquary::resource::ResourceMap;
 use reliquary::resource::text_map::TextMap;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
@@ -126,8 +132,8 @@ impl Exporter for OptimizerExporter {
                     Ok(cmd) => {
                         self.set_uid(cmd.uid)
                     }
-                    Err(e) => {
-                        warn!(%e, "could not parse command");
+                    Err(error) => {
+                        warn!(%error, "could not parse token command");
                     }
                 }
             }
@@ -138,8 +144,8 @@ impl Exporter for OptimizerExporter {
                     Ok(cmd) => {
                         self.add_inventory(cmd)
                     }
-                    Err(e) => {
-                        warn!(%e, "could not parse command");
+                    Err(error) => {
+                        warn!(%error, "could not parse inventory data command");
                     }
                 }
             }
@@ -150,8 +156,8 @@ impl Exporter for OptimizerExporter {
                     Ok(cmd) => {
                         self.add_characters(cmd)
                     }
-                    Err(e) => {
-                        warn!(%e, "could not parse command");
+                    Err(error) => {
+                        warn!(%error, "could not parse character data command");
                     }
                 }
             }
@@ -162,8 +168,8 @@ impl Exporter for OptimizerExporter {
                     Ok(cmd) => {
                         self.add_trailblazer_data(cmd)
                     }
-                    Err(e) => {
-                        warn!(%e, "could not parse command");
+                    Err(error) => {
+                        warn!(%error, "could not parse trailblazer data command");
                     }
                 }
             }
@@ -184,6 +190,8 @@ impl Exporter for OptimizerExporter {
 
     #[instrument(skip_all)]
     fn export(self) -> Self::Export {
+        info!("exporting collected data");
+
         if self.trailblazer.is_none() {
             warn!("trailblazer gender was not recorded");
         }

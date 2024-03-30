@@ -11,7 +11,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use tracing_subscriber::{EnvFilter, Layer, prelude::*, Registry};
 
 use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::optimizer::{Database, OptimizerExporter};
+use reliquary_archiver::export::fribbels::{Database, OptimizerExporter};
 
 const PACKET_FILTER: &str = "udp portrange 23301-23302";
 
@@ -23,7 +23,7 @@ struct Args {
     /// Read packets from .pcap file instead of capturing live packets
     #[arg(long)]
     pcap: Option<PathBuf>,
-    /// How long to wait in seconds until timeout is triggered (for live capture)
+    /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
@@ -177,7 +177,7 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
                             }
                             ConnectionPacket::Disconnected => {
                                 // program is probably going to exit before this happens
-                                info!("detected connection disconnected");
+                                // info!("detected connection disconnected");
                             }
                             _ => {}
                         }
