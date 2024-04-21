@@ -9,10 +9,13 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 ## run
 
 - requires [npcap](https://npcap.com/) (windows) or `libpcap` (linux)
+  - when installing on windows, make sure to enable the "winpcap api-compatible mode". 
+    if this is grayed out for you, see [here](https://github.com/IceDynamix/reliquary-archiver/issues/2)
+    for more details
 - download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
-- **make sure you're on the main menu screen before the train hyperdrive**
-- run the archiver executable
-- enter train hyperdrive
+- **make sure you're on the main menu screen before the train hyperdrive in-gmae**
+- run the archiver executable and wait until it says "listening with a timeout"
+- enter train hyperdrive in-gmae
 - if successful, the archiver should output a file to `archiver_output.json`
 
 ### cli usage
