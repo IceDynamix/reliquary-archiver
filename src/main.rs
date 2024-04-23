@@ -256,7 +256,7 @@ fn capture_device(device: Device, tx: mpsc::Sender<Vec<u8>>) {
                 trace!("captured packet");
                 if let Err(e) = tx.send(packet.data.to_vec()) {
                     debug!("channel closed: {e}");
-                    return;
+                    break;
                 }
 
                 has_captured = true;
@@ -273,7 +273,8 @@ fn capture_device(device: Device, tx: mpsc::Sender<Vec<u8>>) {
                 } else {
                     debug!(?e);
                 }
-                return;
+
+                break;
             }
         }
     }
