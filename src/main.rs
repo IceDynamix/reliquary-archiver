@@ -4,7 +4,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use pcap::{ConnectionStatus, Device, Error};
+use pcap::{ConnectionStatus, Device};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use tracing::{debug, error, info, instrument, trace, warn};
