@@ -80,6 +80,7 @@ fn tracing_init(args: &Args) {
         .from_env_lossy();
 
     let stdout_log = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
         .with_filter(env_filter);
 
     let subscriber = Registry::default().with(stdout_log);
