@@ -148,6 +148,9 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
     let (tx, rx) = mpsc::channel();
     let mut join_handles = Vec::new();
 
+    // we need to specify a specific network device when using pcap to capture network packets.
+    // to lessen the burden on the user, we instead just capture *all* valid network devices
+    // by capturing each on a different thread and sending the captured packets to a mpsc channel
     for device in Device::list()
         .unwrap()
         .into_iter()
@@ -159,6 +162,12 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
         let handle = std::thread::spawn(move || capture_device(device, tx));
         join_handles.push(handle);
     }
+
+    // we clone tx into every thread, but at the end the original tx still remains.
+    // rx.recv will continue to listen while at least one tx is still alive.
+    // we drop the original tx to make sure that there are no tx alive after all threads
+    // have dropped theirs
+    drop(tx);
 
     let mut invalid = 0;
     let mut warning_sent = false;
