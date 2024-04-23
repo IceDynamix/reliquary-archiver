@@ -4,7 +4,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use pcap::{ConnectionStatus, Device};
+use pcap::{ConnectionStatus, Device, Error};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -239,12 +239,36 @@ fn capture_device(device: Device, tx: mpsc::Sender<Vec<u8>>) {
 
     debug!("listening");
 
-    while let Ok(packet) = capture.next_packet() {
-        trace!("captured packet");
-        if let Err(e) = tx.send(packet.data.to_vec()) {
-            debug!("channel closed: {e}");
-            return;
+    let mut has_captured = false;
+
+    loop {
+        match capture.next_packet() {
+            Ok(packet) => {
+                trace!("captured packet");
+                if let Err(e) = tx.send(packet.data.to_vec()) {
+                    debug!("channel closed: {e}");
+                    return;
+                }
+
+                has_captured = true;
+            }
+            Err(e) => {
+                // we only really care about capture errors on devices that we already know
+                // are relevant (have sent packets before) and send those errors on warn level.
+                //
+                // if a capture errors right after initialization or on a device that did
+                // not receive any relevant packets, error is less useful to the user,
+                // so we lower the logging level
+                if has_captured {
+                    warn!(?e);
+                } else {
+                    debug!(?e);
+                }
+                return;
+            }
         }
     }
+
+    debug!("stop listening");
 }
 
