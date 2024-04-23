@@ -7,11 +7,10 @@ use clap::Parser;
 use pcap::{ConnectionStatus, Device};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
-use tracing::{debug, error, info, instrument, trace, warn};
-use tracing_subscriber::{EnvFilter, Layer, prelude::*, Registry};
-
 use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::{Database, OptimizerExporter};
+use tracing::{debug, error, info, instrument, trace, warn};
+use tracing_subscriber::{EnvFilter, Layer, prelude::*, Registry};
 
 const PACKET_FILTER: &str = "udp portrange 23301-23302";
 
