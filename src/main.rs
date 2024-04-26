@@ -4,7 +4,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use pcap::{ConnectionStatus, Device};
+use pcap::{ConnectionStatus, Device, Error};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -48,7 +48,7 @@ fn main() {
 
     let export = match args.pcap {
         Some(_) => file_capture(&args, exporter, sniffer),
-        None => live_capture(&args, exporter, sniffer)
+        None => live_capture(&args, exporter, sniffer),
     };
 
     if let Some(export) = export {
@@ -74,8 +74,10 @@ fn tracing_init(args: &Args) {
                 0 => "reliquary_archiver=info",
                 1 => "info",
                 2 => "debug",
-                _ => "trace"
-            }.parse().unwrap()
+                _ => "trace",
+            }
+            .parse()
+            .unwrap(),
         )
         .from_env_lossy();
 
@@ -98,16 +100,16 @@ fn tracing_init(args: &Args) {
 
     let subscriber = subscriber.with(file_log);
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("unable to set up logging");
+    tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
 
 #[instrument(skip_all)]
 fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
-    where E: Exporter
+where
+    E: Exporter,
 {
-    let mut capture = pcap::Capture::from_file(args.pcap.as_ref().unwrap())
-        .expect("could not read pcap file");
+    let mut capture =
+        pcap::Capture::from_file(args.pcap.as_ref().unwrap()).expect("could not read pcap file");
 
     capture.filter(PACKET_FILTER, false).unwrap();
 
@@ -144,7 +146,8 @@ fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
 
 #[instrument(skip_all)]
 fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
-    where E: Exporter
+where
+    E: Exporter,
 {
     let (tx, rx) = mpsc::channel();
     let mut join_handles = Vec::new();
@@ -197,8 +200,12 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
                             invalid += 1;
 
                             if invalid >= 25 && !warning_sent {
-                                error!("received a large number of packets that could not be parsed");
-                                warn!("you probably started capturing when you were already in-game");
+                                error!(
+                                    "received a large number of packets that could not be parsed"
+                                );
+                                warn!(
+                                    "you probably started capturing when you were already in-game"
+                                );
                                 warn!("please log out and log back in");
                                 warning_sent = true;
                             }
@@ -237,15 +244,17 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
     Some(exporter.export())
 }
 
-#[instrument("thread", skip_all, fields(device = device.name))]
+#[instrument(skip_all, fields(device = device.desc))]
 fn capture_device(device: Device, tx: mpsc::Sender<Vec<u8>>) {
     let mut capture = pcap::Capture::from_device(device)
         .unwrap()
         .immediate_mode(true)
+        .promisc(true)
+        .timeout(0) // explicitly disable timeout??
         .open()
         .unwrap();
 
-    capture.filter(PACKET_FILTER, false).unwrap();
+    capture.filter(PACKET_FILTER, true).unwrap();
 
     debug!("listening");
 
@@ -269,17 +278,22 @@ fn capture_device(device: Device, tx: mpsc::Sender<Vec<u8>>) {
                 // if a capture errors right after initialization or on a device that did
                 // not receive any relevant packets, error is less useful to the user,
                 // so we lower the logging level
-                if has_captured {
-                    warn!(?e);
-                } else {
-                    debug!(?e);
-                }
 
-                break;
+                if !has_captured {
+                    debug!(?e);
+                    break;
+                } else if matches!(e, Error::TimeoutExpired) {
+                    // somehow a timeout error can still happen even if i explicitly
+                    // disable the timeout?? why :sob:
+                    debug!(?e);
+                    continue;
+                } else {
+                    warn!(?e);
+                    break;
+                }
             }
         }
     }
 
     debug!("stop listening");
 }
-
