@@ -4,7 +4,7 @@ use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
 use clap::Parser;
-use pcap::{ConnectionStatus, Device};
+use pcap::{ConnectionStatus, Device, Error};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use tracing::{debug, error, info, instrument, trace, warn};
@@ -48,7 +48,7 @@ fn main() {
 
     let export = match args.pcap {
         Some(_) => file_capture(&args, exporter, sniffer),
-        None => live_capture(&args, exporter, sniffer)
+        None => live_capture(&args, exporter, sniffer),
     };
 
     if let Some(export) = export {
@@ -74,12 +74,15 @@ fn tracing_init(args: &Args) {
                 0 => "reliquary_archiver=info",
                 1 => "info",
                 2 => "debug",
-                _ => "trace"
-            }.parse().unwrap()
+                _ => "trace",
+            }
+            .parse()
+            .unwrap(),
         )
         .from_env_lossy();
 
     let stdout_log = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
         .with_filter(env_filter);
 
     let subscriber = Registry::default().with(stdout_log);
@@ -97,16 +100,16 @@ fn tracing_init(args: &Args) {
 
     let subscriber = subscriber.with(file_log);
 
-    tracing::subscriber::set_global_default(subscriber)
-        .expect("unable to set up logging");
+    tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
 
 #[instrument(skip_all)]
 fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
-    where E: Exporter
+where
+    E: Exporter,
 {
-    let mut capture = pcap::Capture::from_file(args.pcap.as_ref().unwrap())
-        .expect("could not read pcap file");
+    let mut capture =
+        pcap::Capture::from_file(args.pcap.as_ref().unwrap()).expect("could not read pcap file");
 
     capture.filter(PACKET_FILTER, false).unwrap();
 
@@ -143,11 +146,15 @@ fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
 
 #[instrument(skip_all)]
 fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
-    where E: Exporter
+where
+    E: Exporter,
 {
     let (tx, rx) = mpsc::channel();
     let mut join_handles = Vec::new();
 
+    // we need to specify a specific network device when using pcap to capture network packets.
+    // to lessen the burden on the user, we instead just capture *all* valid network devices
+    // by capturing each on a different thread and sending the captured packets to a mpsc channel
     for device in Device::list()
         .unwrap()
         .into_iter()
@@ -159,6 +166,12 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
         let handle = std::thread::spawn(move || capture_device(device, tx));
         join_handles.push(handle);
     }
+
+    // we clone tx into every thread, but at the end the original tx still remains.
+    // rx.recv will continue to listen while at least one tx is still alive.
+    // we drop the original tx to make sure that there are no tx alive after all threads
+    // have dropped theirs
+    drop(tx);
 
     let mut invalid = 0;
     let mut warning_sent = false;
@@ -187,8 +200,12 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
                             invalid += 1;
 
                             if invalid >= 25 && !warning_sent {
-                                error!("received a large number of packets that could not be parsed");
-                                warn!("you probably started capturing when you were already in-game");
+                                error!(
+                                    "received a large number of packets that could not be parsed"
+                                );
+                                warn!(
+                                    "you probably started capturing when you were already in-game"
+                                );
                                 warn!("please log out and log back in");
                                 warning_sent = true;
                             }
@@ -227,24 +244,56 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
     Some(exporter.export())
 }
 
-#[instrument("thread", skip_all, fields(device = device.name))]
+#[instrument(skip_all, fields(device = device.desc))]
 fn capture_device(device: Device, tx: mpsc::Sender<Vec<u8>>) {
     let mut capture = pcap::Capture::from_device(device)
         .unwrap()
         .immediate_mode(true)
+        .promisc(true)
+        .timeout(0) // explicitly disable timeout??
         .open()
         .unwrap();
 
-    capture.filter(PACKET_FILTER, false).unwrap();
+    capture.filter(PACKET_FILTER, true).unwrap();
 
     debug!("listening");
 
-    while let Ok(packet) = capture.next_packet() {
-        trace!("captured packet");
-        if let Err(e) = tx.send(packet.data.to_vec()) {
-            debug!("channel closed: {e}");
-            return;
+    let mut has_captured = false;
+
+    loop {
+        match capture.next_packet() {
+            Ok(packet) => {
+                trace!("captured packet");
+                if let Err(e) = tx.send(packet.data.to_vec()) {
+                    debug!("channel closed: {e}");
+                    break;
+                }
+
+                has_captured = true;
+            }
+            Err(e) => {
+                // we only really care about capture errors on devices that we already know
+                // are relevant (have sent packets before) and send those errors on warn level.
+                //
+                // if a capture errors right after initialization or on a device that did
+                // not receive any relevant packets, error is less useful to the user,
+                // so we lower the logging level
+
+                if !has_captured {
+                    debug!(?e);
+                    break;
+                } else if matches!(e, Error::TimeoutExpired) {
+                    // somehow a timeout error can still happen even if i explicitly
+                    // disable the timeout?? why :sob:
+                    debug!(?e);
+                    continue;
+                } else {
+                    warn!(?e);
+                    break;
+                }
+            }
         }
     }
-}
 
+    debug!("stop listening");
+}

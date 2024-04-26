@@ -46,12 +46,14 @@ pub struct Export {
 pub struct Metadata {
     pub uid: Option<u32>,
     pub trailblazer: Option<&'static str>,
+    pub current_trailblazer_path: Option<&'static str>,
 }
 
 pub struct OptimizerExporter {
     database: Database,
     uid: Option<u32>,
     trailblazer: Option<&'static str>,
+    current_trailblazer_path: Option<&'static str>,
     light_cones: Vec<LightCone>,
     relics: Vec<Relic>,
     characters: Vec<Character>,
@@ -64,6 +66,7 @@ impl OptimizerExporter {
             database,
             uid: None,
             trailblazer: None,
+            current_trailblazer_path: None,
             light_cones: vec![],
             relics: vec![],
             characters: vec![],
@@ -88,6 +91,13 @@ impl OptimizerExporter {
         let mut builds: Vec<Character> = hero.basic_type_info_list.iter()
             .filter_map(|b| export_proto_hero(&self.database, &b))
             .collect();
+
+        self.current_trailblazer_path = trailblazer_id_to_path(hero.cur_basic_type.value() as u32);
+        if let Some(path) = self.current_trailblazer_path {
+            info!(path, "found current trailblazer path");
+        } else {
+            warn!("unknown path for current trailblazer");
+        }
 
         info!(num=builds.len(), "found trailblazer builds");
         self.trailblazer_characters.append(&mut builds);
@@ -223,6 +233,7 @@ impl Exporter for OptimizerExporter {
             metadata: Metadata {
                 uid: self.uid,
                 trailblazer: self.trailblazer,
+                current_trailblazer_path: self.current_trailblazer_path,
             },
             light_cones: self.light_cones,
             relics: self.relics,
