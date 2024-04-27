@@ -42,7 +42,7 @@ fn main() {
 
     debug!(?args);
 
-    let database = Database::new_from_online();
+    let database = Database::new_from_source();
     let sniffer = GameSniffer::new().set_initial_keys(database.keys().clone());
     let exporter = OptimizerExporter::new(database);
 

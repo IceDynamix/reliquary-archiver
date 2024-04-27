@@ -4,6 +4,9 @@
 //! [Fribbels HSR Optimizer]: https://github.com/fribbels/hsr-optimizer
 //! [kel-z's HSR-Scanner]: https://github.com/kel-z/HSR-Scanner
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::path::Path;
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
@@ -25,6 +28,7 @@ use reliquary::resource::ResourceMap;
 use reliquary::resource::text_map::TextMap;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use tracing::{debug, info, info_span, instrument, trace, warn};
 
 use crate::export::Exporter;
@@ -244,6 +248,32 @@ impl Exporter for OptimizerExporter {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+pub struct DatabaseVersion {
+    config_sha: String,
+    text_map_sha: String,
+    keys_sha: String,
+}
+
+/**
+ * Options struct that get passed to Database::new_from_online()
+ * Each property determines if that item should be fetched from an online source or from a local source,
+ * where `true`  = fetch from online
+ *   and `false` = fetch from local
+ */
+#[derive(Debug, Default)]
+pub struct DatabaseBuildOptions {
+    use_online_config: bool,
+    use_online_text_map: bool,
+    use_online_keys: bool,
+}
+
+impl DatabaseBuildOptions {
+    pub fn needs_update(&self) -> bool {
+        self.use_online_config || self.use_online_text_map || self.use_online_keys
+    }
+}
+
 pub struct Database {
     avatar_config: AvatarConfigMap,
     avatar_skill_tree_config: AvatarSkillTreeConfigMap,
@@ -257,39 +287,215 @@ pub struct Database {
 }
 
 impl Database {
-    #[instrument(name = "config_map")]
-    pub fn new_from_online() -> Self {
-        info!("initializing database from online sources, this might take a while...");
+    pub fn new_from_online(options: DatabaseBuildOptions) -> Self {
+        info!("initializing database, this might take a while...");
         Database {
-            avatar_config: Self::load_online_config(),
-            avatar_skill_tree_config: Self::load_online_config(),
-            equipment_config: Self::load_online_config(),
-            relic_config: Self::load_online_config(),
-            relic_set_config: Self::load_online_config(),
-            relic_main_affix_config: Self::load_online_config(),
-            relic_sub_affix_config: Self::load_online_config(),
-            text_map: Self::load_online_text_map(),
-            keys: Self::load_online_keys(),
+            avatar_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
+            avatar_skill_tree_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
+            equipment_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
+            relic_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
+            relic_set_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
+            relic_main_affix_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
+            relic_sub_affix_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
+            text_map: if options.use_online_text_map { Self::load_online_text_map() } else { Self::load_offline_text_map() },
+            keys: if options.use_online_keys { Self::load_online_keys() } else { Self::load_offline_keys() },
         }
     }
 
-    // TODO: new_from_source
+    #[instrument(name = "config_map")]
+    pub fn new_from_source() -> Self {
+        info!("checking database version...");
 
-    fn load_online_config<T: ResourceMap + DeserializeOwned>() -> T {
-        Self::get::<T>(format!("{BASE_RESOURCE_URL}/ExcelOutput/{}", T::get_json_name()))
+        let fallback_options = DatabaseBuildOptions {
+            use_online_config: true,
+            use_online_text_map: true,
+            use_online_keys: true,
+        };
+        
+        // create dir if not exists
+        let database_dir = Path::new("database/ExcelOutput");
+
+        if let Err(err) = fs::read_dir(database_dir) {
+            match err.kind() {
+                io::ErrorKind::NotFound => {
+                    if let Err(_) = fs::create_dir_all(database_dir) {
+                        // could not create offline directories, fallback to online sources
+                        return Self::new_from_online(fallback_options);
+                    }
+                }
+                _ => {
+                    // could not create offline directories, fallback to online sources
+                    return Self::new_from_online(fallback_options)
+                }
+            }
+        }
+
+        // read database version file
+        // if it doesn't exist, create it
+        let mut file = match File::options().read(true).write(true).create(true).open("database/version.json") {
+            Ok(f) => f,
+            _ => {
+                return Self::new_from_online(fallback_options); // file system error, fetch sources from online
+            }
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+
+        // read file contents into buffer
+        if let Err(_) = file.read_to_end(&mut buf) {
+            return Self::new_from_online(fallback_options); // could not read file, fetch sources from online
+        }
+
+        // deserialize file contents to DatabaseVersion struct
+        let mut version: DatabaseVersion = serde_json::from_slice(&buf)
+            .unwrap_or(DatabaseVersion {
+                config_sha: String::new(),
+                text_map_sha: String::new(),
+                keys_sha: String::new(),
+            });
+
+        // get the commit history for each of the resources we are interested in
+        let api_config = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master&path=ExcelOutput";
+        let api_text_map = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master&path=TextMap/TextMapEN.json";
+        let api_keys = "https://api.github.com/repos/tamilpp25/Iridium-SR/commits?sha=main&path=data/Keys.json";
+
+        let mut options = DatabaseBuildOptions {
+            ..Default::default() // initialize all flags to `false`
+        };
+
+        // compare latest commits with current version sha values
+        let api_config_res = ureq::get(&api_config)
+            .call()
+            .unwrap()
+            .into_json::<Value>() // no need to deserialize into custom type
+            .unwrap();
+
+        // first item from response is always the latest commit
+        let latest_commit = api_config_res[0]["sha"].as_str().unwrap();
+        
+        // if not the same sha then download and update local config files
+        if version.config_sha != latest_commit {
+            debug!("excel configs out of date");
+            version.config_sha = latest_commit.to_string();
+            options.use_online_config = true;
+        }
+
+        let api_text_map_res = ureq::get(&api_text_map)
+            .call()
+            .unwrap()
+            .into_json::<Value>() // no need to deserialize into custom type
+            .unwrap();
+
+        let latest_commit = api_text_map_res[0]["sha"].as_str().unwrap();
+
+        // if not the same then download and update local text map file
+        if version.text_map_sha != latest_commit {
+            debug!("text map out of date");
+            version.text_map_sha = latest_commit.to_string();
+            options.use_online_text_map = true;
+        }
+
+        let api_keys_res = ureq::get(&api_keys)
+            .call()
+            .unwrap()
+            .into_json::<Value>() // no need to deserialize into custom type
+            .unwrap();
+
+        let latest_commit = api_keys_res[0]["sha"].as_str().unwrap();
+
+        // if not the same then download and update local keys file
+        if version.keys_sha != latest_commit {
+            debug!("keys out of date");
+            version.keys_sha = latest_commit.to_string();
+            options.use_online_keys = true;
+        }
+
+        // if we fetched everything locally then no need to update version file
+        if !options.needs_update() {
+            return Self::new_from_online(options);
+        }
+
+        // create database
+        let database = Self::new_from_online(options);
+
+        // re-open the version file for writing, truncating in the process
+        let file = match File::options().write(true).truncate(true).open("database/version.json") {
+            Ok(f) => f,
+            _ => return database, // don't do any special error-handling here, worst case is we have to re-download on next run
+        };
+
+        // update version file and return created database
+        match serde_json::to_writer(file, &version) {
+            Ok(()) | Err(_) => database,
+        }
     }
+
+    fn load_online_config<T: ResourceMap + DeserializeOwned + Serialize>() -> T {
+        let content = Self::get::<T>(format!("{BASE_RESOURCE_URL}/ExcelOutput/{}", T::get_json_name()));
+        let file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(format!("database/ExcelOutput/{}", T::get_json_name()))
+            .unwrap();
+
+        serde_json::to_writer(file, &content).unwrap();
+        content
+    }
+
+    fn load_offline_config<T: ResourceMap + DeserializeOwned>() -> T {
+        Self::get_file::<T>(format!("database/ExcelOutput/{}", T::get_json_name()))
+    }
+
     fn load_online_text_map() -> TextMap {
-        Self::get(format!("{BASE_RESOURCE_URL}/TextMap/TextMapEN.json"))
+        let content = Self::get(format!("{BASE_RESOURCE_URL}/TextMap/TextMapEN.json"));
+        let file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("database/TextMapEN.json")
+            .unwrap();
+
+        serde_json::to_writer(file, &content).unwrap();
+        content
+    }
+
+    fn load_offline_text_map() -> TextMap {
+        Self::get_file("database/TextMapEN.json".to_string())
     }
 
     fn load_online_keys() -> HashMap<u32, Vec<u8>> {
         let keys: HashMap<u32, String> = Self::get("https://raw.githubusercontent.com/tamilpp25/Iridium-SR/main/data/Keys.json".to_string());
+        let file = File::options()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open("database/Keys.json")
+            .unwrap();
+
+        serde_json::to_writer(file, &keys).unwrap();
+
         let mut keys_bytes = HashMap::new();
 
         for (k, v) in keys {
             keys_bytes.insert(k, BASE64_STANDARD.decode(v).unwrap());
         }
 
+        keys_bytes
+    }
+
+    fn load_offline_keys() -> HashMap<u32, Vec<u8>> {
+        let mut file = File::options().read(true).open("database/Keys.json".to_string()).unwrap();
+        let mut content: Vec<u8> = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let content: HashMap<u32, String> = serde_json::from_slice(&content).unwrap();
+        let mut keys_bytes = HashMap::new();
+
+        for (k, v) in content {
+            keys_bytes.insert(k, BASE64_STANDARD.decode(v).unwrap());
+        }
+        
         keys_bytes
     }
 
@@ -300,6 +506,15 @@ impl Database {
             .unwrap()
             .into_json()
             .unwrap()
+    }
+
+    fn get_file<T: DeserializeOwned>(path: String) -> T {
+        debug!(path, "requesting from file");
+        let mut file = File::options().read(true).open(path).unwrap();
+        let mut content: Vec<u8> = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        serde_json::from_slice::<T>(&content).unwrap()
     }
 
     pub fn keys(&self) -> &HashMap<u32, Vec<u8>> {
