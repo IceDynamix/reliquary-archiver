@@ -257,9 +257,7 @@ pub struct DatabaseVersion {
 
 /**
  * Options struct that get passed to Database::new_from_online()
- * Each property determines if that item should be fetched from an online source or from a local source,
- * where `true`  = fetch from online
- *   and `false` = fetch from local
+ * Each property determines if that item should be fetched from an online source or from a local source
  */
 #[derive(Debug, Default)]
 pub struct DatabaseBuildOptions {
@@ -289,16 +287,17 @@ pub struct Database {
 impl Database {
     pub fn new_from_online(options: DatabaseBuildOptions) -> Self {
         info!("initializing database, this might take a while...");
+        // todo: multi-threaded downloading
         Database {
-            avatar_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
-            avatar_skill_tree_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
-            equipment_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
-            relic_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
-            relic_set_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
-            relic_main_affix_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
-            relic_sub_affix_config: if options.use_online_config { Self::load_online_config() } else { Self::load_offline_config() },
-            text_map: if options.use_online_text_map { Self::load_online_text_map() } else { Self::load_offline_text_map() },
-            keys: if options.use_online_keys { Self::load_online_keys() } else { Self::load_offline_keys() },
+            avatar_config: Self::load_config(options.use_online_config),
+            avatar_skill_tree_config: Self::load_config(options.use_online_config),
+            equipment_config: Self::load_config(options.use_online_config),
+            relic_config: Self::load_config(options.use_online_config),
+            relic_set_config: Self::load_config(options.use_online_config),
+            relic_main_affix_config: Self::load_config(options.use_online_config),
+            relic_sub_affix_config: Self::load_config(options.use_online_config),
+            text_map: Self::load_text_map(options.use_online_text_map),
+            keys: Self::load_keys(options.use_online_keys),
         }
     }
 
@@ -313,6 +312,7 @@ impl Database {
         };
         
         // create dir if not exists
+        // todo: command-line arg?
         let database_dir = Path::new("database/ExcelOutput");
 
         if let Err(err) = fs::read_dir(database_dir) {
@@ -324,7 +324,7 @@ impl Database {
                     }
                 }
                 _ => {
-                    // could not create offline directories, fallback to online sources
+                    // could not read offline directory, fallback to online sources
                     return Self::new_from_online(fallback_options)
                 }
             }
@@ -363,7 +363,7 @@ impl Database {
             ..Default::default() // initialize all flags to `false`
         };
 
-        // compare latest commits with current version sha values
+        // compare latest commits with local SHA values
         let api_config_res = ureq::get(&api_config)
             .call()
             .unwrap()
@@ -373,7 +373,7 @@ impl Database {
         // first item from response is always the latest commit
         let latest_commit = api_config_res[0]["sha"].as_str().unwrap();
         
-        // if not the same sha then download and update local config files
+        // SHAs don't match, download and update local config files
         if version.config_sha != latest_commit {
             debug!("excel configs out of date");
             version.config_sha = latest_commit.to_string();
@@ -388,7 +388,7 @@ impl Database {
 
         let latest_commit = api_text_map_res[0]["sha"].as_str().unwrap();
 
-        // if not the same then download and update local text map file
+        // SHAs don't match, download and update local text map file
         if version.text_map_sha != latest_commit {
             debug!("text map out of date");
             version.text_map_sha = latest_commit.to_string();
@@ -403,21 +403,22 @@ impl Database {
 
         let latest_commit = api_keys_res[0]["sha"].as_str().unwrap();
 
-        // if not the same then download and update local keys file
+        // SHAs don't match, download and update local keys file
         if version.keys_sha != latest_commit {
             debug!("keys out of date");
             version.keys_sha = latest_commit.to_string();
             options.use_online_keys = true;
         }
 
-        // if we fetched everything locally then no need to update version file
+        // all SHAs match latest commits, return local database
         if !options.needs_update() {
             return Self::new_from_online(options);
         }
 
-        // create database
+        // create database using one or more online sources
         let database = Self::new_from_online(options);
 
+        // we should only update our version file AFTER we've successfully downloaded the new database files
         // re-open the version file for writing, truncating in the process
         let file = match File::options().write(true).truncate(true).open("database/version.json") {
             Ok(f) => f,
@@ -428,6 +429,10 @@ impl Database {
         match serde_json::to_writer(file, &version) {
             Ok(()) | Err(_) => database,
         }
+    }
+
+    fn load_config<T: ResourceMap + DeserializeOwned + Serialize>(use_online: bool) -> T {
+        if use_online { Self::load_online_config() } else { Self::load_offline_config() }
     }
 
     fn load_online_config<T: ResourceMap + DeserializeOwned + Serialize>() -> T {
@@ -447,6 +452,10 @@ impl Database {
         Self::get_file::<T>(format!("database/ExcelOutput/{}", T::get_json_name()))
     }
 
+    fn load_text_map(use_online: bool) -> TextMap {
+        if use_online { Self::load_online_text_map() } else { Self::load_offline_text_map() }
+    }
+
     fn load_online_text_map() -> TextMap {
         let content = Self::get(format!("{BASE_RESOURCE_URL}/TextMap/TextMapEN.json"));
         let file = File::options()
@@ -462,6 +471,10 @@ impl Database {
 
     fn load_offline_text_map() -> TextMap {
         Self::get_file("database/TextMapEN.json".to_string())
+    }
+
+    fn load_keys(use_online: bool) -> HashMap<u32, Vec<u8>> {
+        if use_online { Self::load_online_keys() } else { Self::load_offline_keys() }
     }
 
     fn load_online_keys() -> HashMap<u32, Vec<u8>> {
