@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
@@ -261,6 +261,7 @@ pub struct DatabaseVersion {
  */
 #[derive(Debug, Default)]
 pub struct DatabaseBuildOptions {
+    root_path: String,
     use_online_config: bool,
     use_online_text_map: bool,
     use_online_keys: bool,
@@ -289,31 +290,34 @@ impl Database {
         info!("initializing database, this might take a while...");
         // todo: multi-threaded downloading
         Database {
-            avatar_config: Self::load_config(options.use_online_config),
-            avatar_skill_tree_config: Self::load_config(options.use_online_config),
-            equipment_config: Self::load_config(options.use_online_config),
-            relic_config: Self::load_config(options.use_online_config),
-            relic_set_config: Self::load_config(options.use_online_config),
-            relic_main_affix_config: Self::load_config(options.use_online_config),
-            relic_sub_affix_config: Self::load_config(options.use_online_config),
-            text_map: Self::load_text_map(options.use_online_text_map),
-            keys: Self::load_keys(options.use_online_keys),
+            avatar_config: Self::load_config(&options),
+            avatar_skill_tree_config: Self::load_config(&options),
+            equipment_config: Self::load_config(&options),
+            relic_config: Self::load_config(&options),
+            relic_set_config: Self::load_config(&options),
+            relic_main_affix_config: Self::load_config(&options),
+            relic_sub_affix_config: Self::load_config(&options),
+            text_map: Self::load_text_map(&options),
+            keys: Self::load_keys(&options),
         }
     }
 
-    #[instrument(name = "config_map")]
-    pub fn new_from_source() -> Self {
+    #[instrument(skip_all, name = "config_map")]
+    pub fn new_from_source(database_path: &PathBuf) -> Self {
         info!("checking database version...");
 
+        let database_root = database_path.to_str().unwrap_or("database");
+        
         let fallback_options = DatabaseBuildOptions {
+            root_path: database_root.to_string(),
             use_online_config: true,
             use_online_text_map: true,
             use_online_keys: true,
         };
         
-        // create dir if not exists
-        // todo: command-line arg?
-        let database_dir = Path::new("database/ExcelOutput");
+        // create dir if not exists (and ExcelOutput subdir)
+        let excel_path = format!("{database_root}/ExcelOutput");
+        let database_dir = Path::new(&excel_path);
 
         if let Err(err) = fs::read_dir(database_dir) {
             match err.kind() {
@@ -332,7 +336,7 @@ impl Database {
 
         // read database version file
         // if it doesn't exist, create it
-        let mut file = match File::options().read(true).write(true).create(true).open("database/version.json") {
+        let mut file = match File::options().read(true).write(true).create(true).open(format!("{database_root}/version.json")) {
             Ok(f) => f,
             _ => {
                 return Self::new_from_online(fallback_options); // file system error, fetch sources from online
@@ -360,6 +364,7 @@ impl Database {
         let api_keys = "https://api.github.com/repos/tamilpp25/Iridium-SR/commits?sha=main&path=data/Keys.json";
 
         let mut options = DatabaseBuildOptions {
+            root_path: database_root.to_string(),
             ..Default::default() // initialize all flags to `false`
         };
 
@@ -420,7 +425,7 @@ impl Database {
 
         // we should only update our version file AFTER we've successfully downloaded the new database files
         // re-open the version file for writing, truncating in the process
-        let file = match File::options().write(true).truncate(true).open("database/version.json") {
+        let file = match File::options().write(true).truncate(true).open(format!("{database_root}/version.json")) {
             Ok(f) => f,
             _ => return database, // don't do any special error-handling here, worst case is we have to re-download on next run
         };
@@ -431,59 +436,71 @@ impl Database {
         }
     }
 
-    fn load_config<T: ResourceMap + DeserializeOwned + Serialize>(use_online: bool) -> T {
-        if use_online { Self::load_online_config() } else { Self::load_offline_config() }
+    fn load_config<T: ResourceMap + DeserializeOwned + Serialize>(options: &DatabaseBuildOptions) -> T {
+        if options.use_online_config {
+            Self::load_online_config(&options.root_path)
+        } else {
+            Self::load_offline_config(&options.root_path)
+        }
     }
 
-    fn load_online_config<T: ResourceMap + DeserializeOwned + Serialize>() -> T {
+    fn load_online_config<T: ResourceMap + DeserializeOwned + Serialize>(database_root: &str) -> T {
         let content = Self::get::<T>(format!("{BASE_RESOURCE_URL}/ExcelOutput/{}", T::get_json_name()));
         let file = File::options()
             .write(true)
             .create(true)
             .truncate(true)
-            .open(format!("database/ExcelOutput/{}", T::get_json_name()))
+            .open(format!("{database_root}/ExcelOutput/{}", T::get_json_name()))
             .unwrap();
 
         serde_json::to_writer(file, &content).unwrap();
         content
     }
 
-    fn load_offline_config<T: ResourceMap + DeserializeOwned>() -> T {
-        Self::get_file::<T>(format!("database/ExcelOutput/{}", T::get_json_name()))
+    fn load_offline_config<T: ResourceMap + DeserializeOwned>(database_root: &str) -> T {
+        Self::get_file::<T>(format!("{database_root}/ExcelOutput/{}", T::get_json_name()))
     }
 
-    fn load_text_map(use_online: bool) -> TextMap {
-        if use_online { Self::load_online_text_map() } else { Self::load_offline_text_map() }
+    fn load_text_map(options: &DatabaseBuildOptions) -> TextMap {
+        if options.use_online_text_map {
+            Self::load_online_text_map(&options.root_path)
+        } else {
+            Self::load_offline_text_map(&options.root_path)
+        }
     }
 
-    fn load_online_text_map() -> TextMap {
+    fn load_online_text_map(database_root: &str) -> TextMap {
         let content = Self::get(format!("{BASE_RESOURCE_URL}/TextMap/TextMapEN.json"));
         let file = File::options()
             .write(true)
             .create(true)
             .truncate(true)
-            .open("database/TextMapEN.json")
+            .open(format!("{database_root}/TextMapEN.json"))
             .unwrap();
 
         serde_json::to_writer(file, &content).unwrap();
         content
     }
 
-    fn load_offline_text_map() -> TextMap {
-        Self::get_file("database/TextMapEN.json".to_string())
+    fn load_offline_text_map(database_root: &str) -> TextMap {
+        Self::get_file(format!("{database_root}/TextMapEN.json"))
     }
 
-    fn load_keys(use_online: bool) -> HashMap<u32, Vec<u8>> {
-        if use_online { Self::load_online_keys() } else { Self::load_offline_keys() }
+    fn load_keys(options: &DatabaseBuildOptions) -> HashMap<u32, Vec<u8>> {
+        if options.use_online_keys {
+            Self::load_online_keys(&options.root_path)
+        } else {
+            Self::load_offline_keys(&options.root_path)
+        }
     }
 
-    fn load_online_keys() -> HashMap<u32, Vec<u8>> {
+    fn load_online_keys(database_root: &str) -> HashMap<u32, Vec<u8>> {
         let keys: HashMap<u32, String> = Self::get("https://raw.githubusercontent.com/tamilpp25/Iridium-SR/main/data/Keys.json".to_string());
         let file = File::options()
             .write(true)
             .create(true)
             .truncate(true)
-            .open("database/Keys.json")
+            .open(format!("{database_root}/Keys.json"))
             .unwrap();
 
         serde_json::to_writer(file, &keys).unwrap();
@@ -497,8 +514,8 @@ impl Database {
         keys_bytes
     }
 
-    fn load_offline_keys() -> HashMap<u32, Vec<u8>> {
-        let mut file = File::options().read(true).open("database/Keys.json".to_string()).unwrap();
+    fn load_offline_keys(database_root: &str) -> HashMap<u32, Vec<u8>> {
+        let mut file = File::options().read(true).open(format!("{database_root}/Keys.json")).unwrap();
         let mut content: Vec<u8> = Vec::new();
         file.read_to_end(&mut content).unwrap();
 
