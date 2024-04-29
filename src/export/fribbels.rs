@@ -249,7 +249,7 @@ impl Exporter for OptimizerExporter {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct DatabaseVersion {
+struct DatabaseVersion {
     config_sha: String,
     text_map_sha: String,
     keys_sha: String,
@@ -260,7 +260,7 @@ pub struct DatabaseVersion {
  * Each `use_` property determines if that item should be fetched from an online source or from a local source
  */
 #[derive(Debug, Default)]
-pub struct DatabaseBuildOptions {
+struct DatabaseBuildOptions {
     save: bool,
     root_path: String,
     use_online_config: bool,
@@ -287,9 +287,8 @@ pub struct Database {
 }
 
 impl Database {
-    pub fn new_from_online(options: DatabaseBuildOptions) -> Self {
+    fn new_from_online(options: DatabaseBuildOptions) -> Self {
         info!("initializing database, this might take a while...");
-        // todo: multi-threaded downloading
         Database {
             avatar_config: Self::load_config(&options),
             avatar_skill_tree_config: Self::load_config(&options),
@@ -304,13 +303,13 @@ impl Database {
     }
 
     #[instrument(skip_all, name = "config_map")]
-    pub fn new_from_source(save: bool, save_path: &PathBuf) -> Self {
+    pub fn new_from_source(should_save: bool, save_path: &PathBuf) -> Self {
         info!("checking database version...");
 
         let database_root = save_path.to_str().unwrap_or("database");
         
         let fallback_options = DatabaseBuildOptions {
-            save: save,
+            save: should_save,
             root_path: database_root.to_string(),
             use_online_config: true,
             use_online_text_map: true,
@@ -323,7 +322,7 @@ impl Database {
 
         if let Err(err) = fs::read_dir(database_dir) {
             match err.kind() {
-                io::ErrorKind::NotFound => if save {
+                io::ErrorKind::NotFound => if should_save {
                     if let Err(_) = fs::create_dir_all(database_dir) {
                         // could not create offline directories, fallback to online sources
                         return Self::new_from_online(fallback_options);
@@ -344,7 +343,7 @@ impl Database {
         let mut file = match File::options().read(true).write(true).create(true).open(format!("{database_root}/version.json")) {
             Ok(f) => f,
             _ => {
-                return Self::new_from_online(fallback_options); // file system error, fetch sources from online
+                return Self::new_from_online(fallback_options); // file system error, fetch from online sources
             }
         };
 
@@ -352,7 +351,7 @@ impl Database {
 
         // read file contents into buffer
         if let Err(_) = file.read_to_end(&mut buf) {
-            return Self::new_from_online(fallback_options); // could not read file, fetch sources from online
+            return Self::new_from_online(fallback_options); // could not read file, fetch from online sources
         }
 
         // deserialize file contents to DatabaseVersion struct
@@ -369,9 +368,9 @@ impl Database {
         let api_keys = "https://api.github.com/repos/tamilpp25/Iridium-SR/commits?sha=main&path=data/Keys.json";
 
         let mut options = DatabaseBuildOptions {
-            save: save,
+            save: should_save,
             root_path: database_root.to_string(),
-            ..Default::default() // initialize all flags to `false`
+            ..Default::default() // initialize all `use_` flags to `false`
         };
 
         // compare latest commits with local SHA values
@@ -431,7 +430,7 @@ impl Database {
 
         // we should only update our version file AFTER we've successfully downloaded the new database files AND the
         // user has indicated they want to save locally
-        if save {
+        if should_save {
             // re-open the version file for writing, truncating in the process
             let file = match File::options().write(true).truncate(true).open(format!("{database_root}/version.json")) {
                 Ok(f) => f,
@@ -527,13 +526,7 @@ impl Database {
             serde_json::to_writer(file, &keys).unwrap();
         }
 
-        let mut keys_bytes = HashMap::new();
-
-        for (k, v) in keys {
-            keys_bytes.insert(k, BASE64_STANDARD.decode(v).unwrap());
-        }
-
-        keys_bytes
+        Self::decode_keys(keys)
     }
 
     fn load_offline_keys(options: &DatabaseBuildOptions) -> HashMap<u32, Vec<u8>> {
@@ -542,6 +535,10 @@ impl Database {
         file.read_to_end(&mut content).unwrap();
 
         let keys: HashMap<u32, String> = serde_json::from_slice(&content).unwrap();
+        Self::decode_keys(keys)
+    }
+
+    fn decode_keys(keys: HashMap<u32, String>) -> HashMap<u32, Vec<u8>> {
         let mut keys_bytes = HashMap::new();
 
         for (k, v) in keys {
