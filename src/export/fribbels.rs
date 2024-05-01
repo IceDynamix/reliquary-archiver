@@ -288,6 +288,12 @@ pub struct Database {
 
 impl Database {
     fn new_from_online(options: DatabaseBuildOptions) -> Self {
+        if options.needs_update() {
+            info!("downloading updates, this might take a while...");
+        } else {
+            info!("loading database...");
+        }
+
         Database {
             avatar_config: Self::load_config(&options),
             avatar_skill_tree_config: Self::load_config(&options),
@@ -401,9 +407,10 @@ impl Database {
             });
 
         // get the commit history for each of the resources we are interested in
-        let api_config = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master&path=ExcelOutput";
-        let api_text_map = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master&path=TextMap/TextMapEN.json";
-        let api_keys = "https://api.github.com/repos/tamilpp25/Iridium-SR/commits?sha=main&path=data/Keys.json";
+        // todo: probably want to put these strings in a config file/object somewhere instead of hard-coded
+        let api_config = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master&path=ExcelOutput".to_string();
+        let api_text_map = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master&path=TextMap/TextMapEN.json".to_string();
+        let api_keys = "https://api.github.com/repos/tamilpp25/Iridium-SR/commits?sha=main&path=data/Keys.json".to_string();
 
         let mut options = DatabaseBuildOptions {
             save: should_save,
@@ -412,49 +419,66 @@ impl Database {
         };
 
         // compare latest commits with local SHA values
-        let api_config_res = ureq::get(&api_config)
-            .call()
-            .unwrap()
-            .into_json::<Value>() // no need to deserialize into custom type
-            .unwrap();
+        let api_config_res = match Self::get_version(api_config) {
+            Some(v) => v,
+            None => {
+                // could not get API information, fetch this resource from online
+                Value::Null
+            }
+        };
 
         // first item from response is always the latest commit
-        let latest_commit = api_config_res[0]["sha"].as_str().unwrap();
+        let latest_commit = api_config_res[0]["sha"].as_str().unwrap_or("no data").to_string();
         
         // SHAs don't match, download and update local config files
         if version.config_sha != latest_commit {
             debug!("excel configs out of date");
-            version.config_sha = latest_commit.to_string();
+            
+            // only overwrite if we actually got data back
+            if latest_commit != "no data" {
+                version.config_sha = latest_commit;
+            }
+            
             options.use_online_config = true;
         }
 
-        let api_text_map_res = ureq::get(&api_text_map)
-            .call()
-            .unwrap()
-            .into_json::<Value>() // no need to deserialize into custom type
-            .unwrap();
+        let api_text_map_res = match Self::get_version(api_text_map) {
+            Some(v) => v,
+            None => {
+                Value::Null
+            }
+        };
 
-        let latest_commit = api_text_map_res[0]["sha"].as_str().unwrap();
+        let latest_commit = api_text_map_res[0]["sha"].as_str().unwrap_or("no data").to_string();
 
         // SHAs don't match, download and update local text map file
         if version.text_map_sha != latest_commit {
             debug!("text map out of date");
-            version.text_map_sha = latest_commit.to_string();
+
+            if latest_commit != "no data" {
+                version.text_map_sha = latest_commit;
+            }
+            
             options.use_online_text_map = true;
         }
 
-        let api_keys_res = ureq::get(&api_keys)
-            .call()
-            .unwrap()
-            .into_json::<Value>() // no need to deserialize into custom type
-            .unwrap();
+        let api_keys_res = match Self::get_version(api_keys) {
+            Some(v) => v,
+            None => {
+                Value::Null
+            }
+        };
 
-        let latest_commit = api_keys_res[0]["sha"].as_str().unwrap();
+        let latest_commit = api_keys_res[0]["sha"].as_str().unwrap_or("no data").to_string();
 
         // SHAs don't match, download and update local keys file
         if version.keys_sha != latest_commit {
             debug!("keys out of date");
-            version.keys_sha = latest_commit.to_string();
+
+            if latest_commit != "no data" {
+                version.keys_sha = latest_commit;
+            }
+            
             options.use_online_keys = true;
         }
 
@@ -466,7 +490,6 @@ impl Database {
 
         // create database using one or more online sources
         info!("local database requires updates from online sources");
-        info!("downloading updates, this might take a while...");
         let database = Self::new_from_online(options);
 
         // we should only update our version file AFTER we've successfully downloaded the new database files AND the
@@ -608,6 +631,30 @@ impl Database {
             .unwrap()
     }
 
+    // get the latest commit information from the `url`
+    fn get_version(url: String) -> Option<Value> {
+        debug!(url, "requesting version info for resource");
+
+        match ureq::get(&url).call() {
+            Ok(res) => Some(res.into_json::<Value>().unwrap()),
+            Err(err) => {
+                match err {
+                    ureq::Error::Status(s, r) => {
+                        warn!("{s} {} unable to check online version information", r.status_text());
+                        None
+                    }
+                    ureq::Error::Transport(t) => {
+                        if let Some(err) = t.message() {
+                            warn!(%err, "something went wrong when trying to fetch online version information");
+                        }
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    // get the deserialized content of a local file at `path`
     fn get_file<T: DeserializeOwned>(path: PathBuf) -> T {
         let path_str = path.to_str().unwrap();
         debug!(path_str, "requesting from file");
