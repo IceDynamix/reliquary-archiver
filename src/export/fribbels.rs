@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
@@ -262,7 +262,7 @@ struct DatabaseVersion {
 #[derive(Debug, Default)]
 struct DatabaseBuildOptions {
     save: bool,
-    root_path: String,
+    root_path: PathBuf,
     use_online_config: bool,
     use_online_text_map: bool,
     use_online_keys: bool,
@@ -288,7 +288,6 @@ pub struct Database {
 
 impl Database {
     fn new_from_online(options: DatabaseBuildOptions) -> Self {
-        info!("initializing database, this might take a while...");
         Database {
             avatar_config: Self::load_config(&options),
             avatar_skill_tree_config: Self::load_config(&options),
@@ -306,51 +305,90 @@ impl Database {
     pub fn new_from_source(should_save: bool, save_path: &PathBuf) -> Self {
         info!("checking database version...");
 
-        let database_root = save_path.to_str().unwrap_or("database");
-        
+        let database_root = if save_path.to_str().unwrap_or("__temp_dir__") == "__temp_dir__" {
+            std::env::temp_dir().join("reliquary-archiver")
+        } else {
+            save_path.to_owned()
+        };
+
         let fallback_options = DatabaseBuildOptions {
             save: should_save,
-            root_path: database_root.to_string(),
+            root_path: database_root.clone(),
             use_online_config: true,
             use_online_text_map: true,
             use_online_keys: true,
         };
 
         // create dir if not exists (and ExcelOutput subdir)
-        let excel_path = format!("{database_root}/ExcelOutput");
-        let database_dir = Path::new(&excel_path);
+        let excel_path = database_root.join("ExcelOutput");
 
-        if let Err(err) = fs::read_dir(database_dir) {
+        if let Err(err) = fs::read_dir(&excel_path) {
             match err.kind() {
-                io::ErrorKind::NotFound => if should_save {
-                    if let Err(_) = fs::create_dir_all(database_dir) {
-                        // could not create offline directories, fallback to online sources
+                io::ErrorKind::NotFound => {
+                    if should_save {
+                        if let Err(err) = fs::create_dir_all(excel_path) {
+                            // could not create offline directories, fallback to online sources
+                            warn!(%err, "unable to create database directory; using online sources");
+                            return Self::new_from_online(fallback_options);
+                        }
+                    } else {
+                        // directory does not exist locally and no intent to save locally, so fetch from online sources
+                        info!("no local database found; fetching from online sources");
                         return Self::new_from_online(fallback_options);
                     }
-                } else {
-                    // directory does not exist locally and no intent to save locally, so fetch from online sources
-                    return Self::new_from_online(fallback_options);
                 }
                 _ => {
                     // could not read offline directory, fallback to online sources
-                    return Self::new_from_online(fallback_options)
+                    warn!(%err, "unable to read database directory; using online sources");
+                    return Self::new_from_online(fallback_options);
                 }
             }
         }
 
         // read database version file
         // if it doesn't exist, create it
-        let mut file = match File::options().read(true).write(true).create(true).open(format!("{database_root}/version.json")) {
-            Ok(f) => f,
-            _ => {
-                return Self::new_from_online(fallback_options); // file system error, fetch from online sources
+        let mut file = match File::options().read(true).open(database_root.join("version.json")) {
+            Ok(f) => {
+                info!("found local database at {}", database_root.to_str().unwrap());
+                f
+            }
+            // could not open file for reading
+            Err(err) => {
+                match err.kind() {
+                    // because it did not exist
+                    io::ErrorKind::NotFound => {
+                        if should_save {
+                            // then create it
+                            match File::options().read(true).write(true).create(true).open(database_root.join("version.json")) {
+                                Ok(f) => {
+                                    info!("creating local database...");
+                                    f
+                                }
+                                Err(err) => {
+                                    warn!(%err, "unable to create local database version file; using online sources");
+                                    return Self::new_from_online(fallback_options);
+                                }
+                            }
+                        } else {
+                            // fetch from online
+                            info!("unable to find local database version file; using online sources");
+                            return Self::new_from_online(fallback_options);
+                        }
+                    }
+                    // because of other I/O errors
+                    _ => {
+                        warn!(%err, "unable to open database version file for load; using online sources");
+                        return Self::new_from_online(fallback_options); // file system error, fetch from online sources
+                    }
+                }
             }
         };
 
         let mut buf: Vec<u8> = Vec::new();
 
         // read file contents into buffer
-        if let Err(_) = file.read_to_end(&mut buf) {
+        if let Err(err) = file.read_to_end(&mut buf) {
+            warn!(%err, "unable to read database version contents; using online sources");
             return Self::new_from_online(fallback_options); // could not read file, fetch from online sources
         }
 
@@ -369,7 +407,7 @@ impl Database {
 
         let mut options = DatabaseBuildOptions {
             save: should_save,
-            root_path: database_root.to_string(),
+            root_path: database_root.to_owned(),
             ..Default::default() // initialize all `use_` flags to `false`
         };
 
@@ -422,24 +460,37 @@ impl Database {
 
         // all SHAs match latest commits, return local database
         if !options.needs_update() {
+            info!("local database is current with online sources");
             return Self::new_from_online(options);
         }
 
         // create database using one or more online sources
+        info!("local database requires updates from online sources");
+        info!("downloading updates, this might take a while...");
         let database = Self::new_from_online(options);
 
         // we should only update our version file AFTER we've successfully downloaded the new database files AND the
         // user has indicated they want to save locally
         if should_save {
             // re-open the version file for writing, truncating in the process
-            let file = match File::options().write(true).truncate(true).open(format!("{database_root}/version.json")) {
-                Ok(f) => f,
-                _ => return database, // don't do any special error-handling here, worst case is we have to re-download on next run
+            let file = match File::options().write(true).truncate(true).open(database_root.join("version.json")) {
+                Ok(f) => {
+                    info!("updated local database at {}", database_root.to_str().unwrap());
+                    f
+                }
+                Err(err) => {
+                    warn!(%err, "unable to access database version file for save");
+                    return database; // don't do any special error-handling here, worst case is we have to re-download on next run
+                }
             };
 
             // update version file and return created database
             match serde_json::to_writer(file, &version) {
-                Ok(()) | Err(_) => database,
+                Ok(()) => database,
+                Err(err) => {
+                    warn!(%err, "unable to update database version file");
+                    database
+                }
             }
         } else {
             database
@@ -462,7 +513,7 @@ impl Database {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(format!("{}/ExcelOutput/{}", options.root_path, T::get_json_name()))
+                .open(options.root_path.join("ExcelOutput").join(T::get_json_name()))
                 .unwrap();
 
             serde_json::to_writer(file, &content).unwrap();
@@ -472,7 +523,7 @@ impl Database {
     }
 
     fn load_offline_config<T: ResourceMap + DeserializeOwned>(options: &DatabaseBuildOptions) -> T {
-        Self::get_file::<T>(format!("{}/ExcelOutput/{}", options.root_path, T::get_json_name()))
+        Self::get_file::<T>(options.root_path.join("ExcelOutput").join(T::get_json_name()))
     }
 
     fn load_text_map(options: &DatabaseBuildOptions) -> TextMap {
@@ -491,7 +542,7 @@ impl Database {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(format!("{}/TextMapEN.json", options.root_path))
+                .open(options.root_path.join("TextMapEN.json"))
                 .unwrap();
 
             serde_json::to_writer(file, &content).unwrap();
@@ -501,7 +552,7 @@ impl Database {
     }
 
     fn load_offline_text_map(options: &DatabaseBuildOptions) -> TextMap {
-        Self::get_file(format!("{}/TextMapEN.json", options.root_path))
+        Self::get_file(options.root_path.join("TextMapEN.json"))
     }
 
     fn load_keys(options: &DatabaseBuildOptions) -> HashMap<u32, Vec<u8>> {
@@ -520,7 +571,7 @@ impl Database {
                 .write(true)
                 .create(true)
                 .truncate(true)
-                .open(format!("{}/Keys.json", options.root_path))
+                .open(options.root_path.join("Keys.json"))
                 .unwrap();
 
             serde_json::to_writer(file, &keys).unwrap();
@@ -530,7 +581,7 @@ impl Database {
     }
 
     fn load_offline_keys(options: &DatabaseBuildOptions) -> HashMap<u32, Vec<u8>> {
-        let mut file = File::options().read(true).open(format!("{}/Keys.json", options.root_path)).unwrap();
+        let mut file = File::options().read(true).open(options.root_path.join("Keys.json")).unwrap();
         let mut content: Vec<u8> = Vec::new();
         file.read_to_end(&mut content).unwrap();
 
@@ -557,8 +608,10 @@ impl Database {
             .unwrap()
     }
 
-    fn get_file<T: DeserializeOwned>(path: String) -> T {
-        debug!(path, "requesting from file");
+    fn get_file<T: DeserializeOwned>(path: PathBuf) -> T {
+        let path_str = path.to_str().unwrap();
+        debug!(path_str, "requesting from file");
+
         let mut file = File::options().read(true).open(path).unwrap();
         let mut content: Vec<u8> = Vec::new();
         file.read_to_end(&mut content).unwrap();

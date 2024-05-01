@@ -36,7 +36,7 @@ struct Args {
     #[arg(long, action = clap::ArgAction::SetTrue)]
     no_save: bool,
     /// Path to local database for saving/loading
-    #[arg(long, default_value = "database")]
+    #[arg(long, default_value = "__temp_dir__")]
     database: PathBuf,
 }
 
