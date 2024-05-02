@@ -251,7 +251,6 @@ impl Exporter for OptimizerExporter {
 #[derive(Serialize, Deserialize)]
 struct DatabaseVersion {
     config_sha: String,
-    text_map_sha: String,
     keys_sha: String,
 }
 
@@ -402,14 +401,12 @@ impl Database {
         let mut version: DatabaseVersion = serde_json::from_slice(&buf)
             .unwrap_or(DatabaseVersion {
                 config_sha: String::new(),
-                text_map_sha: String::new(),
                 keys_sha: String::new(),
             });
 
         // get the commit history for each of the resources we are interested in
         // todo: probably want to put these strings in a config file/object somewhere instead of hard-coded
-        let api_config = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master&path=ExcelOutput".to_string();
-        let api_text_map = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master&path=TextMap/TextMapEN.json".to_string();
+        let api_config = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master".to_string();
         let api_keys = "https://api.github.com/repos/tamilpp25/Iridium-SR/commits?sha=main&path=data/Keys.json".to_string();
 
         let mut options = DatabaseBuildOptions {
@@ -432,7 +429,7 @@ impl Database {
         
         // SHAs don't match, download and update local config files
         if version.config_sha != latest_commit {
-            debug!("excel configs out of date");
+            debug!("configs out of date");
             
             // only overwrite if we actually got data back
             if latest_commit != "no data" {
@@ -440,25 +437,6 @@ impl Database {
             }
             
             options.use_online_config = true;
-        }
-
-        let api_text_map_res = match Self::get_version(api_text_map) {
-            Some(v) => v,
-            None => {
-                Value::Null
-            }
-        };
-
-        let latest_commit = api_text_map_res[0]["sha"].as_str().unwrap_or("no data").to_string();
-
-        // SHAs don't match, download and update local text map file
-        if version.text_map_sha != latest_commit {
-            debug!("text map out of date");
-
-            if latest_commit != "no data" {
-                version.text_map_sha = latest_commit;
-            }
-            
             options.use_online_text_map = true;
         }
 
