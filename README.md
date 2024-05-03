@@ -35,6 +35,8 @@ Options:
       --timeout <TIMEOUT>    How long to wait in seconds until timeout is triggered (for live capture) [default: 120]
   -v, --verbose...           How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
   -l, --log-path <LOG_PATH>  Path to output log to
+      --database <DB_PATH>   Path to offline database [default: OS-defined TEMP directory]
+      --no-save              Do not save an offline database
   -h, --help                 Print help
 ```
 
