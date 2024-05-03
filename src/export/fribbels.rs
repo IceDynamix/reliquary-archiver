@@ -286,13 +286,14 @@ pub struct Database {
 }
 
 impl Database {
-    fn new_from_online(options: DatabaseBuildOptions) -> Self {
+    fn build(options: DatabaseBuildOptions) -> Self {
         if options.needs_update() {
             info!("downloading updates, this might take a while...");
         } else {
             info!("loading database...");
         }
 
+        // todo: decouple downloading from Database build
         Database {
             avatar_config: Self::load_config(&options),
             avatar_skill_tree_config: Self::load_config(&options),
@@ -334,18 +335,18 @@ impl Database {
                         if let Err(err) = fs::create_dir_all(excel_path) {
                             // could not create offline directories, fallback to online sources
                             warn!(%err, "unable to create database directory; using online sources");
-                            return Self::new_from_online(fallback_options);
+                            return Self::build(fallback_options);
                         }
                     } else {
                         // directory does not exist locally and no intent to save locally, so fetch from online sources
                         info!("no local database found; fetching from online sources");
-                        return Self::new_from_online(fallback_options);
+                        return Self::build(fallback_options);
                     }
                 }
                 _ => {
                     // could not read offline directory, fallback to online sources
                     warn!(%err, "unable to read database directory; using online sources");
-                    return Self::new_from_online(fallback_options);
+                    return Self::build(fallback_options);
                 }
             }
         }
@@ -371,19 +372,19 @@ impl Database {
                                 }
                                 Err(err) => {
                                     warn!(%err, "unable to create local database version file; using online sources");
-                                    return Self::new_from_online(fallback_options);
+                                    return Self::build(fallback_options);
                                 }
                             }
                         } else {
                             // fetch from online
                             info!("unable to find local database version file; using online sources");
-                            return Self::new_from_online(fallback_options);
+                            return Self::build(fallback_options);
                         }
                     }
                     // because of other I/O errors
                     _ => {
                         warn!(%err, "unable to open database version file for load; using online sources");
-                        return Self::new_from_online(fallback_options); // file system error, fetch from online sources
+                        return Self::build(fallback_options); // file system error, fetch from online sources
                     }
                 }
             }
@@ -394,7 +395,7 @@ impl Database {
         // read file contents into buffer
         if let Err(err) = file.read_to_end(&mut buf) {
             warn!(%err, "unable to read database version contents; using online sources");
-            return Self::new_from_online(fallback_options); // could not read file, fetch from online sources
+            return Self::build(fallback_options); // could not read file, fetch from online sources
         }
 
         // deserialize file contents to DatabaseVersion struct
@@ -463,12 +464,12 @@ impl Database {
         // all SHAs match latest commits, return local database
         if !options.needs_update() {
             info!("local database is current with online sources");
-            return Self::new_from_online(options);
+            return Self::build(options);
         }
 
         // create database using one or more online sources
         info!("local database requires updates from online sources");
-        let database = Self::new_from_online(options);
+        let database = Self::build(options);
 
         // we should only update our version file AFTER we've successfully downloaded the new database files AND the
         // user has indicated they want to save locally
