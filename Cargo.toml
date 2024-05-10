@@ -11,19 +11,19 @@ homepage = "https://github.com/IceDynamix/reliquary-archiver"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-base64 = "0.22.0"
+base64 = "0.22.1"
 clap = { version = "4.5.4", features = ["derive"] }
 color-eyre = "0.6.3"
 pcap = "2.0.0"
-serde = { version = "1.0.198", features = ["derive"] }
-serde_json = "1.0.116"
+serde = { version = "1.0.201", features = ["derive"] }
+serde_json = "1.0.117"
 tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
-ureq = { version = "2.9.6", features = ["json"] }
+ureq = { version = "2.9.7", features = ["json"] }
 
 [dependencies.reliquary]
 git = "https://github.com/IceDynamix/reliquary"
-tag = "v0.1.2"
+tag = "v1.0.1"
 
 [profile.release]
 opt-level = "z"  # optimize for size
