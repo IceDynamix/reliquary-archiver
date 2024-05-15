@@ -539,9 +539,9 @@ fn trailblazer_id_to_path(id: u32) -> Option<&'static str> {
     match id {
         8001 | 8002 => Some("Destruction"),
         8003 | 8004 => Some("Preservation"),
-        8005 | 8006 => Some("Hunt"),
+        8005 | 8006 => Some("Harmony"),
         8007 | 8008 => Some("Erudition"),
-        8009 | 8010 => Some("Harmony"),
+        8009 | 8010 => Some("Hunt"),
         8011 | 8012 => Some("Nihility"),
         8013 | 8014 => Some("Abundance"),
         _ => {
