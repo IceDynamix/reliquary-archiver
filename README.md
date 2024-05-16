@@ -12,6 +12,10 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
   - when installing on windows, make sure to enable the "winpcap api-compatible mode". 
     if this is grayed out for you, see [here](https://github.com/IceDynamix/reliquary-archiver/issues/2)
     for more details
+  - when building on Linux, set the `CAP_NET_RAW` capability on the resulting executable (via [pcap(3pcap)](https://man.archlinux.org/man/pcap.3pcap#Under~5))
+    ```sh
+    sudo setcap CAP_NET_RAW=+ep target/release/reliquary-archiver
+    ```
 - download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
 - **make sure you're on the main menu screen before the train hyperdrive in-gmae**
 - run the archiver executable and wait until it says "listening with a timeout"
