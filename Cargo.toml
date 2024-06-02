@@ -28,3 +28,4 @@ tag = "v1.0.1"
 [profile.release]
 opt-level = "z"  # optimize for size
 lto = true
+overflow-checks = false     # Disable integer overflow checks.
