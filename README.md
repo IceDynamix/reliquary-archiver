@@ -9,9 +9,13 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 ## run
 
 - requires [npcap](https://npcap.com/) (windows) or `libpcap` (linux)
-  - when installing on windows, make sure to enable the "winpcap api-compatible mode". 
+  - when installing on windows, make sure to enable the "winpcap api-compatible mode".
     if this is grayed out for you, see [here](https://github.com/IceDynamix/reliquary-archiver/issues/2)
     for more details
+  - when building on Linux, set the `CAP_NET_RAW` capability on the resulting executable (via [pcap(3pcap)](https://man.archlinux.org/man/pcap.3pcap#Under~5))
+    ```sh
+    sudo setcap CAP_NET_RAW=+ep target/release/reliquary-archiver
+    ```
 - download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
 - **make sure you're on the main menu screen before the train hyperdrive in-gmae**
 - run the archiver executable and wait until it says "listening with a timeout"
@@ -43,11 +47,11 @@ to output logs to a file, provide `--log-path <path>`. file logs will always be 
 ## build from source
 
 - follow instructions [here](https://github.com/rust-pcap/pcap?tab=readme-ov-file#building)
-  - for me on windows, adding the `Packet.lib` and `wpcap.lib` from the sdk (check the x64 or arm dir) 
+  - for me on windows, adding the `Packet.lib` and `wpcap.lib` from the sdk (check the x64 or arm dir)
     to this directory was enough to link successfully
 - `cargo build` / `cargo run`
 
 ## library
 
-want to do more with packet parsing? check out the 
+want to do more with packet parsing? check out the
 [standalone library](https://github.com/IceDynamix/reliquary) the archiver is built on top off!
