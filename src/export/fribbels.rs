@@ -313,7 +313,8 @@ impl Database {
 
         // trailblazer
         if avatar_id >= 8000 {
-            Some("Trailblazer".to_string())
+            let path = avatar_path_lookup(self, avatar_id)?;
+            Some(format!("Trailblazer{}", path))
         } else {
             let cfg = self.avatar_config.get(&avatar_id)?;
             cfg.AvatarName.lookup(&self.text_map).map(|s| s.to_string())
@@ -339,7 +340,7 @@ fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
     let slot = slot_type_to_export(&relic_config.Type);
     let rarity = relic_config.MaxLevel / 3;
     let mainstat = main_stat_to_export(&main_affix_config.Property).to_string();
-    let location = db.lookup_avatar_name(proto.base_avatar_id).unwrap_or("".to_string());
+    let location = db.lookup_avatar_name(proto.equip_avatar_id).unwrap_or("".to_string());
 
     debug!(rarity, set, slot, slot, mainstat, location, "detected");
 
@@ -478,7 +479,7 @@ fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<Ligh
 
     debug!(light_cone=key, level, superimposition, "detected");
 
-    let location = db.lookup_avatar_name(proto.base_avatar_id)
+    let location = db.lookup_avatar_name(proto.equip_avatar_id)
         .unwrap_or("".to_string());
 
     Some(LightCone {
