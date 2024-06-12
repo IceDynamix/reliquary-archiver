@@ -54,7 +54,7 @@ fn main() {
     if let Some(export) = export {
         let file = File::create(&args.output).unwrap();
         serde_json::to_writer_pretty(&file, &export).unwrap();
-        info!("wrote output to {}", &args.output.display());
+        info!("wrote output to {}", &args.output.canonicalize().unwrap().display());
     } else {
         warn!("skipped writing output");
     }
