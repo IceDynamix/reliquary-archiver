@@ -32,6 +32,12 @@ struct Args {
     /// Path to output log to
     #[arg(short, long)]
     log_path: Option<PathBuf>,
+    /// Switch for disabling saving database to local storage
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    no_save: bool,
+    /// Path to local database for saving/loading
+    #[arg(long, default_value = "__temp_dir__")]
+    database: PathBuf,
 }
 
 fn main() {
@@ -42,7 +48,7 @@ fn main() {
 
     debug!(?args);
 
-    let database = Database::new_from_online();
+    let database = Database::new_from_source(!args.no_save, &args.database);
     let sniffer = GameSniffer::new().set_initial_keys(database.keys().clone());
     let exporter = OptimizerExporter::new(database);
 

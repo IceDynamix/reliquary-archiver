@@ -4,6 +4,9 @@
 //! [Fribbels HSR Optimizer]: https://github.com/fribbels/hsr-optimizer
 //! [kel-z's HSR-Scanner]: https://github.com/kel-z/HSR-Scanner
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{self, Read};
+use std::path::PathBuf;
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
@@ -25,6 +28,7 @@ use reliquary::resource::ResourceMap;
 use reliquary::resource::text_map::TextMap;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
+use serde_json::Value;
 use tracing::{debug, info, info_span, instrument, trace, warn};
 
 use crate::export::Exporter;
@@ -244,6 +248,31 @@ impl Exporter for OptimizerExporter {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct DatabaseVersion {
+    config_sha: String,
+    keys_sha: String,
+}
+
+/**
+ * Options struct that get passed to Database::new_from_online()
+ * Each `use_` property determines if that item should be fetched from an online source or from a local source
+ */
+#[derive(Debug, Default)]
+struct DatabaseBuildOptions {
+    save: bool,
+    root_path: PathBuf,
+    use_online_config: bool,
+    use_online_text_map: bool,
+    use_online_keys: bool,
+}
+
+impl DatabaseBuildOptions {
+    pub fn needs_update(&self) -> bool {
+        self.use_online_config || self.use_online_text_map || self.use_online_keys
+    }
+}
+
 pub struct Database {
     avatar_config: AvatarConfigMap,
     avatar_skill_tree_config: AvatarSkillTreeConfigMap,
@@ -257,39 +286,318 @@ pub struct Database {
 }
 
 impl Database {
-    #[instrument(name = "config_map")]
-    pub fn new_from_online() -> Self {
-        info!("initializing database from online sources, this might take a while...");
+    fn build(options: DatabaseBuildOptions) -> Self {
+        if options.needs_update() {
+            info!("downloading updates, this might take a while...");
+        } else {
+            info!("loading database...");
+        }
+
+        // todo: decouple downloading from Database build
         Database {
-            avatar_config: Self::load_online_config(),
-            avatar_skill_tree_config: Self::load_online_config(),
-            equipment_config: Self::load_online_config(),
-            relic_config: Self::load_online_config(),
-            relic_set_config: Self::load_online_config(),
-            relic_main_affix_config: Self::load_online_config(),
-            relic_sub_affix_config: Self::load_online_config(),
-            text_map: Self::load_online_text_map(),
-            keys: Self::load_online_keys(),
+            avatar_config: Self::load_config(&options),
+            avatar_skill_tree_config: Self::load_config(&options),
+            equipment_config: Self::load_config(&options),
+            relic_config: Self::load_config(&options),
+            relic_set_config: Self::load_config(&options),
+            relic_main_affix_config: Self::load_config(&options),
+            relic_sub_affix_config: Self::load_config(&options),
+            text_map: Self::load_text_map(&options),
+            keys: Self::load_keys(&options),
         }
     }
 
-    // TODO: new_from_source
+    #[instrument(skip_all, name = "config_map")]
+    pub fn new_from_source(should_save: bool, save_path: &PathBuf) -> Self {
+        info!("checking database version...");
 
-    fn load_online_config<T: ResourceMap + DeserializeOwned>() -> T {
-        Self::get::<T>(format!("{BASE_RESOURCE_URL}/ExcelOutput/{}", T::get_json_name()))
-    }
-    fn load_online_text_map() -> TextMap {
-        Self::get(format!("{BASE_RESOURCE_URL}/TextMap/TextMapEN.json"))
+        let database_root = if save_path.to_str().unwrap_or("__temp_dir__") == "__temp_dir__" {
+            std::env::temp_dir().join("reliquary-archiver")
+        } else {
+            save_path.to_owned()
+        };
+
+        let fallback_options = DatabaseBuildOptions {
+            save: should_save,
+            root_path: database_root.clone(),
+            use_online_config: true,
+            use_online_text_map: true,
+            use_online_keys: true,
+        };
+
+        // create dir if not exists (and ExcelOutput subdir)
+        let excel_path = database_root.join("ExcelOutput");
+
+        if let Err(err) = fs::read_dir(&excel_path) {
+            match err.kind() {
+                io::ErrorKind::NotFound => {
+                    if should_save {
+                        if let Err(err) = fs::create_dir_all(excel_path) {
+                            // could not create offline directories, fallback to online sources
+                            warn!(%err, "unable to create database directory; using online sources");
+                            return Self::build(fallback_options);
+                        }
+                    } else {
+                        // directory does not exist locally and no intent to save locally, so fetch from online sources
+                        info!("no local database found; fetching from online sources");
+                        return Self::build(fallback_options);
+                    }
+                }
+                _ => {
+                    // could not read offline directory, fallback to online sources
+                    warn!(%err, "unable to read database directory; using online sources");
+                    return Self::build(fallback_options);
+                }
+            }
+        }
+
+        // read database version file
+        // if it doesn't exist, create it
+        let mut file = match File::options().read(true).open(database_root.join("version.json")) {
+            Ok(f) => {
+                info!("found local database at {}", database_root.to_str().unwrap());
+                f
+            }
+            // could not open file for reading
+            Err(err) => {
+                match err.kind() {
+                    // because it did not exist
+                    io::ErrorKind::NotFound => {
+                        if should_save {
+                            // then create it
+                            match File::options().read(true).write(true).create(true).open(database_root.join("version.json")) {
+                                Ok(f) => {
+                                    info!("creating local database...");
+                                    f
+                                }
+                                Err(err) => {
+                                    warn!(%err, "unable to create local database version file; using online sources");
+                                    return Self::build(fallback_options);
+                                }
+                            }
+                        } else {
+                            // fetch from online
+                            info!("unable to find local database version file; using online sources");
+                            return Self::build(fallback_options);
+                        }
+                    }
+                    // because of other I/O errors
+                    _ => {
+                        warn!(%err, "unable to open database version file for load; using online sources");
+                        return Self::build(fallback_options); // file system error, fetch from online sources
+                    }
+                }
+            }
+        };
+
+        let mut buf: Vec<u8> = Vec::new();
+
+        // read file contents into buffer
+        if let Err(err) = file.read_to_end(&mut buf) {
+            warn!(%err, "unable to read database version contents; using online sources");
+            return Self::build(fallback_options); // could not read file, fetch from online sources
+        }
+
+        // deserialize file contents to DatabaseVersion struct
+        let mut version: DatabaseVersion = serde_json::from_slice(&buf)
+            .unwrap_or(DatabaseVersion {
+                config_sha: String::new(),
+                keys_sha: String::new(),
+            });
+
+        // get the commit history for each of the resources we are interested in
+        // todo: probably want to put these strings in a config file/object somewhere instead of hard-coded
+        let api_config = "https://api.github.com/repos/Dimbreath/StarRailData/commits?sha=master".to_string();
+        let api_keys = "https://api.github.com/repos/tamilpp25/Iridium-SR/commits?sha=main&path=data/Keys.json".to_string();
+
+        let mut options = DatabaseBuildOptions {
+            save: should_save,
+            root_path: database_root.to_owned(),
+            ..Default::default() // initialize all `use_` flags to `false`
+        };
+
+        // compare latest commits with local SHA values
+        let api_config_res = match Self::get_version(api_config) {
+            Some(v) => v,
+            None => {
+                // could not get API information, fetch this resource from online
+                Value::Null
+            }
+        };
+
+        // first item from response is always the latest commit
+        let latest_commit = api_config_res[0]["sha"].as_str().unwrap_or("no data").to_string();
+        
+        // SHAs don't match, download and update local config files
+        if version.config_sha != latest_commit {
+            debug!("configs out of date");
+            
+            // only overwrite if we actually got data back
+            if latest_commit != "no data" {
+                version.config_sha = latest_commit;
+            }
+            
+            options.use_online_config = true;
+            options.use_online_text_map = true;
+        }
+
+        let api_keys_res = match Self::get_version(api_keys) {
+            Some(v) => v,
+            None => {
+                Value::Null
+            }
+        };
+
+        let latest_commit = api_keys_res[0]["sha"].as_str().unwrap_or("no data").to_string();
+
+        // SHAs don't match, download and update local keys file
+        if version.keys_sha != latest_commit {
+            debug!("keys out of date");
+
+            if latest_commit != "no data" {
+                version.keys_sha = latest_commit;
+            }
+            
+            options.use_online_keys = true;
+        }
+
+        // all SHAs match latest commits, return local database
+        if !options.needs_update() {
+            info!("local database is current with online sources");
+            return Self::build(options);
+        }
+
+        // create database using one or more online sources
+        info!("local database requires updates from online sources");
+        let database = Self::build(options);
+
+        // we should only update our version file AFTER we've successfully downloaded the new database files AND the
+        // user has indicated they want to save locally
+        if should_save {
+            // re-open the version file for writing, truncating in the process
+            let file = match File::options().write(true).truncate(true).open(database_root.join("version.json")) {
+                Ok(f) => {
+                    info!("updated local database at {}", database_root.to_str().unwrap());
+                    f
+                }
+                Err(err) => {
+                    warn!(%err, "unable to access database version file for save");
+                    return database; // don't do any special error-handling here, worst case is we have to re-download on next run
+                }
+            };
+
+            // update version file and return created database
+            match serde_json::to_writer(file, &version) {
+                Ok(()) => database,
+                Err(err) => {
+                    warn!(%err, "unable to update database version file");
+                    database
+                }
+            }
+        } else {
+            database
+        }
     }
 
-    fn load_online_keys() -> HashMap<u32, Vec<u8>> {
+    fn load_config<T: ResourceMap + DeserializeOwned + Serialize>(options: &DatabaseBuildOptions) -> T {
+        if options.use_online_config {
+            Self::load_online_config(&options)
+        } else {
+            Self::load_offline_config(&options)
+        }
+    }
+
+    fn load_online_config<T: ResourceMap + DeserializeOwned + Serialize>(options: &DatabaseBuildOptions) -> T {
+        let content = Self::get::<T>(format!("{BASE_RESOURCE_URL}/ExcelOutput/{}", T::get_json_name()));
+
+        if options.save {
+            let file = File::options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(options.root_path.join("ExcelOutput").join(T::get_json_name()))
+                .unwrap();
+
+            serde_json::to_writer(file, &content).unwrap();
+        }
+
+        content
+    }
+
+    fn load_offline_config<T: ResourceMap + DeserializeOwned>(options: &DatabaseBuildOptions) -> T {
+        Self::get_file::<T>(options.root_path.join("ExcelOutput").join(T::get_json_name()))
+    }
+
+    fn load_text_map(options: &DatabaseBuildOptions) -> TextMap {
+        if options.use_online_text_map {
+            Self::load_online_text_map(&options)
+        } else {
+            Self::load_offline_text_map(&options)
+        }
+    }
+
+    fn load_online_text_map(options: &DatabaseBuildOptions) -> TextMap {
+        let content = Self::get(format!("{BASE_RESOURCE_URL}/TextMap/TextMapEN.json"));
+
+        if options.save {
+            let file = File::options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(options.root_path.join("TextMapEN.json"))
+                .unwrap();
+
+            serde_json::to_writer(file, &content).unwrap();
+        }
+
+        content
+    }
+
+    fn load_offline_text_map(options: &DatabaseBuildOptions) -> TextMap {
+        Self::get_file(options.root_path.join("TextMapEN.json"))
+    }
+
+    fn load_keys(options: &DatabaseBuildOptions) -> HashMap<u32, Vec<u8>> {
+        if options.use_online_keys {
+            Self::load_online_keys(&options)
+        } else {
+            Self::load_offline_keys(&options)
+        }
+    }
+
+    fn load_online_keys(options: &DatabaseBuildOptions) -> HashMap<u32, Vec<u8>> {
         let keys: HashMap<u32, String> = Self::get("https://raw.githubusercontent.com/tamilpp25/Iridium-SR/main/data/Keys.json".to_string());
+
+        if options.save {
+            let file = File::options()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(options.root_path.join("Keys.json"))
+                .unwrap();
+
+            serde_json::to_writer(file, &keys).unwrap();
+        }
+
+        Self::decode_keys(keys)
+    }
+
+    fn load_offline_keys(options: &DatabaseBuildOptions) -> HashMap<u32, Vec<u8>> {
+        let mut file = File::options().read(true).open(options.root_path.join("Keys.json")).unwrap();
+        let mut content: Vec<u8> = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        let keys: HashMap<u32, String> = serde_json::from_slice(&content).unwrap();
+        Self::decode_keys(keys)
+    }
+
+    fn decode_keys(keys: HashMap<u32, String>) -> HashMap<u32, Vec<u8>> {
         let mut keys_bytes = HashMap::new();
 
         for (k, v) in keys {
             keys_bytes.insert(k, BASE64_STANDARD.decode(v).unwrap());
         }
-
+        
         keys_bytes
     }
 
@@ -300,6 +608,41 @@ impl Database {
             .unwrap()
             .into_json()
             .unwrap()
+    }
+
+    // get the latest commit information from the `url`
+    fn get_version(url: String) -> Option<Value> {
+        debug!(url, "requesting version info for resource");
+
+        match ureq::get(&url).call() {
+            Ok(res) => Some(res.into_json::<Value>().unwrap()),
+            Err(err) => {
+                match err {
+                    ureq::Error::Status(s, r) => {
+                        warn!("{s} {} unable to check online version information", r.status_text());
+                        None
+                    }
+                    ureq::Error::Transport(t) => {
+                        if let Some(err) = t.message() {
+                            warn!(%err, "something went wrong when trying to fetch online version information");
+                        }
+                        None
+                    }
+                }
+            }
+        }
+    }
+
+    // get the deserialized content of a local file at `path`
+    fn get_file<T: DeserializeOwned>(path: PathBuf) -> T {
+        let path_str = path.to_str().unwrap();
+        debug!(path_str, "requesting from file");
+
+        let mut file = File::options().read(true).open(path).unwrap();
+        let mut content: Vec<u8> = Vec::new();
+        file.read_to_end(&mut content).unwrap();
+
+        serde_json::from_slice::<T>(&content).unwrap()
     }
 
     pub fn keys(&self) -> &HashMap<u32, Vec<u8>> {
