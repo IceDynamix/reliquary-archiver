@@ -5,3 +5,4 @@ wpcap.lib
 .idea
 /*.json
 /*.log
+npcap-sdk*.zip

@@ -1,0 +1,88 @@
+name: Create Release
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+
+jobs:
+  # TODO: Fix the Cargo.toml update issue
+  # determine-next-version:
+  #   runs-on: ubuntu-latest
+  #   outputs:
+  #     nextVersion: ${{ steps.getNext.outputs.nextVersion }}
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: moonrepo/setup-rust@v1
+  #     - name: Install toml-cli
+  #       run: cargo install toml-cli
+  #     - name: Determine next version
+  #       id: getNext
+  #       run: |
+  #         nextVersion=$(echo $(toml get Cargo.toml package.version) \
+  #           | awk -F. '{ printf("%d.%d.%d", $1, $2, $3 + 1); }')
+  #         echo "nextVersion=$nextVersion" >> "$GITHUB_OUTPUT"
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: moonrepo/setup-rust@v1
+      - name: Download npcap sdk
+        run: curl --silent --show-error --fail -o ./npcap-sdk.zip "https://npcap.com/dist/npcap-sdk-1.13.zip"
+      - name: Extract npcap x64 libs
+        run: |
+          unzip -p npcap-sdk.zip Lib/x64/Packet.lib > Packet.lib
+          unzip -p npcap-sdk.zip Lib/x64/wpcap.lib > wpcap.lib
+      - name: Build Windows exe
+        run: cargo build --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reliquary-archiver_x64
+          # path: target/release/reliquary-archiver.exe
+          path: target/release/reliquary-archiver.exe
+  create-release:
+    runs-on: ubuntu-latest
+    needs: [build-windows]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: moonrepo/setup-rust@v1
+      - name: Install toml-cli
+        run: cargo install toml-cli
+      # TODO: figure out why Cargo.toml isn't getting updated correctly
+      # - name: Update Cargo.toml with new version
+      #   run: |
+      #     toml set Cargo.toml package.version ${{needs.determine-next-version.outputs.nextVersion}} > Cargo.toml
+      #     cargo build
+      # - name: Push updated version
+      #   run: |
+      #     git config user.name "reliquary-archiver bot"
+      #     git config user.email "reliquary-archiver.bot@users.noreply.github.com"
+      #     git add Cargo.toml
+      #     git add Cargo.lock
+      #     git commit -m "[skip ci] bump version to ${{ needs.determine-next-version.outputs.nextVersion }}"
+      #     git push origin main
+      - name: Get new version
+        id: getVersion
+        run: echo "nextVersion=$(toml get Cargo.toml package.version | tr -d '\"')" >> $GITHUB_OUTPUT
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: reliquary-archiver_x64
+          path: x64
+      - name: Append version to exe
+        run: mv x64/reliquary-archiver.exe ./reliquary-archiver_x64_v${{steps.getVersion.outputs.nextVersion}}.exe
+      - name: Create and push version tag
+        run: |
+          git tag v${{steps.getVersion.outputs.nextVersion}}
+          git push origin --tags
+      - name: Create release
+        uses: ncipollo/release-action@v1
+        with:
+          tag: v${{steps.getVersion.outputs.nextVersion}}
+          name: "v${{steps.getVersion.outputs.nextVersion}}"
+          artifacts: "reliquary-archiver*.exe"
