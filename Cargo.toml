@@ -1,6 +1,6 @@
 [package]
 name = "reliquary-archiver"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/IceDynamix/reliquary-archiver"
@@ -23,7 +23,7 @@ ureq = { version = "2.9.7", features = ["json"] }
 
 [dependencies.reliquary]
 git = "https://github.com/IceDynamix/reliquary"
-tag = "v1.0.1"
+tag = "v2.0.0"
 
 [profile.release]
 opt-level = "z"  # optimize for size
