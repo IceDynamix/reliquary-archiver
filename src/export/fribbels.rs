@@ -92,7 +92,7 @@ impl OptimizerExporter {
             .filter_map(|b| export_proto_hero(&self.database, &b))
             .collect();
 
-        self.current_trailblazer_path = trailblazer_id_to_path(hero.cur_basic_type.value() as u32);
+        self.current_trailblazer_path = avatar_path_lookup(&self.database, hero.cur_basic_type.value() as u32);
         if let Some(path) = self.current_trailblazer_path {
             info!(path, "found current trailblazer path");
         } else {
@@ -176,7 +176,7 @@ impl Exporter for OptimizerExporter {
                 let cmd = command.parse_proto::<GetHeroBasicTypeInfoScRsp>();
                 match cmd {
                     Ok(cmd) => {
-                        self.add_trailblazer_data(cmd)
+                        self.add_trailblazer_data(cmd);
                     }
                     Err(error) => {
                         warn!(%error, "could not parse trailblazer data command");
@@ -313,7 +313,8 @@ impl Database {
 
         // trailblazer
         if avatar_id >= 8000 {
-            Some("Trailblazer".to_string())
+            let path = avatar_path_lookup(self, avatar_id)?;
+            Some(format!("Trailblazer{}", path))
         } else {
             let cfg = self.avatar_config.get(&avatar_id)?;
             cfg.AvatarName.lookup(&self.text_map).map(|s| s.to_string())
@@ -339,7 +340,7 @@ fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
     let slot = slot_type_to_export(&relic_config.Type);
     let rarity = relic_config.MaxLevel / 3;
     let mainstat = main_stat_to_export(&main_affix_config.Property).to_string();
-    let location = db.lookup_avatar_name(proto.base_avatar_id).unwrap_or("".to_string());
+    let location = db.lookup_avatar_name(proto.equip_avatar_id).unwrap_or("".to_string());
 
     debug!(rarity, set, slot, slot, mainstat, location, "detected");
 
@@ -478,7 +479,7 @@ fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<Ligh
 
     debug!(light_cone=key, level, superimposition, "detected");
 
-    let location = db.lookup_avatar_name(proto.base_avatar_id)
+    let location = db.lookup_avatar_name(proto.equip_avatar_id)
         .unwrap_or("".to_string());
 
     Some(LightCone {
@@ -514,7 +515,7 @@ fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Chara
 }
 
 fn export_proto_hero(db: &Database, proto: &HeroBasicTypeInfo) -> Option<Character> {
-    let path = trailblazer_id_to_path(proto.basic_type.value() as u32)?;
+    let path = avatar_path_lookup(db, proto.basic_type.value() as u32)?;
     let key = format!("Trailblazer{}", path);
 
     let span = info_span!("character", key);
@@ -535,17 +536,19 @@ fn export_proto_hero(db: &Database, proto: &HeroBasicTypeInfo) -> Option<Charact
     })
 }
 
-fn trailblazer_id_to_path(id: u32) -> Option<&'static str> {
-    match id {
-        8001 | 8002 => Some("Destruction"),
-        8003 | 8004 => Some("Preservation"),
-        8005 | 8006 => Some("Hunt"),
-        8007 | 8008 => Some("Erudition"),
-        8009 | 8010 => Some("Harmony"),
-        8011 | 8012 => Some("Nihility"),
-        8013 | 8014 => Some("Abundance"),
+fn avatar_path_lookup(db: &Database, avatar_id: u32) -> Option<&'static str> {
+    let hero_config = db.avatar_config.get(&avatar_id);
+    let avatar_base_type = hero_config.unwrap().AvatarBaseType.as_str();
+    match avatar_base_type {
+        "Knight"  => Some("Preservation"),
+        "Rogue"   => Some("Hunt"),
+        "Mage"    => Some("Erudition"),
+        "Warlock" => Some("Nihility"),
+        "Warrior" => Some("Destruction"),
+        "Shaman"  => Some("Harmony"),
+        "Priest"  => Some("Abundance"),
         _ => {
-            debug!(?id, "unknown path");
+            debug!(?avatar_base_type, "unknown path");
             None
         }
     }

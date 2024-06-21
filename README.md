@@ -17,10 +17,13 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
     sudo setcap CAP_NET_RAW=+ep target/release/reliquary-archiver
     ```
 - download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
-- **make sure you're on the main menu screen before the train hyperdrive in-gmae**
+- **Launch the game and get to this screen. Do not go into the game yet**
+![main menu start screen](./hsr_hyperdrive.jpg)
 - run the archiver executable and wait until it says "listening with a timeout"
-- enter train hyperdrive in-gmae
+![archiver listening for timeout](./listening_for_timeout.png)
+- start the game
 - if successful, the archiver should output a file to `archiver_output.json`
+![archiver visual guide](./archiver_visual_guide.gif)
 
 ### cli usage
 
