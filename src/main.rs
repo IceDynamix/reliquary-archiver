@@ -124,7 +124,8 @@ where
                 if invalid >= 50 {
                     error!("received 50 packets that could not be segmented");
                     warn!("you probably started capturing when you were already in-game");
-                    warn!("the capture needs to start on the main menu screen before hyperdrive");
+                    warn!("the capture needs to start on the main menu screen");
+                    warn!("log out then log back in");
                     return None;
                 }
             } else {
@@ -176,7 +177,7 @@ where
     let mut invalid = 0;
     let mut warning_sent = false;
 
-    info!("instructions: go to main menu screen and go into train hyperdrive");
+    info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
     info!("listening with a timeout of {} seconds...", args.timeout);
 
     'recv: loop {
