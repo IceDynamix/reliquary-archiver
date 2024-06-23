@@ -26,6 +26,11 @@ git = "https://github.com/IceDynamix/reliquary"
 tag = "v2.0.0"
 
 [profile.release]
-opt-level = "z"  # optimize for size
+opt-level = "z"         # optimize for size
 lto = true
-overflow-checks = false     # Disable integer overflow checks.
+overflow-checks = false # Disable integer overflow checks.
+
+[build-dependencies]
+anyhow = "1.0.86"
+ureq = "2.9.7"
+zip = "2.1.3"
