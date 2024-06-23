@@ -1,7 +1,10 @@
 #[cfg(not(target_os = "windows"))]
 fn main() {}
 
-#[cfg(target_os = "windows")]
+#[cfg(all(
+    target_os = "windows",
+    any(target_arch = "x86_64", target_arch = "aarch64")
+))]
 fn main() -> anyhow::Result<()> {
     let out_dir = std::env::var("OUT_DIR")?;
     let out_dir = std::path::Path::new(&out_dir);
@@ -39,9 +42,17 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    let arch_dir = if cfg!(target_arch = "x86_64") {
+        "x64"
+    } else if cfg!(target_arch = "aarch64") {
+        "ARM64"
+    } else {
+        unreachable!();
+    };
+
     println!(
         "cargo::rustc-env=LIB={}",
-        out_dir.join("Lib").join("x64").to_string_lossy()
+        out_dir.join("Lib").join(arch_dir).to_string_lossy()
     );
 
     Ok(())
