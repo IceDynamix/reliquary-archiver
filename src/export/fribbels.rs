@@ -26,6 +26,9 @@ use reliquary::resource::text_map::TextMap;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
 use tracing::{debug, info, info_span, instrument, trace, warn};
+use ureq::{Agent, AgentBuilder, Proxy};
+#[cfg(target_os = "windows")]
+use winreg::{enums::*, RegKey};
 
 use crate::export::Exporter;
 
@@ -244,6 +247,67 @@ impl Exporter for OptimizerExporter {
     }
 }
 
+#[derive(Debug)]
+pub struct UreqAgent {
+    agent: Agent,
+}
+
+impl UreqAgent {
+    pub fn new(home_proxy: bool, system_proxy: bool) -> Self {
+        let agent = if home_proxy {
+            AgentBuilder::new().try_proxy_from_env(true).build()
+        } else if system_proxy {
+            let proxy_server = Self::get_proxy_server_from_registry();
+
+            if let Some(proxy_server) = proxy_server {
+                AgentBuilder::new()
+                    .proxy(Proxy::new(proxy_server).unwrap())
+                    .build()
+            } else {
+                Agent::new()
+            }
+        } else {
+            Agent::new()
+        };
+
+        UreqAgent { agent }
+    }
+
+    #[cfg(target_os = "windows")]
+    fn get_proxy_server_from_registry() -> Option<String> {
+        // Open registry key
+        let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+        let internet_settings = hkcu.open_subkey_with_flags(
+            "Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings",
+            KEY_READ,
+        ).unwrap();
+        // Read Proxy Settings
+        let proxy_enable: u32 = internet_settings.get_value("ProxyEnable").unwrap();
+
+        if proxy_enable == 0 {
+            warn!("system proxy is not enabled");
+            return None;
+        }
+
+        let proxy_server: String = internet_settings.get_value("ProxyServer").unwrap();
+        Some(proxy_server)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn get_proxy_server_from_registry() -> Option<String> {
+        warn!("system proxy is only supported on windows! defaulting to no proxy.");
+        None
+    }
+
+    fn get<T: DeserializeOwned>(&self, url: String) -> T {
+        self.agent.get(&url)
+            .call()
+            .unwrap()
+            .into_json()
+            .unwrap()
+    }
+}
+
 pub struct Database {
     avatar_config: AvatarConfigMap,
     avatar_skill_tree_config: AvatarSkillTreeConfigMap,
@@ -257,33 +321,33 @@ pub struct Database {
 }
 
 impl Database {
-    #[instrument(name = "config_map")]
-    pub fn new_from_online() -> Self {
+    #[instrument(name = "config_map", skip(agent))]
+    pub fn new_from_online(agent: UreqAgent) -> Self {
         info!("initializing database from online sources, this might take a while...");
         Database {
-            avatar_config: Self::load_online_config(),
-            avatar_skill_tree_config: Self::load_online_config(),
-            equipment_config: Self::load_online_config(),
-            relic_config: Self::load_online_config(),
-            relic_set_config: Self::load_online_config(),
-            relic_main_affix_config: Self::load_online_config(),
-            relic_sub_affix_config: Self::load_online_config(),
-            text_map: Self::load_online_text_map(),
-            keys: Self::load_online_keys(),
+            avatar_config: Self::load_online_config(&agent),
+            avatar_skill_tree_config: Self::load_online_config(&agent),
+            equipment_config: Self::load_online_config(&agent),
+            relic_config: Self::load_online_config(&agent),
+            relic_set_config: Self::load_online_config(&agent),
+            relic_main_affix_config: Self::load_online_config(&agent),
+            relic_sub_affix_config: Self::load_online_config(&agent),
+            text_map: Self::load_online_text_map(&agent),
+            keys: Self::load_online_keys(&agent),
         }
     }
 
     // TODO: new_from_source
 
-    fn load_online_config<T: ResourceMap + DeserializeOwned>() -> T {
-        Self::get::<T>(format!("{BASE_RESOURCE_URL}/ExcelOutput/{}", T::get_json_name()))
+    fn load_online_config<T: ResourceMap + DeserializeOwned>(agent: &UreqAgent) -> T {
+        agent.get(format!("{BASE_RESOURCE_URL}/ExcelOutput/{}", T::get_json_name()))
     }
-    fn load_online_text_map() -> TextMap {
-        Self::get(format!("{BASE_RESOURCE_URL}/TextMap/TextMapEN.json"))
+    fn load_online_text_map(agent: &UreqAgent) -> TextMap {
+        agent.get(format!("{BASE_RESOURCE_URL}/TextMap/TextMapEN.json"))
     }
 
-    fn load_online_keys() -> HashMap<u32, Vec<u8>> {
-        let keys: HashMap<u32, String> = Self::get("https://raw.githubusercontent.com/tamilpp25/Iridium-SR/main/data/Keys.json".to_string());
+    fn load_online_keys(agent: &UreqAgent) -> HashMap<u32, Vec<u8>> {
+        let keys: HashMap<u32, String> = agent.get("https://raw.githubusercontent.com/tamilpp25/Iridium-SR/main/data/Keys.json".to_string());
         let mut keys_bytes = HashMap::new();
 
         for (k, v) in keys {
@@ -291,15 +355,6 @@ impl Database {
         }
 
         keys_bytes
-    }
-
-    fn get<T: DeserializeOwned>(url: String) -> T {
-        debug!(url, "requesting from resource");
-        ureq::get(&url)
-            .call()
-            .unwrap()
-            .into_json()
-            .unwrap()
     }
 
     pub fn keys(&self) -> &HashMap<u32, Vec<u8>> {

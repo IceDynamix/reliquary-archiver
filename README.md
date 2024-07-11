@@ -39,6 +39,8 @@ Options:
   -v, --verbose...           How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
   -l, --log-path <LOG_PATH>  Path to output log to
   -h, --help                 Print help
+      --home-proxy           Use HOME_PROXY environment variable
+      --system-proxy         Use system proxy. Ignored if home-proxy is set. Only works on Windows
 ```
 
 to customize logging, either

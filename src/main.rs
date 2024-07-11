@@ -11,7 +11,7 @@ use tracing::{debug, error, info, instrument, trace, warn};
 use tracing_subscriber::{EnvFilter, Layer, prelude::*, Registry};
 
 use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::fribbels::{Database, OptimizerExporter};
+use reliquary_archiver::export::fribbels::{Database, OptimizerExporter, UreqAgent};
 
 const PACKET_FILTER: &str = "udp portrange 23301-23302";
 
@@ -32,6 +32,12 @@ struct Args {
     /// Path to output log to
     #[arg(short, long)]
     log_path: Option<PathBuf>,
+    /// Use HOME_PROXY environment variable
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    home_proxy: bool,
+    /// Use system proxy. Ignored if home_proxy is set. Only works on Windows
+    #[arg(long, action = clap::ArgAction::SetTrue)]
+    system_proxy: bool,
 }
 
 fn main() {
@@ -42,7 +48,8 @@ fn main() {
 
     debug!(?args);
 
-    let database = Database::new_from_online();
+    let ureq_agent = UreqAgent::new(args.home_proxy, args.system_proxy);
+    let database = Database::new_from_online(ureq_agent);
     let sniffer = GameSniffer::new().set_initial_keys(database.keys().clone());
     let exporter = OptimizerExporter::new(database);
 
