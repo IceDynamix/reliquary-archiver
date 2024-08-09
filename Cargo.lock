@@ -230,9 +230,9 @@ dependencies = [
 
 [[package]]
 name = "etherparse"
-version = "0.14.2"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24890603eb4b43aa788f02261ce21714449033e3e2ab93692f0ab18480c3c9b1"
+checksum = "21696e6dfe1057a166a042c6d27b89a46aad2ee1003e6e1e03c49d54fd3270d7"
 dependencies = [
  "arrayvec",
 ]
@@ -543,8 +543,8 @@ checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
 
 [[package]]
 name = "reliquary"
-version = "1.0.1"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v1.0.1#add4b405d8b78adf60dceb6a9efbfb230e12f2c6"
+version = "3.0.0"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v3.0.0#6ab4524b01ce7c02b731ba74877e9edb5060aa7c"
 dependencies = [
  "base64",
  "etherparse",
@@ -559,7 +559,7 @@ dependencies = [
 
 [[package]]
 name = "reliquary-archiver"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64",
  "clap",
@@ -576,7 +576,7 @@ dependencies = [
 [[package]]
 name = "reliquary-proc-macro"
 version = "0.1.0"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v1.0.1#add4b405d8b78adf60dceb6a9efbfb230e12f2c6"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v3.0.0#6ab4524b01ce7c02b731ba74877e9edb5060aa7c"
 dependencies = [
  "quote",
  "syn",

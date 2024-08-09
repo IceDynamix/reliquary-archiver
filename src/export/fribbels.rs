@@ -12,10 +12,9 @@ use reliquary::network::gen::command_id;
 use reliquary::network::gen::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::gen::proto::AvatarSkillTree::AvatarSkillTree as ProtoSkillTree;
 use reliquary::network::gen::proto::Equipment::Equipment as ProtoLightCone;
-use reliquary::network::gen::proto::Gender::Gender;
 use reliquary::network::gen::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::gen::proto::GetBagScRsp::GetBagScRsp;
-use reliquary::network::gen::proto::GetHeroBasicTypeInfoScRsp::GetHeroBasicTypeInfoScRsp;
+use reliquary::network::gen::proto::GetMultiPathAvatarInfoScRsp::GetMultiPathAvatarInfoScRsp;
 use reliquary::network::gen::proto::HeroBasicTypeInfo::HeroBasicTypeInfo;
 use reliquary::network::gen::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::gen::proto::Relic::Relic as ProtoRelic;
@@ -78,30 +77,7 @@ impl OptimizerExporter {
         self.uid = Some(uid);
     }
 
-    pub fn add_trailblazer_data(&mut self, hero: GetHeroBasicTypeInfoScRsp) {
-        let gender = match hero.gender.enum_value().unwrap() {
-            Gender::GenderNone => "", // probably in the prologue before selecting gender?
-            Gender::GenderMan => "Caelus",
-            Gender::GenderWoman => "Stelle"
-        };
-
-        self.trailblazer = Some(gender);
-        info!(gender, "found trailblazer gender");
-
-        let mut builds: Vec<Character> = hero.basic_type_info_list.iter()
-            .filter_map(|b| export_proto_hero(&self.database, &b))
-            .collect();
-
-        self.current_trailblazer_path = avatar_path_lookup(&self.database, hero.cur_basic_type.value() as u32);
-        if let Some(path) = self.current_trailblazer_path {
-            info!(path, "found current trailblazer path");
-        } else {
-            warn!("unknown path for current trailblazer");
-        }
-
-        info!(num=builds.len(), "found trailblazer builds");
-        self.trailblazer_characters.append(&mut builds);
-    }
+    // TODO: add_multipath_avatars
 
     pub fn add_inventory(&mut self, bag: GetBagScRsp) {
         let mut relics: Vec<Relic> = bag.relic_list.iter()
@@ -171,15 +147,16 @@ impl Exporter for OptimizerExporter {
                     }
                 }
             }
-            command_id::GetHeroBasicTypeInfoScRsp => {
-                debug!("detected trailblazer packet");
-                let cmd = command.parse_proto::<GetHeroBasicTypeInfoScRsp>();
+            command_id::GetMultiPathAvatarInfoScRsp => {
+                debug!("detected multipath packet (trailblazer/march 7th)");
+                let cmd = command.parse_proto::<GetMultiPathAvatarInfoScRsp>();
                 match cmd {
                     Ok(cmd) => {
-                        self.add_trailblazer_data(cmd);
+                        println!("{cmd:?}");
+                        // TODO: handle multi path packets
                     }
                     Err(error) => {
-                        warn!(%error, "could not parse trailblazer data command");
+                        warn!(%error, "could not parse multipath data command");
                     }
                 }
             }
