@@ -565,6 +565,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "pcap",
+ "protobuf",
  "reliquary",
  "serde",
  "serde_json",

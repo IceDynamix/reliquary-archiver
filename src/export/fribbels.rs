@@ -7,6 +7,7 @@ use std::collections::HashMap;
 
 use base64::Engine;
 use base64::prelude::BASE64_STANDARD;
+use protobuf::Enum;
 use reliquary::network::GameCommand;
 use reliquary::network::gen::command_id;
 use reliquary::network::gen::proto::Avatar::Avatar as ProtoCharacter;
@@ -15,7 +16,8 @@ use reliquary::network::gen::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::gen::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::gen::proto::GetBagScRsp::GetBagScRsp;
 use reliquary::network::gen::proto::GetMultiPathAvatarInfoScRsp::GetMultiPathAvatarInfoScRsp;
-use reliquary::network::gen::proto::HeroBasicTypeInfo::HeroBasicTypeInfo;
+use reliquary::network::gen::proto::MultiPathAvatarInfo::MultiPathAvatarInfo;
+use reliquary::network::gen::proto::MultiPathAvatarType::MultiPathAvatarType;
 use reliquary::network::gen::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::gen::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::gen::proto::RelicAffix::RelicAffix;
@@ -45,18 +47,16 @@ pub struct Export {
 pub struct Metadata {
     pub uid: Option<u32>,
     pub trailblazer: Option<&'static str>,
-    pub current_trailblazer_path: Option<&'static str>,
 }
 
 pub struct OptimizerExporter {
     database: Database,
     uid: Option<u32>,
     trailblazer: Option<&'static str>,
-    current_trailblazer_path: Option<&'static str>,
     light_cones: Vec<LightCone>,
     relics: Vec<Relic>,
     characters: Vec<Character>,
-    trailblazer_characters: Vec<Character>,
+    multipath_characters: Vec<Character>,
 }
 
 impl OptimizerExporter {
@@ -65,11 +65,10 @@ impl OptimizerExporter {
             database,
             uid: None,
             trailblazer: None,
-            current_trailblazer_path: None,
             light_cones: vec![],
             relics: vec![],
             characters: vec![],
-            trailblazer_characters: vec![],
+            multipath_characters: vec![],
         }
     }
 
@@ -97,12 +96,30 @@ impl OptimizerExporter {
 
     pub fn add_characters(&mut self, characters: GetAvatarDataScRsp) {
         let mut characters: Vec<Character> = characters.avatar_list.iter()
-            .filter(|a| a.base_avatar_id < 8000) // skip trailblazer, handled in `write_hero`
+            .filter(|a| MultiPathAvatarType::from_i32(a.base_avatar_id as i32).is_none() ) // skip multipath characters
             .filter_map(|char| export_proto_character(&self.database, char))
             .collect();
 
         info!(num=characters.len(), "found characters");
         self.characters.append(&mut characters);
+    }
+
+    pub fn add_multipath_characters(&mut self, characters: GetMultiPathAvatarInfoScRsp) {
+        let mut characters: Vec<Character> = characters.multi_path_avatar_info_list.iter()
+            .filter_map(|char| export_proto_multipath_character(&self.database, char))
+            .collect();
+
+        // Try to find a trailblazer to determine the gender
+        if let Some(trailblazer) = characters.iter().find(|c| c.name == "Trailblazer") {
+            self.trailblazer = Some(if trailblazer.id.parse::<u32>().unwrap() % 2 == 0 {
+                "Stelle"
+            } else {
+                "Caelus"
+            });
+        }
+
+        info!(num=characters.len(), "found multipath characters");
+        self.multipath_characters.append(&mut characters);
     }
 }
 
@@ -152,8 +169,7 @@ impl Exporter for OptimizerExporter {
                 let cmd = command.parse_proto::<GetMultiPathAvatarInfoScRsp>();
                 match cmd {
                     Ok(cmd) => {
-                        // TODO: handle multi path packets
-                        warn!("ignored multipath characters for now, will be supported in next version");
+                        self.add_multipath_characters(cmd)
                     }
                     Err(error) => {
                         warn!(%error, "could not parse multipath data command");
@@ -171,7 +187,7 @@ impl Exporter for OptimizerExporter {
             && self.uid.is_some()
             && !self.relics.is_empty()
             && !self.characters.is_empty()
-            && !self.trailblazer_characters.is_empty()
+            && !self.multipath_characters.is_empty()
             && !self.light_cones.is_empty()
     }
 
@@ -195,8 +211,8 @@ impl Exporter for OptimizerExporter {
             warn!("light cones were not recorded");
         }
 
-        if self.trailblazer_characters.is_empty() {
-            warn!("trailblazer characters were not recorded");
+        if self.multipath_characters.is_empty() {
+            warn!("multipath characters were not recorded");
         }
 
         if self.characters.is_empty() {
@@ -206,16 +222,15 @@ impl Exporter for OptimizerExporter {
         Export {
             source: "reliquary_archiver",
             build: env!("CARGO_PKG_VERSION"),
-            version: 3,
+            version: 4,
             metadata: Metadata {
                 uid: self.uid,
                 trailblazer: self.trailblazer,
-                current_trailblazer_path: self.current_trailblazer_path,
             },
             light_cones: self.light_cones,
             relics: self.relics,
             characters: self.characters.into_iter()
-                .chain(self.trailblazer_characters)
+                .chain(self.multipath_characters)
                 .collect(),
         }
     }
@@ -288,10 +303,8 @@ impl Database {
             return None;
         }
 
-        // trailblazer
         if avatar_id >= 8000 {
-            let path = avatar_path_lookup(self, avatar_id)?;
-            Some(format!("Trailblazer{}", path))
+            Some("Trailblazer".to_owned())
         } else {
             let cfg = self.avatar_config.get(&avatar_id)?;
             cfg.AvatarName.lookup(&self.text_map).map(|s| s.to_string())
@@ -299,27 +312,36 @@ impl Database {
     }
 }
 
+fn format_location(avatar_id: u32) -> String {
+    if avatar_id == 0 {
+        return "".to_owned();
+    } else {
+        return avatar_id.to_string();
+    }
+}
+
 #[tracing::instrument(name = "relic", skip_all, fields(id = proto.tid))]
 fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
     let relic_config = db.relic_config.get(&proto.tid)?;
 
-    let set_config = db.relic_set_config.get(&relic_config.SetID)?;
+    let set_id = relic_config.SetID;
+    let set_config = db.relic_set_config.get(&set_id)?;
     let main_affix_config = db.relic_main_affix_config.get(&relic_config.MainAffixGroup, &proto.main_affix_id).unwrap();
 
     let id = proto.unique_id.to_string();
     let level = proto.level;
     let lock = proto.is_protected;
     let discard = proto.is_discarded;
-    let set = set_config.SetName.lookup(&db.text_map)
+    let set_name = set_config.SetName.lookup(&db.text_map)
         .map(|s| s.to_string())
         .unwrap_or("".to_string());
 
     let slot = slot_type_to_export(&relic_config.Type);
     let rarity = relic_config.MaxLevel / 3;
     let mainstat = main_stat_to_export(&main_affix_config.Property).to_string();
-    let location = db.lookup_avatar_name(proto.equip_avatar_id).unwrap_or("".to_string());
+    let location = format_location(proto.equip_avatar_id);
 
-    debug!(rarity, set, slot, slot, mainstat, location, "detected");
+    debug!(rarity, set_name, slot, slot, mainstat, location, "detected");
 
     let substats = proto.sub_affix_list.iter()
         .filter_map(|substat| export_substat(db, rarity, substat))
@@ -327,7 +349,8 @@ fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
 
 
     Some(Relic {
-        set,
+        set_id: set_id.to_string(),
+        name: set_name,
         slot,
         rarity,
         level,
@@ -336,7 +359,7 @@ fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         location,
         lock,
         discard,
-        _id: id,
+        _uid: id,
     })
 }
 
@@ -362,7 +385,8 @@ fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Su
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Relic {
-    pub set: String,
+    pub set_id: String,
+    pub name: String,
     pub slot: &'static str,
     pub rarity: u32,
     pub level: u32,
@@ -371,7 +395,7 @@ pub struct Relic {
     pub location: String,
     pub lock: bool,
     pub discard: bool,
-    pub _id: String,
+    pub _uid: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -437,52 +461,58 @@ fn sub_stat_to_export(s: &str) -> &'static str {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct LightCone {
-    pub key: String,
+    pub id: String,
+    pub name: String,
     pub level: u32,
     pub ascension: u32,
     pub superimposition: u32,
     pub location: String,
     pub lock: bool,
-    pub _id: String,
+    pub _uid: String,
 }
 
 #[instrument(name = "light_cone", skip_all, fields(id = proto.tid))]
 fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<LightCone> {
     let cfg = db.equipment_config.get(&proto.tid)?;
-    let key = cfg.EquipmentName.lookup(&db.text_map).map(|s| s.to_string())?;
+    let id = cfg.EquipmentID.to_string();
+    let name = cfg.EquipmentName.lookup(&db.text_map).map(|s| s.to_string())?;
 
     let level = proto.level;
     let superimposition = proto.rank;
 
-    debug!(light_cone=key, level, superimposition, "detected");
+    debug!(light_cone=name, level, superimposition, "detected");
 
-    let location = db.lookup_avatar_name(proto.equip_avatar_id)
-        .unwrap_or("".to_string());
+    let location = format_location(proto.equip_avatar_id);
 
     Some(LightCone {
-        key,
+        id,
+        name,
         level,
         ascension: proto.promotion,
         superimposition,
         location,
         lock: proto.is_protected,
-        _id: proto.unique_id.to_string(),
+        _uid: proto.unique_id.to_string(),
     })
 }
 
 #[instrument(name = "character", skip_all, fields(id = proto.base_avatar_id))]
 fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Character> {
-    let key = db.lookup_avatar_name(proto.base_avatar_id)?;
+    let id = proto.base_avatar_id;
+    let name = db.lookup_avatar_name(id)?;
+    let path = avatar_path_lookup(db, id)?.to_owned();
 
     let level = proto.level;
     let eidolon = proto.rank;
 
-    debug!(character=key, level, eidolon, "detected");
+    debug!(character=name, level, eidolon, "detected");
 
     let (skills, traces) = export_skill_tree(db, &proto.skilltree_list);
 
     Some(Character {
-        key,
+        id: id.to_string(),
+        name,
+        path,
         level,
         ascension: proto.promotion,
         eidolon,
@@ -491,20 +521,23 @@ fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Chara
     })
 }
 
-fn export_proto_hero(db: &Database, proto: &HeroBasicTypeInfo) -> Option<Character> {
-    let path = avatar_path_lookup(db, proto.basic_type.value() as u32)?;
-    let key = format!("Trailblazer{}", path);
+fn export_proto_multipath_character(db: &Database, proto: &MultiPathAvatarInfo) -> Option<Character> {
+    let id = proto.avatar_id.value() as u32;
+    let name = db.lookup_avatar_name(id)?;
+    let path = avatar_path_lookup(db, id)?.to_owned();
 
-    let span = info_span!("character", key);
+    let span = info_span!("character", name, path);
     let _enter = span.enter();
 
-    trace!(character=key, "detected");
+    trace!(character=name, path, "detected");
 
-    let (skills, traces) = export_skill_tree(db, &proto.skill_tree_list);
+    let (skills, traces) = export_skill_tree(db, &proto.multi_path_skill_tree);
 
     // TODO: figure out where level/ascension is stored
     Some(Character {
-        key,
+        id: id.to_string(),
+        name,
+        path,
         level: 0,
         ascension: 0,
         eidolon: proto.rank,
@@ -657,7 +690,9 @@ fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Character {
-    pub key: String,
+    pub id: String,
+    pub name: String,
+    pub path: String,
     pub level: u32,
     pub ascension: u32,
     pub eidolon: u32,
