@@ -40,7 +40,7 @@ jobs:
         # by toml-cli. excuse this workaround.
         run: |
           toml set Cargo.toml package.version ${{inputs.nextVersion}} > Cargo.toml.tmp
-          del Cargo.toml
+          rm Cargo.toml
           mv Cargo.toml.tmp Cargo.toml
           cargo build
       - name: Push updated version
