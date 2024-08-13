@@ -57,6 +57,7 @@ pub struct OptimizerExporter {
     relics: Vec<Relic>,
     characters: Vec<Character>,
     multipath_characters: Vec<Character>,
+    multipath_base_avatars: HashMap<u32, ProtoCharacter>,
 }
 
 impl OptimizerExporter {
@@ -69,14 +70,13 @@ impl OptimizerExporter {
             relics: vec![],
             characters: vec![],
             multipath_characters: vec![],
+            multipath_base_avatars: HashMap::new(),
         }
     }
 
     pub fn set_uid(&mut self, uid: u32) {
         self.uid = Some(uid);
     }
-
-    // TODO: add_multipath_avatars
 
     pub fn add_inventory(&mut self, bag: GetBagScRsp) {
         let mut relics: Vec<Relic> = bag.relic_list.iter()
@@ -95,13 +95,18 @@ impl OptimizerExporter {
     }
 
     pub fn add_characters(&mut self, characters: GetAvatarDataScRsp) {
-        let mut characters: Vec<Character> = characters.avatar_list.iter()
-            .filter(|a| MultiPathAvatarType::from_i32(a.base_avatar_id as i32).is_none() ) // skip multipath characters
+        let (characters, multipath_characters) = characters.avatar_list.iter()
+            .partition::<Vec<_>, _>(|a| MultiPathAvatarType::from_i32(a.base_avatar_id as i32).is_none() );
+
+        let mut characters: Vec<Character> = characters.iter()
             .filter_map(|char| export_proto_character(&self.database, char))
             .collect();
 
         info!(num=characters.len(), "found characters");
         self.characters.append(&mut characters);
+
+        info!(num=multipath_characters.len(), "found multipath base avatars");
+        self.multipath_base_avatars.extend(multipath_characters.into_iter().map(|c| (c.base_avatar_id, c.clone())));
     }
 
     pub fn add_multipath_characters(&mut self, characters: GetMultiPathAvatarInfoScRsp) {
@@ -120,6 +125,18 @@ impl OptimizerExporter {
 
         info!(num=characters.len(), "found multipath characters");
         self.multipath_characters.append(&mut characters);
+    }
+
+    pub fn finalize_multipath_characters(&mut self) {
+        // Fetch level & ascension
+        for character in self.multipath_characters.iter_mut() {
+            if let Some(config) = self.database.multipath_avatar_config.get(&character.id.parse().unwrap()) {
+                if let Some(base_avatar) = self.multipath_base_avatars.get(&config.BaseAvatarID) {
+                    character.level = base_avatar.level;
+                    character.ascension = base_avatar.promotion;
+                }
+            }
+        }
     }
 }
 
@@ -192,7 +209,7 @@ impl Exporter for OptimizerExporter {
     }
 
     #[instrument(skip_all)]
-    fn export(self) -> Self::Export {
+    fn export(mut self) -> Self::Export {
         info!("exporting collected data");
 
         if self.trailblazer.is_none() {
@@ -219,6 +236,8 @@ impl Exporter for OptimizerExporter {
             warn!("characters were not recorded");
         }
 
+        self.finalize_multipath_characters();
+
         Export {
             source: "reliquary_archiver",
             build: env!("CARGO_PKG_VERSION"),
@@ -240,6 +259,7 @@ pub struct Database {
     avatar_config: AvatarConfigMap,
     avatar_skill_tree_config: AvatarSkillTreeConfigMap,
     equipment_config: EquipmentConfigMap,
+    multipath_avatar_config: MultiplePathAvatarConfigMap,
     relic_config: RelicConfigMap,
     relic_set_config: RelicSetConfigMap,
     relic_main_affix_config: RelicMainAffixConfigMap,
@@ -256,6 +276,7 @@ impl Database {
             avatar_config: Self::load_online_config(),
             avatar_skill_tree_config: Self::load_online_config(),
             equipment_config: Self::load_online_config(),
+            multipath_avatar_config: Self::load_online_config(),
             relic_config: Self::load_online_config(),
             relic_set_config: Self::load_online_config(),
             relic_main_affix_config: Self::load_online_config(),

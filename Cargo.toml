@@ -24,7 +24,7 @@ ureq = { version = "2.10.1", features = ["json"] }
 
 [dependencies.reliquary]
 git = "https://github.com/IceDynamix/reliquary"
-tag = "v3.0.0"
+tag = "v3.1.0"
 
 [profile.release]
 opt-level = "z"  # optimize for size
