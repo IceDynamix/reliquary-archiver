@@ -152,8 +152,8 @@ impl Exporter for OptimizerExporter {
                 let cmd = command.parse_proto::<GetMultiPathAvatarInfoScRsp>();
                 match cmd {
                     Ok(cmd) => {
-                        println!("{cmd:?}");
                         // TODO: handle multi path packets
+                        warn!("ignored multipath characters for now, will be supported in next version");
                     }
                     Err(error) => {
                         warn!(%error, "could not parse multipath data command");
