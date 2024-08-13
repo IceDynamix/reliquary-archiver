@@ -1,29 +1,13 @@
 name: Create Release
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - src/**
-      - Cargo.toml
-      - Cargo.lock
+  workflow_dispatch:
+    inputs:
+      nextVersion:
+        description: "new version to push"
+        required: true
+        default: "0.0.0"
 
 jobs:
-   determine-next-version:
-     runs-on: ubuntu-latest
-     outputs:
-       nextVersion: ${{ steps.getNext.outputs.nextVersion }}
-     steps:
-       - uses: actions/checkout@v4
-       - uses: moonrepo/setup-rust@v1
-       - name: Install toml-cli
-         run: cargo install toml-cli
-       - name: Determine next version
-         id: getNext
-         run: |
-           nextVersion=$(echo $(toml get Cargo.toml package.version) \
-             | awk -F. '{ printf("%d.%d.%d", $1, $2, $3 + 1); }')
-           echo "nextVersion=$nextVersion" >> "$GITHUB_OUTPUT"
   build-windows:
     runs-on: windows-latest
     steps:
@@ -40,7 +24,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: reliquary-archiver_x64
-          # path: target/release/reliquary-archiver.exe
           path: target/release/reliquary-archiver.exe
   create-release:
     runs-on: ubuntu-latest
@@ -56,7 +39,7 @@ jobs:
         # piping the output of toml-cli directly into the file will cause the file to be deleted before being read
         # by toml-cli. excuse this workaround.
         run: |
-          toml set Cargo.toml package.version ${{needs.determine-next-version.outputs.nextVersion}} > Cargo.toml.tmp
+          toml set Cargo.toml package.version ${{inputs.nextVersion}} > Cargo.toml.tmp
           del Cargo.toml
           mv Cargo.toml.tmp Cargo.toml
           cargo build
@@ -66,25 +49,22 @@ jobs:
           git config user.email "reliquary-archiver.bot@users.noreply.github.com"
           git add Cargo.toml
           git add Cargo.lock
-          git commit -m "[skip ci] bump version to ${{ needs.determine-next-version.outputs.nextVersion }}"
+          git commit -m "[skip ci] bump version to v${{inputs.nextVersion}}"
           git push origin main
-      - name: Get new version
-        id: getVersion
-        run: echo "nextVersion=$(toml get Cargo.toml package.version | tr -d '\"')" >> $GITHUB_OUTPUT
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           name: reliquary-archiver_x64
           path: x64
       - name: Append version to exe
-        run: mv x64/reliquary-archiver.exe ./reliquary-archiver_x64_v${{steps.getVersion.outputs.nextVersion}}.exe
+        run: mv x64/reliquary-archiver.exe ./reliquary-archiver_x64_v${{inputs.nextVersion}}.exe
       - name: Create and push version tag
         run: |
-          git tag v${{steps.getVersion.outputs.nextVersion}}
+          git tag v${{inputs.nextVersion}}
           git push origin --tags
       - name: Create release
         uses: ncipollo/release-action@v1
         with:
-          tag: v${{steps.getVersion.outputs.nextVersion}}
-          name: "v${{steps.getVersion.outputs.nextVersion}}"
+          tag: v${{inputs.nextVersion}}
+          name: "v${{inputs.nextVersion}}"
           artifacts: "reliquary-archiver*.exe"
