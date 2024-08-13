@@ -543,8 +543,8 @@ checksum = "c08c74e62047bb2de4ff487b251e4a92e24f48745648451635cec7d591162d9f"
 
 [[package]]
 name = "reliquary"
-version = "3.0.0"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v3.0.0#6ab4524b01ce7c02b731ba74877e9edb5060aa7c"
+version = "3.1.0"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v3.1.0#0c96b3c1cdaf589bb9d48f21d5d7bd5d25cd352c"
 dependencies = [
  "base64",
  "etherparse",
@@ -565,6 +565,7 @@ dependencies = [
  "clap",
  "color-eyre",
  "pcap",
+ "protobuf",
  "reliquary",
  "serde",
  "serde_json",
@@ -576,7 +577,7 @@ dependencies = [
 [[package]]
 name = "reliquary-proc-macro"
 version = "0.1.0"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v3.0.0#6ab4524b01ce7c02b731ba74877e9edb5060aa7c"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v3.1.0#0c96b3c1cdaf589bb9d48f21d5d7bd5d25cd352c"
 dependencies = [
  "quote",
  "syn",
