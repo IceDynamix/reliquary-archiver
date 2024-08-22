@@ -42,7 +42,7 @@ jobs:
           toml set Cargo.toml package.version ${{inputs.nextVersion}} > Cargo.toml.tmp
           rm Cargo.toml
           mv Cargo.toml.tmp Cargo.toml
-          cargo build
+          cargo generate-lockfile
       - name: Push updated version
         run: |
           git config user.name "reliquary-archiver bot"
