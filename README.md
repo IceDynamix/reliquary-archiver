@@ -54,6 +54,8 @@ to output logs to a file, provide `--log-path <path>`. file logs will always be 
     to this directory was enough to link successfully
 - `cargo build` / `cargo run`
 
+note that the necessary resource files are downloaded in the build script and compiled into the binary.
+
 ## library
 
 want to do more with packet parsing? check out the
