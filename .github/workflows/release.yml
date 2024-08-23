@@ -13,6 +13,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: moonrepo/setup-rust@v1
+      - name: Install toml-cli
+        run: cargo install toml-cli
+      - name: Update Cargo.toml with new version
+        # piping the output of toml-cli directly into the file will cause the file to be deleted before being read
+        # by toml-cli. excuse this workaround.
+        run: |
+          toml set Cargo.toml package.version ${{inputs.nextVersion}} > Cargo.toml.tmp
+          rm Cargo.toml
+          mv Cargo.toml.tmp Cargo.toml
+          cargo generate-lockfile
       - name: Download npcap sdk
         run: curl --silent --show-error --fail -o ./npcap-sdk.zip "https://npcap.com/dist/npcap-sdk-1.13.zip"
       - name: Extract npcap x64 libs
@@ -21,6 +31,14 @@ jobs:
           unzip -p npcap-sdk.zip Lib/x64/wpcap.lib > wpcap.lib
       - name: Build Windows exe
         run: cargo build --release
+      - name: Push updated version
+        run: |
+          git config user.name "reliquary-archiver bot"
+          git config user.email "reliquary-archiver.bot@users.noreply.github.com"
+          git add Cargo.toml
+          git add Cargo.lock
+          git commit -m "[skip ci] bump version to v${{inputs.nextVersion}}"
+          git push origin main
       - uses: actions/upload-artifact@v4
         with:
           name: reliquary-archiver_x64
@@ -33,24 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: moonrepo/setup-rust@v1
-      - name: Install toml-cli
-        run: cargo install toml-cli
-      - name: Update Cargo.toml with new version
-        # piping the output of toml-cli directly into the file will cause the file to be deleted before being read
-        # by toml-cli. excuse this workaround.
-        run: |
-          toml set Cargo.toml package.version ${{inputs.nextVersion}} > Cargo.toml.tmp
-          rm Cargo.toml
-          mv Cargo.toml.tmp Cargo.toml
-          cargo generate-lockfile
-      - name: Push updated version
-        run: |
-          git config user.name "reliquary-archiver bot"
-          git config user.email "reliquary-archiver.bot@users.noreply.github.com"
-          git add Cargo.toml
-          git add Cargo.lock
-          git commit -m "[skip ci] bump version to v${{inputs.nextVersion}}"
-          git push origin main
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
