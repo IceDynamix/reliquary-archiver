@@ -32,6 +32,7 @@ impl Database {
         // i *would* create a fn load_local_config<T: ResourceMap + DeserializeOwned>()
         // to avoid duplicating the json file names by using T::get_json_name,
         // but concat!() only takes string literals. it doesn't even take `&'static str`!!
+        // https://github.com/rust-lang/rust/issues/53749
         Database {
             avatar_config: Self::parse_json(include_str!(concat!(
                 env!("OUT_DIR"),
