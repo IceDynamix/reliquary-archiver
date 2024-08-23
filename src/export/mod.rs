@@ -1,5 +1,6 @@
 use reliquary::network::GameCommand;
 
+pub mod database;
 pub mod fribbels;
 
 pub trait Exporter {

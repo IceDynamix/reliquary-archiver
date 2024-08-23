@@ -5,13 +5,14 @@ use std::time::Duration;
 
 use clap::Parser;
 use pcap::{ConnectionStatus, Device, Error};
-use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use tracing::{debug, error, info, instrument, trace, warn};
-use tracing_subscriber::{EnvFilter, Layer, prelude::*, Registry};
+use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
+use reliquary_archiver::export::database::Database;
+use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::fribbels::{Database, OptimizerExporter};
 
 const PACKET_FILTER: &str = "udp portrange 23301-23302";
 
@@ -42,8 +43,8 @@ fn main() {
 
     debug!(?args);
 
-    let database = Database::new_from_online();
-    let sniffer = GameSniffer::new().set_initial_keys(database.keys().clone());
+    let database = Database::new();
+    let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
     let exporter = OptimizerExporter::new(database);
 
     let export = match args.pcap {
@@ -54,7 +55,10 @@ fn main() {
     if let Some(export) = export {
         let file = File::create(&args.output).unwrap();
         serde_json::to_writer_pretty(&file, &export).unwrap();
-        info!("wrote output to {}", &args.output.canonicalize().unwrap().display());
+        info!(
+            "wrote output to {}",
+            &args.output.canonicalize().unwrap().display()
+        );
     } else {
         warn!("skipped writing output");
     }
