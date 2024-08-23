@@ -12,6 +12,7 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
   - when installing on windows, make sure to enable the "winpcap api-compatible mode".
     if this is grayed out for you, see [here](https://github.com/IceDynamix/reliquary-archiver/issues/2)
     for more details
+    - if you use wifi, enable `Support raw 802.11 traffic (and monitor mode) for wireless adapters`
   - when building on Linux, set the `CAP_NET_RAW` capability on the resulting executable (via [pcap(3pcap)](https://man.archlinux.org/man/pcap.3pcap#Under~5))
     ```sh
     sudo setcap CAP_NET_RAW=+ep target/release/reliquary-archiver
@@ -24,6 +25,8 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 - start the game
 - if successful, the archiver should output a file to `archiver_output.json`
 ![archiver visual guide](./archiver_visual_guide.gif)
+
+you might have to disable your VPN or enable/disable wifi!
 
 ### cli usage
 
@@ -56,7 +59,9 @@ to output logs to a file, provide `--log-path <path>`. file logs will always be 
 
 note that the necessary resource files are downloaded in the build script and compiled into the binary.
 
-## library
+## related projects
 
 want to do more with packet parsing? check out the
 [standalone library](https://github.com/IceDynamix/reliquary) the archiver is built on top off!
+
+looking to export your achievements? check out [stardb-exporter](https://github.com/juliuskreutz/stardb-exporter)!
