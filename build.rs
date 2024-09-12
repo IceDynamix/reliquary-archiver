@@ -15,6 +15,7 @@ const KEY_URL: &str =
 
 fn main() {
     println!("cargo::rerun-if-changed=Cargo.toml");
+    println!("cargo::rerun-if-changed=Cargo.lock");
 
     download_config::<AvatarConfigMap>();
     download_config::<AvatarSkillTreeConfigMap>();
