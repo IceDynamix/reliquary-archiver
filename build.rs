@@ -11,7 +11,7 @@ use ureq::serde_json::Value;
 
 const BASE_RESOURCE_URL: &str = "https://raw.githubusercontent.com/Dimbreath/StarRailData/master";
 const KEY_URL: &str =
-    "https://raw.githubusercontent.com/juliuskreutz/stardb-exporter/master/keys.json";
+    "https://raw.githubusercontent.com/juliuskreutz/stardb-exporter/master/hsr_keys.json";
 
 fn main() {
     println!("cargo::rerun-if-changed=Cargo.toml");
