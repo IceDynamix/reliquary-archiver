@@ -9,9 +9,9 @@ use reliquary::resource::excel::{
 use reliquary::resource::ResourceMap;
 use ureq::serde_json::Value;
 
-const BASE_RESOURCE_URL: &str = "https://raw.githubusercontent.com/Dimbreath/StarRailData/master";
+const BASE_RESOURCE_URL: &str = "https://gitlab.com/Dimbreath/turnbasedgamedata/-/raw/main";
 const KEY_URL: &str =
-    "https://raw.githubusercontent.com/juliuskreutz/stardb-exporter/master/hsr_keys.json";
+    "https://raw.githubusercontent.com/tamilpp25/Iridium-SR/refs/heads/main/data/Keys.json";
 
 fn main() {
     println!("cargo::rerun-if-changed=Cargo.toml");
