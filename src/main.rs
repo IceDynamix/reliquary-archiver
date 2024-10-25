@@ -204,7 +204,7 @@ where
                         if commands.is_empty() {
                             invalid += 1;
 
-                            if invalid >= 50 && !warning_sent {
+                            if invalid >= 100 && !warning_sent {
                                 error!(
                                     "received a large number of packets that could not be parsed"
                                 );
@@ -215,7 +215,7 @@ where
                                 warning_sent = true;
                             }
                         } else {
-                            invalid -= 10;
+                            invalid = 0.max(invalid - 1);
 
                             for command in commands {
                                 if command.command_id == PlayerLoginScRsp {
