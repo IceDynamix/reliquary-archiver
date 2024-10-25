@@ -204,7 +204,7 @@ where
                         if commands.is_empty() {
                             invalid += 1;
 
-                            if invalid >= 25 && !warning_sent {
+                            if invalid >= 50 && !warning_sent {
                                 error!(
                                     "received a large number of packets that could not be parsed"
                                 );
