@@ -125,13 +125,16 @@ where
             if commands.is_empty() {
                 invalid += 1;
 
-                if invalid >= 50 {
-                    error!("received 50 packets that could not be segmented");
-                    warn!("you probably started capturing when you were already in-game");
-                    warn!("the capture needs to start on the main menu screen");
-                    warn!("log out then log back in");
-                    return None;
-                }
+                // FIXME: disable the invalid packet checks until the situation in
+                // reliquary lib has been resolved
+                
+                // if invalid >= 50 {
+                //     error!("received 50 packets that could not be segmented");
+                //     warn!("you probably started capturing when you were already in-game");
+                //     warn!("the capture needs to start on the main menu screen");
+                //     warn!("log out then log back in");
+                //     return None;
+                // }
             } else {
                 invalid = 0.max(invalid - 1);
                 for command in commands {
@@ -203,17 +206,20 @@ where
                     Some(GamePacket::Commands(commands)) => {
                         if commands.is_empty() {
                             invalid += 1;
-
-                            if invalid >= 100 && !warning_sent {
-                                error!(
-                                    "received a large number of packets that could not be parsed"
-                                );
-                                warn!(
-                                    "you probably started capturing when you were already in-game"
-                                );
-                                warn!("please log out and log back in");
-                                warning_sent = true;
-                            }
+                            
+                            // FIXME: disable the invalid packet checks until the situation in
+                            // reliquary lib has been resolved
+                            
+                            // if invalid >= 100 && !warning_sent {
+                            //     error!(
+                            //         "received a large number of packets that could not be parsed"
+                            //     );
+                            //     warn!(
+                            //         "you probably started capturing when you were already in-game"
+                            //     );
+                            //     warn!("please log out and log back in");
+                            //     warning_sent = true;
+                            // }
                         } else {
                             invalid = 0.max(invalid - 1);
 
