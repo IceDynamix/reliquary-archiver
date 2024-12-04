@@ -7,7 +7,7 @@ use clap::Parser;
 use pcap::{ConnectionStatus, Device, Error};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
-use tracing::{debug, error, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, trace, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
 use reliquary_archiver::export::database::Database;
@@ -182,7 +182,7 @@ where
     drop(tx);
 
     let mut invalid = 0;
-    let mut warning_sent = false;
+    // let mut warning_sent = false;
 
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
     info!("listening with a timeout of {} seconds...", args.timeout);
