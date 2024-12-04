@@ -14,8 +14,8 @@ const KEY_URL: &str =
     "https://raw.githubusercontent.com/tamilpp25/Iridium-SR/refs/heads/main/data/Keys.json";
 
 fn main() {
-    println!("cargo::rerun-if-changed=Cargo.toml");
-    println!("cargo::rerun-if-changed=Cargo.lock");
+    println!("cargo:rerun-if-changed=Cargo.toml");
+    println!("cargo:rerun-if-changed=Cargo.lock");
 
     download_config::<AvatarConfigMap>();
     download_config::<AvatarSkillTreeConfigMap>();
