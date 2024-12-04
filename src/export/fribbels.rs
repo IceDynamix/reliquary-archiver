@@ -14,7 +14,7 @@ use reliquary::network::gen::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::gen::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::gen::proto::GetBagScRsp::GetBagScRsp;
 use reliquary::network::gen::proto::GetMultiPathAvatarInfoScRsp::GetMultiPathAvatarInfoScRsp;
-use reliquary::network::gen::proto::MultiPathAvatarInfo::MultiPathAvatarInfo;
+use reliquary::network::gen::proto::MultiPathAvatarTypeInfo::MultiPathAvatarTypeInfo;
 use reliquary::network::gen::proto::MultiPathAvatarType::MultiPathAvatarType;
 use reliquary::network::gen::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::gen::proto::Relic::Relic as ProtoRelic;
@@ -118,7 +118,7 @@ impl OptimizerExporter {
 
     pub fn add_multipath_characters(&mut self, characters: GetMultiPathAvatarInfoScRsp) {
         let mut characters: Vec<Character> = characters
-            .multi_path_avatar_info_list
+            .multi_path_avatar_type_info_list
             .iter()
             .filter_map(|char| export_proto_multipath_character(&self.database, char))
             .collect();
@@ -484,7 +484,7 @@ fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Chara
 
 fn export_proto_multipath_character(
     db: &Database,
-    proto: &MultiPathAvatarInfo,
+    proto: &MultiPathAvatarTypeInfo,
 ) -> Option<Character> {
     let id = proto.avatar_id.value() as u32;
     let name = db.lookup_avatar_name(id)?;
@@ -495,7 +495,7 @@ fn export_proto_multipath_character(
 
     trace!(character = name, path, "detected");
 
-    let (skills, traces) = export_skill_tree(db, &proto.multi_path_skill_tree);
+    let (skills, traces) = export_skill_tree(db, &proto.skilltree_list);
 
     // TODO: figure out where level/ascension is stored
     Some(Character {
