@@ -15,7 +15,7 @@ base64 = "0.22.1"
 clap = { version = "4.5.17", features = ["derive"] }
 color-eyre = "0.6.3"
 pcap = "2.2.0"
-protobuf = "~3.4.0" # match the protobuf version used in reliquary-codegen
+protobuf = "~3.4.0"                                                             # match the protobuf version used in reliquary-codegen
 serde = { version = "1.0.210", features = ["derive"] }
 serde_json = "1.0.128"
 tracing = "0.1.40"
@@ -27,7 +27,13 @@ reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v5.1.0" }
 ureq = { version = "2.10.1", features = ["json"] }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v5.1.0" }
 
+[profile.dev]
+# theres a field in the kcp protocol that hyv uses differently from the default implementation
+# (some kind of timestamp), except that i don't know what it is exactly and i havent bothered
+# to circumvent the addition that happens in the kcp library
+overflow-checks = false
+
 [profile.release]
-opt-level = "z"  # optimize for size
+opt-level = "z"         # optimize for size
 lto = true
-overflow-checks = false     # Disable integer overflow checks.
+overflow-checks = false # see comment above
