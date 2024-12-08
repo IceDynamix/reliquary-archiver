@@ -10,6 +10,13 @@ use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use tracing::{debug, info, instrument, trace, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
+#[cfg(windows)] use {
+    std::env,
+    std::process::Command,
+    self_update::cargo_crate_version,
+    tracing::error,
+};
+
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
@@ -33,6 +40,12 @@ struct Args {
     /// Path to output log to
     #[arg(short, long)]
     log_path: Option<PathBuf>,
+    /// Don't check for updates, only applicable on Windows
+    #[arg(long)]
+    no_update: bool,
+    /// Github Auth token to use when checking for updates, only applicable on Windows
+    #[arg(long)]
+    auth_token: Option<String>,
 }
 
 fn main() {
@@ -42,6 +55,15 @@ fn main() {
     tracing_init(&args);
 
     debug!(?args);
+
+    // Only self update on Windows, since that's the only platform we ship releases for
+    #[cfg(windows)] {
+        if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
+            if let Err(e) = update(args.auth_token.as_deref()) {
+                error!("Failed to update: {}", e);
+            }
+        }
+    }
 
     let database = Database::new();
     let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
@@ -69,6 +91,45 @@ fn main() {
 
     info!("press enter to close");
     std::io::stdin().read_line(&mut String::new()).unwrap();
+}
+
+#[cfg(windows)]
+fn update(auth_token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+    info!("checking for updates");
+
+    let mut update_builder = self_update::backends::github::Update::configure();
+
+    update_builder
+        .repo_owner("IceDynamix")
+        .repo_name("reliquary-archiver")
+        .bin_name("reliquary-archiver")
+        .target("x64")
+        .show_download_progress(true)
+        .show_output(false)
+        .current_version(cargo_crate_version!());
+
+    if let Some(token) = auth_token {
+        update_builder.auth_token(token);
+    }
+
+    let status = update_builder.build()?.update()?;
+
+    if status.updated() {
+        info!("updated to {}", status.version());
+
+        let current_exe = env::current_exe();
+        let mut command = Command::new(current_exe?);
+        command.args(env::args().skip(1)).env("NO_SELF_UPDATE", "1");
+
+        command.spawn().and_then(|mut c| c.wait())?;
+
+        // Stop running the old version
+        std::process::exit(0);
+    } else {
+        info!("already up-to-date");
+    }
+
+    Ok(())
 }
 
 fn tracing_init(args: &Args) {
