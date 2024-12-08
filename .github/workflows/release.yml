@@ -59,7 +59,7 @@ jobs:
           name: reliquary-archiver_x64
           path: x64
       - name: Append version to exe
-        run: mv x64/reliquary-archiver.exe ./reliquary-archiver_x64_v${{inputs.nextVersion}}.exe
+        run: mv x64/reliquary-archiver.exe ./reliquary-archiver_x64.exe
       - name: Create and push version tag
         run: |
           git tag v${{inputs.nextVersion}}
