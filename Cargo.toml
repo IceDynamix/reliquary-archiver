@@ -23,6 +23,9 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = { version = "2.12.1" }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v6.2.0" }
 
+[target.'cfg(windows)'.dependencies]
+self_update = "0.41.0"
+
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v6.2.0" }
