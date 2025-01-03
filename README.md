@@ -9,22 +9,23 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 ## run
 
 - requires [npcap](https://npcap.com/) (windows) or `libpcap` (linux)
-  - when installing on windows, make sure to enable the "winpcap api-compatible mode".
-    if this is grayed out for you, see [here](https://github.com/IceDynamix/reliquary-archiver/issues/2)
-    for more details
-    - if you use wifi, enable `Support raw 802.11 traffic (and monitor mode) for wireless adapters`
-  - when building on Linux, set the `CAP_NET_RAW` capability on the resulting executable (via [pcap(3pcap)](https://man.archlinux.org/man/pcap.3pcap#Under~5))
-    ```sh
-    sudo setcap CAP_NET_RAW=+ep target/release/reliquary-archiver
-    ```
+    - when installing on windows, make sure to enable the "winpcap api-compatible mode".
+      if this is grayed out for you, see [here](https://github.com/IceDynamix/reliquary-archiver/issues/2)
+      for more details
+        - if you use wifi, enable `Support raw 802.11 traffic (and monitor mode) for wireless adapters`
+    - when building on Linux, set the `CAP_NET_RAW` capability on the resulting executable (
+      via [pcap(3pcap)](https://man.archlinux.org/man/pcap.3pcap#Under~5))
+      ```sh
+      sudo setcap CAP_NET_RAW=+ep target/release/reliquary-archiver
+      ```
 - download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
 - **Launch the game and get to this screen. Do not go into the game yet**
-![main menu start screen](./hsr_hyperdrive.jpg)
+  ![main menu start screen](./hsr_hyperdrive.jpg)
 - run the archiver executable and wait until it says "listening with a timeout"
-![archiver listening for timeout](./listening_for_timeout.png)
+  ![archiver listening for timeout](./listening_for_timeout.png)
 - start the game
 - if successful, the archiver should output a file to `archiver_output.json`
-![archiver visual guide](./archiver_visual_guide.gif)
+  ![archiver visual guide](./archiver_visual_guide.gif)
 
 you might have to disable your VPN or enable/disable wifi!
 
@@ -45,19 +46,21 @@ Options:
 ```
 
 to customize logging, either
+
 - set the verbose flags
-- or set `RUST_LOG` env variable to customize logging, see [here](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives)
+- or set `RUST_LOG` env variable to customize logging,
+  see [here](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives)
 
 to output logs to a file, provide `--log-path <path>`. file logs will always be trace-level.
 
 ## build from source
 
 - follow instructions [here](https://github.com/rust-pcap/pcap?tab=readme-ov-file#building)
-  - for me on windows, adding the `Packet.lib` and `wpcap.lib` from the sdk (check the x64 or arm dir)
-    to this directory was enough to link successfully
+    - for me on windows, adding the `Packet.lib` and `wpcap.lib` from the sdk (check the x64 or arm dir)
+      to this directory was enough to link successfully
 - `cargo build` / `cargo run`
 
-note that the necessary resource files are downloaded in the build script and compiled into the binary.
+note that the necessary resource files are downloaded in the build script (`build.rs`) and compiled into the binary.
 
 ## related projects
 
