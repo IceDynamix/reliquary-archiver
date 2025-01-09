@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Mutex};
 use std::time::Duration;
 
+use chrono::Local;
 use clap::Parser;
 use pcap::{ConnectionStatus, Device, Error};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
@@ -25,9 +26,9 @@ const PACKET_FILTER: &str = "udp portrange 23301-23302";
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(default_value = "archive_output.json")]
-    /// Path to output .json file to
-    output: PathBuf,
+    #[arg()]
+    /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
+    output: Option<PathBuf>,
     /// Read packets from .pcap file instead of capturing live packets
     #[arg(long)]
     pcap: Option<PathBuf>,
@@ -75,11 +76,15 @@ fn main() {
     };
 
     if let Some(export) = export {
-        let file = File::create(&args.output).unwrap();
+        let output_file = match args.output {
+            Some(out) => out,
+            _ => PathBuf::from(Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string()),
+        };
+        let file = File::create(&output_file).unwrap();
         serde_json::to_writer_pretty(&file, &export).unwrap();
         info!(
             "wrote output to {}",
-            &args.output.canonicalize().unwrap().display()
+            output_file.canonicalize().unwrap().display()
         );
     } else {
         warn!("skipped writing output");

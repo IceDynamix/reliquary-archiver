@@ -35,14 +35,16 @@ you might have to disable your VPN or enable/disable wifi!
 Usage: reliquary-archiver.exe [OPTIONS] [OUTPUT]
 
 Arguments:
-  [OUTPUT]  Path to output .json file to [default: archive_output.json]
+  [OUTPUT]  Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
 
 Options:
-      --pcap <PCAP>          Read packets from .pcap file instead of capturing live packets
-      --timeout <TIMEOUT>    How long to wait in seconds until timeout is triggered (for live capture) [default: 120]
-  -v, --verbose...           How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
-  -l, --log-path <LOG_PATH>  Path to output log to
-  -h, --help                 Print help
+      --pcap <PCAP>              Read packets from .pcap file instead of capturing live packets
+      --timeout <TIMEOUT>        How long to wait in seconds until timeout is triggered for live captures [default: 120]
+  -v, --verbose...               How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
+  -l, --log-path <LOG_PATH>      Path to output log to
+      --no-update                Don't check for updates, only applicable on Windows
+      --auth-token <AUTH_TOKEN>  Github Auth token to use when checking for updates, only applicable on Windows
+  -h, --help                     Print help
 ```
 
 to customize logging, either
