@@ -215,7 +215,7 @@ where
         }
     }
 
-    Some(exporter.export())
+    exporter.export()
 }
 
 #[instrument(skip_all)]
@@ -318,7 +318,7 @@ where
         }
     }
 
-    Some(exporter.export())
+    exporter.export()
 }
 
 #[instrument(skip_all, fields(device = device.desc))]

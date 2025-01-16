@@ -14,8 +14,8 @@ use reliquary::network::gen::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::gen::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::gen::proto::GetBagScRsp::GetBagScRsp;
 use reliquary::network::gen::proto::GetMultiPathAvatarInfoScRsp::GetMultiPathAvatarInfoScRsp;
-use reliquary::network::gen::proto::MultiPathAvatarTypeInfo::MultiPathAvatarTypeInfo;
 use reliquary::network::gen::proto::MultiPathAvatarType::MultiPathAvatarType;
+use reliquary::network::gen::proto::MultiPathAvatarTypeInfo::MultiPathAvatarTypeInfo;
 use reliquary::network::gen::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::gen::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::gen::proto::RelicAffix::RelicAffix;
@@ -208,6 +208,15 @@ impl Exporter for OptimizerExporter {
         }
     }
 
+    fn is_empty(&self) -> bool {
+        self.trailblazer.is_none()
+            && self.uid.is_none()
+            && self.relics.is_empty()
+            && self.characters.is_empty()
+            && self.multipath_characters.is_empty()
+            && self.light_cones.is_empty()
+    }
+
     fn is_finished(&self) -> bool {
         self.trailblazer.is_some()
             && self.uid.is_some()
@@ -218,8 +227,13 @@ impl Exporter for OptimizerExporter {
     }
 
     #[instrument(skip_all)]
-    fn export(mut self) -> Self::Export {
+    fn export(mut self) -> Option<Self::Export> {
         info!("exporting collected data");
+
+        if self.is_empty() {
+            warn!("no data was recorded");
+            return None;
+        }
 
         if self.trailblazer.is_none() {
             warn!("trailblazer gender was not recorded");
@@ -237,17 +251,17 @@ impl Exporter for OptimizerExporter {
             warn!("light cones were not recorded");
         }
 
-        if self.multipath_characters.is_empty() {
-            warn!("multipath characters were not recorded");
-        }
-
         if self.characters.is_empty() {
             warn!("characters were not recorded");
         }
 
-        self.finalize_multipath_characters();
+        if self.multipath_characters.is_empty() {
+            warn!("multipath characters were not recorded");
+        } else {
+            self.finalize_multipath_characters();
+        }
 
-        Export {
+        let export = Export {
             source: "reliquary_archiver",
             build: env!("CARGO_PKG_VERSION"),
             version: 4,
@@ -262,7 +276,9 @@ impl Exporter for OptimizerExporter {
                 .into_iter()
                 .chain(self.multipath_characters)
                 .collect(),
-        }
+        };
+
+        Some(export)
     }
 }
 
