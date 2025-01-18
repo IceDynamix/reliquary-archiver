@@ -484,7 +484,7 @@ fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Chara
 
     debug!(character = name, level, eidolon, "detected");
 
-    let (skills, traces) = export_skill_tree(db, &proto.skilltree_list);
+    let (skills, traces, memosprite) = export_skill_tree(db, &proto.skilltree_list);
 
     Some(Character {
         id: id.to_string(),
@@ -495,6 +495,7 @@ fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Chara
         eidolon,
         skills,
         traces,
+        memosprite,
     })
 }
 
@@ -511,7 +512,7 @@ fn export_proto_multipath_character(
 
     trace!(character = name, path, "detected");
 
-    let (skills, traces) = export_skill_tree(db, &proto.skilltree_list);
+    let (skills, traces, memosprite) = export_skill_tree(db, &proto.skilltree_list);
 
     // TODO: figure out where level/ascension is stored
     Some(Character {
@@ -523,6 +524,7 @@ fn export_proto_multipath_character(
         eidolon: proto.rank,
         skills,
         traces,
+        memosprite,
     })
 }
 
@@ -537,6 +539,7 @@ fn avatar_path_lookup(db: &Database, avatar_id: u32) -> Option<&'static str> {
         "Warrior" => Some("Destruction"),
         "Shaman" => Some("Harmony"),
         "Priest" => Some("Abundance"),
+        "Memory" => Some("Remembrance"),
         _ => {
             debug!(?avatar_base_type, "unknown path");
             None
@@ -544,7 +547,7 @@ fn avatar_path_lookup(db: &Database, avatar_id: u32) -> Option<&'static str> {
     }
 }
 
-fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces) {
+fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces, Option<Memosprite>) {
     let mut skills = Skills {
         basic: 0,
         skill: 0,
@@ -566,6 +569,11 @@ fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces
         stat_8: false,
         stat_9: false,
         stat_10: false,
+    };
+
+    let mut memosprite = Memosprite {
+        skill: 0,
+        talent: 0,
     };
 
     for skill in proto.iter().filter(|s| s.point_id != 0) {
@@ -658,6 +666,14 @@ fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces
                 trace!("detected minor trace 10");
                 traces.stat_10 = true;
             }
+            "Point19" => {
+                trace!("detected memosprite skill trace");
+                memosprite.skill = level;
+            }
+            "Point20" => {
+                trace!("detected memosprite talent trace");
+                memosprite.talent = level;
+            }
 
             _ => {
                 warn!(anchor = skill_tree_config.Anchor, "unknown point anchor");
@@ -666,7 +682,7 @@ fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces
         }
     }
 
-    (skills, traces)
+    (skills, traces, memosprite.if_present())
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -679,6 +695,8 @@ pub struct Character {
     pub eidolon: u32,
     pub skills: Skills,
     pub traces: Traces,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memosprite: Option<Memosprite>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -704,4 +722,20 @@ pub struct Traces {
     pub stat_8: bool,
     pub stat_9: bool,
     pub stat_10: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct Memosprite {
+    pub skill: u32,
+    pub talent: u32,
+}
+
+impl Memosprite {
+    fn if_present(self) -> Option<Memosprite> {
+        if self.skill == 0 && self.talent == 0 {
+            None
+        } else {
+            Some(self)
+        }
+    }
 }
