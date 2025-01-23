@@ -26,6 +26,7 @@ reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v9.0.1" }
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
+pktmon = "0.1.3"
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
@@ -41,3 +42,6 @@ overflow-checks = false
 opt-level = "z"         # optimize for size
 lto = true
 overflow-checks = false # see comment above
+
+[features]
+pktmon = []
