@@ -352,7 +352,12 @@ fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Su
 
     trace!(key, value, "detected substat");
 
-    Some(Substat { key, value })
+    Some(Substat {
+        key,
+        value,
+        count: substat.cnt,
+        step: substat.step,
+    })
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -374,6 +379,8 @@ pub struct Relic {
 pub struct Substat {
     key: String,
     value: f32,
+    count: u32,
+    step: u32,
 }
 
 fn slot_type_to_export(s: &str) -> &'static str {
