@@ -1,14 +1,15 @@
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::{mpsc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use capture::PCAP_FILTER;
 use chrono::Local;
 use clap::Parser;
-use pcap::{ConnectionStatus, Device, Error};
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
 #[cfg(windows)] use {
@@ -22,7 +23,7 @@ use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 
-const PACKET_FILTER: &str = "udp portrange 23301-23302";
+mod capture;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -186,7 +187,7 @@ where
     let mut capture =
         pcap::Capture::from_file(args.pcap.as_ref().unwrap()).expect("could not read pcap file");
 
-    capture.filter(PACKET_FILTER, false).unwrap();
+    capture.filter(PCAP_FILTER, false).unwrap();
 
     let mut invalid = 0;
 
@@ -228,29 +229,23 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
 where
     E: Exporter,
 {
-    let (tx, rx) = mpsc::channel();
-    let mut join_handles = Vec::new();
+    let abort_signal = Arc::new(AtomicBool::new(false));
 
-    // we need to specify a specific network device when using pcap to capture network packets.
-    // to lessen the burden on the user, we instead just capture *all* valid network devices
-    // by capturing each on a different thread and sending the captured packets to a mpsc channel
-    for device in Device::list()
-        .unwrap()
-        .into_iter()
-        .filter(|d| matches!(d.flags.connection_status, ConnectionStatus::Connected))
-        .filter(|d| !d.addresses.is_empty())
-        .filter(|d| !d.flags.is_loopback())
-    {
-        let tx = tx.clone();
-        let handle = std::thread::spawn(move || capture_device(device, tx));
-        join_handles.push(handle);
-    }
+    #[cfg(windows)]
+    let rx = {
+        if cfg!(feature = "pktmon") {
+            debug!("using pktmon");
+            capture::listen_on_all::<capture::pktmon::PktmonBackend>(abort_signal.clone())
+        } else {
+            debug!("using pcap");
+            capture::listen_on_all::<capture::pcap::PcapBackend>(abort_signal.clone())
+        }
+    };
 
-    // we clone tx into every thread, but at the end the original tx still remains.
-    // rx.recv will continue to listen while at least one tx is still alive.
-    // we drop the original tx to make sure that there are no tx alive after all threads
-    // have dropped theirs
-    drop(tx);
+    #[cfg(not(windows))]
+    let rx = capture::listen_on_all::<capture::pcap::PcapBackend>(abort_signal.clone());
+
+    let (rx, join_handles) = rx.expect("Failed to start packet capture");
 
     let mut invalid = 0;
     // let mut warning_sent = false;
@@ -260,8 +255,8 @@ where
 
     'recv: loop {
         match rx.recv_timeout(Duration::from_secs(args.timeout)) {
-            Ok(data) => {
-                match sniffer.receive_packet(data.to_vec()) {
+            Ok(packet) => {
+                match sniffer.receive_packet(packet.data) {
                     Some(GamePacket::Connection(c)) => {
                         match c {
                             ConnectionPacket::HandshakeEstablished => {
@@ -323,59 +318,10 @@ where
         }
     }
 
-    exporter.export()
-}
-
-#[instrument(skip_all, fields(device = device.desc))]
-fn capture_device(device: Device, tx: mpsc::Sender<Vec<u8>>) {
-    let mut capture = pcap::Capture::from_device(device)
-        .unwrap()
-        .immediate_mode(true)
-        .promisc(true)
-        .timeout(0) // explicitly disable timeout??
-        .open()
-        .unwrap();
-
-    capture.filter(PACKET_FILTER, true).unwrap();
-
-    debug!("listening");
-
-    let mut has_captured = false;
-
-    loop {
-        match capture.next_packet() {
-            Ok(packet) => {
-                trace!("captured packet");
-                if let Err(e) = tx.send(packet.data.to_vec()) {
-                    debug!("channel closed: {e}");
-                    break;
-                }
-
-                has_captured = true;
-            }
-            Err(e) => {
-                // we only really care about capture errors on devices that we already know
-                // are relevant (have sent packets before) and send those errors on warn level.
-                //
-                // if a capture errors right after initialization or on a device that did
-                // not receive any relevant packets, error is less useful to the user,
-                // so we lower the logging level
-
-                if !has_captured {
-                    debug!(?e);
-                    break;
-                } else if matches!(e, Error::TimeoutExpired) {
-                    // somehow a timeout error can still happen even if i explicitly
-                    // disable the timeout?? why :sob:
-                    debug!(?e);
-                    continue;
-                } else {
-                    warn!(?e);
-                    break;
-                }
-            }
-        }
+    abort_signal.store(true, Ordering::Relaxed);
+    for handle in join_handles {
+        handle.join().expect("Failed to join capture thread");
     }
 
-    debug!("stop listening");
+    exporter.export()
 }
