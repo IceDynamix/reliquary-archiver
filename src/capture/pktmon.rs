@@ -1,7 +1,5 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
-#[cfg(windows)]
-
 use super::*;
 use mpsc::RecvTimeoutError;
 use ::pktmon::{Capture, filter::{PktMonFilter, TransportProtocol}};

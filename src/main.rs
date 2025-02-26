@@ -31,6 +31,7 @@ struct Args {
     /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
     output: Option<PathBuf>,
     /// Read packets from .pcap file instead of capturing live packets
+    #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,
     /// How long to wait in seconds until timeout is triggered for live captures
@@ -74,10 +75,14 @@ fn main() {
     let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
     let exporter = OptimizerExporter::new(database);
 
+    #[cfg(feature = "pcap")]
     let export = match args.pcap {
         Some(_) => file_capture(&args, exporter, sniffer),
         None => live_capture(&args, exporter, sniffer),
     };
+
+    #[cfg(not(feature = "pcap"))]
+    let export = live_capture(&args, exporter, sniffer);
 
     if let Some(export) = export {
         let output_file = match args.output {
@@ -179,6 +184,7 @@ fn tracing_init(args: &Args) {
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
 
+#[cfg(feature = "pcap")]
 #[instrument(skip_all)]
 fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
 where
@@ -231,14 +237,23 @@ where
 {
     let abort_signal = Arc::new(AtomicBool::new(false));
 
+    {
+        let abort_signal = abort_signal.clone();
+        if let Err(e) = ctrlc::set_handler(move || {
+            abort_signal.store(true, Ordering::Relaxed);
+        }) {
+            error!("Failed to set Ctrl-C handler: {}", e);
+        }
+    }
+
     #[cfg(windows)]
     let rx = {
-        if cfg!(feature = "pktmon") {
-            debug!("using pktmon");
-            capture::listen_on_all::<capture::pktmon::PktmonBackend>(abort_signal.clone())
-        } else {
-            debug!("using pcap");
+        #[cfg(feature = "pcap")] {
             capture::listen_on_all::<capture::pcap::PcapBackend>(abort_signal.clone())
+        }
+
+        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
+            capture::listen_on_all::<capture::pktmon::PktmonBackend>(abort_signal.clone())
         }
     };
 

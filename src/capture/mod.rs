@@ -6,8 +6,14 @@ use std::thread::JoinHandle;
 
 use tracing::instrument;
 
-#[cfg(windows)] pub mod pktmon;
+#[cfg(all(windows, feature = "pktmon"))]
+pub mod pktmon;
+
+#[cfg(feature = "pcap")]
 pub mod pcap;
+
+#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
+compile_error!("at least one of the features \"pktmon\" or \"pcap\" must be enabled");
 
 pub const PORT_RANGE: (u16, u16) = (23301, 23302);
 pub const PCAP_FILTER: &str = "udp portrange 23301-23302";
