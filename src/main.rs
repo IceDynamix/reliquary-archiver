@@ -47,6 +47,9 @@ struct Args {
     /// Github Auth token to use when checking for updates, only applicable on Windows
     #[arg(long)]
     auth_token: Option<String>,
+    /// Don't wait for enter to be pressed after capturing
+    #[arg(short, long)]
+    exit_after_capture: bool,
 }
 
 fn main() {
@@ -94,8 +97,10 @@ fn main() {
         info!("wrote logs to {}", log_path.display());
     }
 
-    info!("press enter to close");
-    std::io::stdin().read_line(&mut String::new()).unwrap();
+    if !args.exit_after_capture {
+        info!("press enter to close");
+        std::io::stdin().read_line(&mut String::new()).unwrap();
+    }
 }
 
 #[cfg(windows)]

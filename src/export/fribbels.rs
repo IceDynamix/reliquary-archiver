@@ -484,7 +484,7 @@ fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Chara
 
     debug!(character = name, level, eidolon, "detected");
 
-    let (skills, traces, memosprite) = export_skill_tree(db, &proto.skilltree_list);
+    let (skills, traces, memosprite) = export_skill_tree(db, &proto.avatar_skilltree_list);
 
     Some(Character {
         id: id.to_string(),
@@ -512,7 +512,7 @@ fn export_proto_multipath_character(
 
     trace!(character = name, path, "detected");
 
-    let (skills, traces, memosprite) = export_skill_tree(db, &proto.skilltree_list);
+    let (skills, traces, memosprite) = export_skill_tree(db, &proto.multipath_skilltree_list);
 
     // TODO: figure out where level/ascension is stored
     Some(Character {

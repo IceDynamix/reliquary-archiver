@@ -83,7 +83,7 @@ fn resource_url<T: ResourceMap>() -> String {
 }
 
 fn download_as_json<T: DeserializeOwned>(url: &str) -> T {
-    ureq::get(url).call().unwrap().into_json().unwrap()
+    ureq::get(url).call().unwrap().into_json().expect(format!("Failed to read json from url: {}", url).as_str())
 }
 
 fn write_to_out<T: DeserializeOwned + Serialize>(value: T, file_name: &str) {
