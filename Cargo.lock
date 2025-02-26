@@ -344,9 +344,9 @@ dependencies = [
 
 [[package]]
 name = "etherparse"
-version = "0.16.0"
+version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8d8a704b617484e9d867a0423cd45f7577f008c4068e2e33378f8d3860a6d73"
+checksum = "b14e4ac78394e3ea04edbbc412099cf54f2f52ded51efb79c466a282729399d2"
 dependencies = [
  "arrayvec",
 ]
@@ -1053,9 +1053,9 @@ dependencies = [
 
 [[package]]
 name = "protobuf"
-version = "3.4.0"
+version = "3.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58678a64de2fced2bdec6bca052a6716a0efe692d6e3f53d1bda6a1def64cfc0"
+checksum = "a3a7c64d9bf75b1b8d981124c14c179074e8caa7dfe7b6a12e6222ddcd0c8f72"
 dependencies = [
  "once_cell",
  "protobuf-support",
@@ -1064,9 +1064,9 @@ dependencies = [
 
 [[package]]
 name = "protobuf-support"
-version = "3.4.0"
+version = "3.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e1ed294a835b0f30810e13616b1cd34943c6d1e84a8f3b0dcfe466d256c3e7e7"
+checksum = "b088fd20b938a875ea00843b6faf48579462630015c3788d397ad6a786663252"
 dependencies = [
  "thiserror",
 ]
@@ -1091,15 +1091,18 @@ dependencies = [
 
 [[package]]
 name = "rand_core"
-version = "0.6.4"
+version = "0.9.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0be4795e2f6a28069bec0b5ff3e2ac9bafc99e6a9a7dc3547996c5c816922c"
+checksum = "7a509b1a2ffbe92afab0e55c8fd99dea1c280e8171bd2d88682bb20bc41cbc2c"
+dependencies = [
+ "zerocopy",
+]
 
 [[package]]
 name = "rand_mt"
-version = "4.2.2"
+version = "5.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49e018c6ded60e5252609887c12eb3ca2592e9248c5894a7db3975c8a7a1e2df"
+checksum = "a9375873db1061df25ed185eb584cd8839196db7a43803daa0612c5ae53be5b5"
 dependencies = [
  "rand_core",
 ]
@@ -1151,7 +1154,6 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "reliquary"
 version = "7.0.0"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v7.0.0#7e4f2cfaae2a12bc5d9f63119dd3037d456e3a25"
 dependencies = [
  "base64",
  "etherparse",
@@ -1162,6 +1164,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tracing",
+ "twox-hash",
 ]
 
 [[package]]
@@ -1186,7 +1189,6 @@ dependencies = [
 [[package]]
 name = "reliquary-proc-macro"
 version = "0.1.1"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v7.0.0#7e4f2cfaae2a12bc5d9f63119dd3037d456e3a25"
 dependencies = [
  "quote",
  "syn",
@@ -1725,6 +1727,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
 
 [[package]]
+name = "twox-hash"
+version = "2.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e7b17f197b3050ba473acf9181f7b1d3b66d1cf7356c6cc57886662276e65908"
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2142,6 +2150,26 @@ dependencies = [
  "quote",
  "syn",
  "synstructure",
+]
+
+[[package]]
+name = "zerocopy"
+version = "0.8.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dde3bb8c68a8f3f1ed4ac9221aad6b10cece3e60a8e2ea54a6a2dec806d0084c"
+dependencies = [
+ "zerocopy-derive",
+]
+
+[[package]]
+name = "zerocopy-derive"
+version = "0.8.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eea57037071898bf96a6da35fd626f4f27e9cee3ead2a6c703cf09d472b2e700"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

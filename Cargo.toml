@@ -16,20 +16,20 @@ clap = { version = "4.5.26", features = ["derive"] }
 chrono = "0.4.39"
 color-eyre = "0.6.3"
 pcap = "2.2.0"
-protobuf = "~3.4.0" # match the protobuf version used in reliquary-codegen
+protobuf = "~3.7.1" # match the protobuf version used in reliquary-codegen
 serde = { version = "1.0.217", features = ["derive"] }
 serde_json = "1.0.135"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = { version = "2.12.1" }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v7.0.0" }
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v8.0.0" }
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.41.0"
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v7.0.0" }
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v8.0.0" }
 
 [profile.dev]
 # there's a field in the kcp protocol that hyv uses differently from the default implementation
