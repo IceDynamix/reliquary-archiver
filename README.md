@@ -44,6 +44,7 @@ Options:
   -l, --log-path <LOG_PATH>      Path to output log to
       --no-update                Don't check for updates, only applicable on Windows
       --auth-token <AUTH_TOKEN>  Github Auth token to use when checking for updates, only applicable on Windows
+  -e, --exit-after-capture       Don't wait for enter to be pressed after capturing
   -h, --help                     Print help
 ```
 
