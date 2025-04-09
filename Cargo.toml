@@ -22,14 +22,14 @@ serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = { version = "2.12.1" }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v8.1.0" }
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v9.0.0" }
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v8.1.0" }
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v9.0.0" }
 
 [profile.dev]
 # there's a field in the kcp protocol that hyv uses differently from the default implementation
