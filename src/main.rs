@@ -11,6 +11,7 @@ use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScR
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use tracing::{debug, info, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
+use windows::Win32::UI::Shell::IsUserAnAdmin;
 
 #[cfg(windows)] use {
     std::env,
@@ -199,6 +200,7 @@ where
 
     info!("capturing");
     while let Ok(packet) = capture.next_packet() {
+        info!("received packet: {:?}", packet.data.to_vec());
         if let Some(GamePacket::Commands(commands)) = sniffer.receive_packet(packet.data.to_vec()) {
             if commands.is_empty() {
                 invalid += 1;
@@ -253,7 +255,12 @@ where
         }
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
-            capture::listen_on_all::<capture::pktmon::PktmonBackend>(abort_signal.clone())
+            if unsafe { IsUserAnAdmin().into() } {
+                capture::listen_on_all::<capture::pktmon::PktmonBackend>(abort_signal.clone())
+            } else {
+                warn!("You must run this program as an administrator to capture packets");
+                return None;
+            }
         }
     };
 
@@ -271,6 +278,7 @@ where
     'recv: loop {
         match rx.recv_timeout(Duration::from_secs(args.timeout)) {
             Ok(packet) => {
+                info!("received packet: {:?}", packet.data);
                 match sniffer.receive_packet(packet.data) {
                     Some(GamePacket::Connection(c)) => {
                         match c {
