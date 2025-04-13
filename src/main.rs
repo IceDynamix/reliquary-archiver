@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use chrono::Local;
 use clap::Parser;
-use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use tracing::{debug, info, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
@@ -196,34 +196,23 @@ where
 
     capture.filter(PCAP_FILTER, false).unwrap();
 
-    let mut invalid = 0;
-
     info!("capturing");
     while let Ok(packet) = capture.next_packet() {
         info!("received packet: {:?}", packet.data.to_vec());
-        if let Some(GamePacket::Commands(commands)) = sniffer.receive_packet(packet.data.to_vec()) {
-            if commands.is_empty() {
-                invalid += 1;
-
-                // FIXME: disable the invalid packet checks until the situation in
-                // reliquary lib has been resolved
-                
-                // if invalid >= 50 {
-                //     error!("received 50 packets that could not be segmented");
-                //     warn!("you probably started capturing when you were already in-game");
-                //     warn!("the capture needs to start on the main menu screen");
-                //     warn!("log out then log back in");
-                //     return None;
-                // }
-            } else {
-                invalid = 0.max(invalid - 1);
-                for command in commands {
-                    exporter.read_command(command);
-                }
-
-                if exporter.is_finished() {
-                    info!("retrieved all relevant packets, stop capturing");
-                    break;
+        if let Ok(packets) = sniffer.receive_packet(packet.data.to_vec()) {
+            for packet in packets {
+                match packet {
+                    GamePacket::Commands(command) => {
+                        match command {
+                            Ok(command) => {
+                                exporter.read_command(command);
+                            }
+                            Err(e) => {
+                                warn!(%e);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -269,69 +258,60 @@ where
 
     let (rx, join_handles) = rx.expect("Failed to start packet capture");
 
-    let mut invalid = 0;
-    // let mut warning_sent = false;
-
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
     info!("listening with a timeout of {} seconds...", args.timeout);
 
     'recv: loop {
         match rx.recv_timeout(Duration::from_secs(args.timeout)) {
             Ok(packet) => {
-                info!("received packet: {:?}", packet.data);
                 match sniffer.receive_packet(packet.data) {
-                    Some(GamePacket::Connection(c)) => {
-                        match c {
-                            ConnectionPacket::HandshakeEstablished => {
-                                info!("detected connection established");
-                            }
-                            ConnectionPacket::Disconnected => {
-                                // program is probably going to exit before this happens
-                                // info!("detected connection disconnected");
-                            }
-                            _ => {}
-                        }
-                    }
-                    Some(GamePacket::Commands(commands)) => {
-                        if commands.is_empty() {
-                            invalid += 1;
-                            
-                            // FIXME: disable the invalid packet checks until the situation in
-                            // reliquary lib has been resolved
-                            
-                            // if invalid >= 100 && !warning_sent {
-                            //     error!(
-                            //         "received a large number of packets that could not be parsed"
-                            //     );
-                            //     warn!(
-                            //         "you probably started capturing when you were already in-game"
-                            //     );
-                            //     warn!("please log out and log back in");
-                            //     warning_sent = true;
-                            // }
-                        } else {
-                            invalid = 0.max(invalid - 1);
-
-                            for command in commands {
-                                if command.command_id == PlayerLoginScRsp {
-                                    info!("detected login");
+                    Ok(packets) => {
+                        for packet in packets {
+                            match packet {
+                                GamePacket::Connection(c) => {
+                                    match c {
+                                        ConnectionPacket::HandshakeEstablished => {
+                                            info!("detected connection established");
+                                        }
+                                        ConnectionPacket::Disconnected => {
+                                            // program is probably going to exit before this happens
+                                            // info!("detected connection disconnected");
+                                        }
+                                        _ => {}
+                                    }
                                 }
-
-                                if command.command_id == PlayerLoginFinishScRsp {
-                                    info!("detected login end, assume initialization is finished");
-                                    break 'recv;
+                                GamePacket::Commands(command) => {
+                                    match command {
+                                        Ok(command) => {
+                                            if command.command_id == PlayerLoginScRsp {
+                                                info!("detected login");
+                                            }
+            
+                                            if command.command_id == PlayerLoginFinishScRsp {
+                                                info!("detected login end, assume initialization is finished");
+                                                break 'recv;
+                                            }
+            
+                                            exporter.read_command(command);
+                                        }
+                                        Err(e) => {
+                                            warn!(%e);
+                                            break;
+                                        }
+                                    }
                                 }
-
-                                exporter.read_command(command);
-                            }
-
-                            if exporter.is_finished() {
-                                info!("retrieved all relevant packets, stop listening");
-                                break 'recv;
                             }
                         }
+
+                        if exporter.is_finished() {
+                            info!("retrieved all relevant packets, stop listening");
+                            break 'recv;
+                        }
                     }
-                    _ => {}
+                    Err(e) => {
+                        warn!(%e);
+                        break;
+                    }
                 }
             }
             Err(e) => {
