@@ -15,12 +15,17 @@ pub mod pcap;
 #[cfg(not(any(feature = "pktmon", feature = "pcap")))]
 compile_error!("at least one of the features \"pktmon\" or \"pcap\" must be enabled");
 
+#[cfg(feature = "pktmon")]
 pub const PORT_RANGE: (u16, u16) = (23301, 23302);
+
+#[cfg(feature = "pcap")]
 pub const PCAP_FILTER: &str = "udp portrange 23301-23302";
 
 #[derive(Debug)]
 pub enum CaptureError {
+    #[cfg(feature = "pcap")]
     DeviceError(Box<dyn Error>),
+
     FilterError(Box<dyn Error>),
     CaptureError { has_captured: bool, error: Box<dyn Error> },
     ChannelClosed,
@@ -39,7 +44,9 @@ impl Display for CaptureError {
 impl Error for CaptureError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            #[cfg(feature = "pcap")]
             CaptureError::DeviceError(e) => Some(e.as_ref()),
+
             CaptureError::FilterError(e) => Some(e.as_ref()),
             CaptureError::CaptureError { error, .. } => Some(error.as_ref()),
             _ => None,

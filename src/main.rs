@@ -4,14 +4,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use capture::PCAP_FILTER;
+#[cfg(feature = "pcap")] use capture::PCAP_FILTER;
+
 use chrono::Local;
 use clap::Parser;
 use reliquary::network::gen::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use tracing::{debug, info, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
-use windows::Win32::UI::Shell::IsUserAnAdmin;
 
 #[cfg(windows)] use {
     std::env,
@@ -255,7 +255,7 @@ where
         }
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
-            if unsafe { IsUserAnAdmin().into() } {
+            if unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
                 capture::listen_on_all::<capture::pktmon::PktmonBackend>(abort_signal.clone())
             } else {
                 warn!("You must run this program as an administrator to capture packets");
