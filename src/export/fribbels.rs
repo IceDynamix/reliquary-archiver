@@ -24,6 +24,9 @@ use reliquary::network::command::GameCommand;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, info_span, instrument, trace, warn};
 
+#[cfg(feature = "stream")]
+use crate::websocket;
+
 use crate::export::Exporter;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -52,6 +55,8 @@ pub struct OptimizerExporter {
     characters: Vec<Character>,
     multipath_characters: Vec<Character>,
     multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    #[cfg(feature = "stream")]
+    websocket_tx: Option<websocket::ClientSender>,
 }
 
 impl OptimizerExporter {
@@ -65,6 +70,8 @@ impl OptimizerExporter {
             characters: vec![],
             multipath_characters: vec![],
             multipath_base_avatars: HashMap::new(),
+            #[cfg(feature = "stream")]
+            websocket_tx: None,
         }
     }
 
@@ -80,6 +87,15 @@ impl OptimizerExporter {
             .collect();
 
         info!(num = relics.len(), "found relics");
+        
+        #[cfg(feature = "stream")]
+        if let Some(tx) = &self.websocket_tx {
+            for relic in &relics {
+                let update = websocket::create_update("new_relic", relic.clone());
+                websocket::broadcast_message(tx, update);
+            }
+        }
+        
         self.relics.append(&mut relics);
 
         let mut light_cones: Vec<LightCone> = bag
@@ -163,6 +179,17 @@ impl OptimizerExporter {
         if !relics.is_empty() {
             info!(num = relics.len(), "found updated relics");
             for relic in relics {
+                #[cfg(feature = "stream")]
+                if let Some(tx) = &self.websocket_tx {
+                    let event = if self.relics.iter().any(|r| r._uid == relic._uid) {
+                        "update_relic"
+                    } else {
+                        "new_relic"
+                    };
+                    let update = websocket::create_update(event, relic.clone());
+                    websocket::broadcast_message(tx, update);
+                }
+
                 if let Some(index) = self.relics.iter().position(|r| r._uid == relic._uid) {
                     self.relics[index] = relic;
                 } else {
@@ -191,6 +218,14 @@ impl OptimizerExporter {
         if !sync.del_relic_list.is_empty() {
             info!(num = sync.del_relic_list.len(), "found deleted relics");
             for del_relic in sync.del_relic_list {
+                #[cfg(feature = "stream")]
+                if let Some(tx) = &self.websocket_tx {
+                    if let Some(relic) = self.relics.iter().find(|r| r._uid == del_relic.to_string()) {
+                        let update = websocket::create_update("delete_relic", relic.clone());
+                        websocket::broadcast_message(tx, update);
+                    }
+                }
+
                 if let Some(index) = self.relics.iter().position(|r| r._uid == del_relic.to_string()) {
                     self.relics.remove(index);
                 } else {
@@ -349,6 +384,11 @@ impl Exporter for OptimizerExporter {
 
         Some(export)
     }
+
+    #[cfg(feature = "stream")]
+    fn set_streamer(&mut self, tx: Option<websocket::ClientSender>) {
+        self.websocket_tx = tx;
+    }
 }
 
 fn format_location(avatar_id: u32) -> String {
@@ -429,7 +469,7 @@ fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Su
     })
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Relic {
     pub set_id: String,
     pub name: String,
@@ -444,7 +484,7 @@ pub struct Relic {
     pub _uid: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Substat {
     key: String,
     value: f32,

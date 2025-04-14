@@ -21,6 +21,11 @@ use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
     tracing::error,
 };
 
+#[cfg(feature = "stream")] use {
+    reliquary_archiver::websocket::{self, Update},
+    reliquary_archiver::export::fribbels::Relic,
+};
+
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
@@ -39,7 +44,7 @@ struct Args {
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
-    /// Disable timeout and listen indefinitely, hosts a websocket server on port 49134 to stream relic/lc updates 
+    /// Disable timeout and listen indefinitely, hosts a websocket server on port 49134 to stream relic/lc updates in real-time
     #[cfg(feature = "stream")]
     #[arg(long)]
     stream: bool,
@@ -59,6 +64,10 @@ struct Args {
     #[arg(short, long)]
     exit_after_capture: bool,
 }
+
+// Default port for the websocket server
+#[cfg(feature = "stream")]
+const WEBSOCKET_PORT: u16 = 49134;
 
 fn main() {
     color_eyre::install().unwrap();
@@ -227,7 +236,7 @@ where
 }
 
 #[instrument(skip_all)]
-fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
+fn live_capture_wrapper<E>(args: &Args, mut exporter: E, sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -235,12 +244,28 @@ where
         if args.stream {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let _guard = rt.enter();
-            let args = args.clone();
-            let handle = tokio::spawn(async move {
-                live_capture(&args, exporter, sniffer)
+            
+            let (tx, ws_handle) = rt.block_on(websocket::start_websocket_server(WEBSOCKET_PORT));
+            
+            // Set streamer on the exporter if streaming is enabled
+            #[cfg(feature = "stream")] {
+                exporter.set_streamer(Some(tx));
+            }
+            
+            info!("WebSocket server running on ws://localhost:{}/ws", WEBSOCKET_PORT);
+            info!("You can connect to this WebSocket server to receive real-time relic updates");
+            
+            let result = live_capture(args, exporter, sniffer);
+            
+            // If user interrupts with Ctrl+C, the capture will exit but the websocket server should continue running
+            rt.block_on(async {
+                // Only attempt to gracefully shut down when not streaming (or the app exits)
+                if !args.stream {
+                    ws_handle.abort();
+                }
             });
             
-            rt.block_on(handle).unwrap()
+            result
         } else {
             live_capture(args, exporter, sniffer)
         }
