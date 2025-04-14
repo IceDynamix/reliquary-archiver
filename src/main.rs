@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -26,7 +27,7 @@ use reliquary_archiver::export::Exporter;
 
 mod capture;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 struct Args {
     #[arg()]
     /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
@@ -38,6 +39,10 @@ struct Args {
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
+    /// Disable timeout and listen indefinitely, hosts a websocket server on port 49134 to stream relic/lc updates 
+    #[cfg(feature = "stream")]
+    #[arg(long)]
+    stream: bool,
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -79,11 +84,11 @@ fn main() {
     #[cfg(feature = "pcap")]
     let export = match args.pcap {
         Some(_) => file_capture(&args, exporter, sniffer),
-        None => live_capture(&args, exporter, sniffer),
+        None => live_capture_wrapper(&args, exporter, sniffer),
     };
 
     #[cfg(not(feature = "pcap"))]
-    let export = live_capture(&args, exporter, sniffer);
+    let export = live_capture_wrapper(&args, exporter, sniffer);
 
     if let Some(export) = export {
         let output_file = match args.output {
@@ -222,6 +227,31 @@ where
 }
 
 #[instrument(skip_all)]
+fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    #[cfg(feature = "stream")] {
+        if args.stream {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let _guard = rt.enter();
+            let args = args.clone();
+            let handle = tokio::spawn(async move {
+                live_capture(&args, exporter, sniffer)
+            });
+            
+            rt.block_on(handle).unwrap()
+        } else {
+            live_capture(args, exporter, sniffer)
+        }
+    }
+
+    #[cfg(not(feature = "stream"))] {
+        live_capture(args, exporter, sniffer)
+    }
+}
+
+#[instrument(skip_all)]
 fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
@@ -262,7 +292,14 @@ where
     info!("listening with a timeout of {} seconds...", args.timeout);
 
     'recv: loop {
-        match rx.recv_timeout(Duration::from_secs(args.timeout)) {
+        let received = if args.stream {
+            // If streaming, we don't want to timeout during inactivity
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            rx.recv_timeout(Duration::from_secs(args.timeout))
+        };
+
+        match received {
             Ok(packet) => {
                 match sniffer.receive_packet(packet.data) {
                     Ok(packets) => {
@@ -303,7 +340,7 @@ where
                             }
                         }
 
-                        if exporter.is_finished() {
+                        if !args.stream && exporter.is_finished() {
                             info!("retrieved all relevant packets, stop listening");
                             break 'recv;
                         }

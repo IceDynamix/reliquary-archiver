@@ -17,6 +17,7 @@ use reliquary::network::command::proto::GetMultiPathAvatarInfoScRsp::GetMultiPat
 use reliquary::network::command::proto::MultiPathAvatarType::MultiPathAvatarType;
 use reliquary::network::command::proto::MultiPathAvatarTypeInfo::MultiPathAvatarTypeInfo;
 use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
+use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
 use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use reliquary::network::command::GameCommand;
@@ -151,6 +152,64 @@ impl OptimizerExporter {
             }
         }
     }
+
+    pub fn process_player_sync(&mut self, sync: PlayerSyncScNotify) {
+        let relics: Vec<Relic> = sync
+            .relic_list
+            .iter()
+            .filter_map(|r| export_proto_relic(&self.database, r))
+            .collect();
+
+        if !relics.is_empty() {
+            info!(num = relics.len(), "found updated relics");
+            for relic in relics {
+                if let Some(index) = self.relics.iter().position(|r| r._uid == relic._uid) {
+                    self.relics[index] = relic;
+                } else {
+                    self.relics.push(relic);
+                }
+            }
+        }
+
+        let light_cones: Vec<LightCone> = sync
+            .equipment_list
+            .iter()
+            .filter_map(|equip| export_proto_light_cone(&self.database, equip))
+            .collect();
+
+        if !light_cones.is_empty() {
+            info!(num = light_cones.len(), "found updated light cones");
+            for light_cone in light_cones {
+                if let Some(index) = self.light_cones.iter().position(|r| r._uid == light_cone._uid) {
+                    self.light_cones[index] = light_cone;
+                } else {
+                    self.light_cones.push(light_cone);
+                }
+            }
+        }
+
+        if !sync.del_relic_list.is_empty() {
+            info!(num = sync.del_relic_list.len(), "found deleted relics");
+            for del_relic in sync.del_relic_list {
+                if let Some(index) = self.relics.iter().position(|r| r._uid == del_relic.to_string()) {
+                    self.relics.remove(index);
+                } else {
+                    warn!(uid = del_relic, "del_relic not found");
+                }
+            }
+        }
+
+        if !sync.del_equipment_list.is_empty() {
+            info!(num = sync.del_equipment_list.len(), "found deleted light cones");
+            for del_light_cone in sync.del_equipment_list {
+                if let Some(index) = self.light_cones.iter().position(|r| r._uid == del_light_cone.to_string()) {
+                    self.light_cones.remove(index);
+                } else {
+                    warn!(uid = del_light_cone, "del_light_cone not found");
+                }
+            }
+        }
+    }
 }
 
 impl Exporter for OptimizerExporter {
@@ -195,6 +254,16 @@ impl Exporter for OptimizerExporter {
                     Ok(cmd) => self.add_multipath_characters(cmd),
                     Err(error) => {
                         warn!(%error, "could not parse multipath data command");
+                    }
+                }
+            }
+            command_id::PlayerSyncScNotify => {
+                debug!("detected player sync packet");
+                let cmd = command.parse_proto::<PlayerSyncScNotify>();
+                match cmd {
+                    Ok(cmd) => self.process_player_sync(cmd),
+                    Err(error) => {
+                        warn!(%error, "could not parse player sync data command");
                     }
                 }
             }
