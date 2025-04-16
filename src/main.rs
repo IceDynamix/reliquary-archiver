@@ -64,7 +64,7 @@ struct Args {
 
 // Default port for the websocket server
 #[cfg(feature = "stream")]
-const WEBSOCKET_PORT: u16 = 49134;
+const WEBSOCKET_PORT: u16 = 53313; // Seele :)
 
 fn main() {
     color_eyre::install().unwrap();
