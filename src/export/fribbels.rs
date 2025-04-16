@@ -3,7 +3,7 @@
 //!
 //! [Fribbels HSR Optimizer]: https://github.com/fribbels/hsr-optimizer
 //! [kel-z's HSR-Scanner]: https://github.com/kel-z/HSR-Scanner
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::export::database::Database;
 use protobuf::Enum;
@@ -22,14 +22,15 @@ use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use reliquary::network::command::GameCommand;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, info_span, instrument, trace, warn};
+use serde_with::{serde_as, DisplayFromStr};
+use tracing::{debug, error, info, info_span, instrument, trace, warn};
 
 #[cfg(feature = "stream")]
 use crate::websocket;
 
 use crate::export::Exporter;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Export {
     pub source: &'static str,
     pub build: &'static str,
@@ -40,7 +41,7 @@ pub struct Export {
     pub characters: Vec<Character>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Metadata {
     pub uid: Option<u32>,
     pub trailblazer: Option<&'static str>,
@@ -48,31 +49,79 @@ pub struct Metadata {
 
 pub struct OptimizerExporter {
     database: Database,
+
+    initialized: bool,
     uid: Option<u32>,
     trailblazer: Option<&'static str>,
-    light_cones: Vec<LightCone>,
-    relics: Vec<Relic>,
-    characters: Vec<Character>,
-    multipath_characters: Vec<Character>,
+    light_cones: BTreeMap<u32, LightCone>,
+    relics: BTreeMap<u32, Relic>,
+    characters: BTreeMap<u32, Character>,
+    multipath_characters: BTreeMap<u32, Character>,
     multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    unresolved_multipath_characters: HashSet<u32>,
+
     #[cfg(feature = "stream")]
     websocket_tx: Option<websocket::ClientSender>,
+}
+
+#[serde_as]
+#[derive(Serialize, Debug, Clone)]
+#[serde(tag = "event", content = "data")]
+enum OptimizerEvent {
+    InitialScan(Export),
+    UpdateLightCone(LightCone),
+    UpdateRelic(Relic),
+    UpdateCharacter(Character),
+    DeleteRelic(#[serde_as(as = "DisplayFromStr")] u32),
+    DeleteLightCone(#[serde_as(as = "DisplayFromStr")] u32),
 }
 
 impl OptimizerExporter {
     pub fn new(database: Database) -> OptimizerExporter {
         OptimizerExporter {
             database,
+
+            initialized: false,
             uid: None,
             trailblazer: None,
-            light_cones: vec![],
-            relics: vec![],
-            characters: vec![],
-            multipath_characters: vec![],
+            light_cones: BTreeMap::new(),
+            relics: BTreeMap::new(),
+            characters: BTreeMap::new(),
+            multipath_characters: BTreeMap::new(),
             multipath_base_avatars: HashMap::new(),
+            unresolved_multipath_characters: HashSet::new(),
+
             #[cfg(feature = "stream")]
             websocket_tx: None,
         }
+    }
+
+    fn emit_event(&self, event: OptimizerEvent) {
+        #[cfg(feature = "stream")]
+        if let Some(tx) = &self.websocket_tx {
+            if self.initialized {
+                websocket::broadcast_message(tx, event);
+            } else {
+                // Don't start sending real-time updates until we've completed initialization.
+            }
+        }
+    }
+
+    fn reset(&mut self) {
+        self.uid = None;
+        self.trailblazer = None;
+        self.light_cones.clear();
+        self.relics.clear();
+        self.characters.clear();
+        self.multipath_characters.clear();
+        self.multipath_base_avatars.clear();
+        self.unresolved_multipath_characters.clear();
+        self.initialized = false;
+    }
+
+    fn emit_initial_scan(&self) {
+        let export = self.export().expect("initial scan failed");
+        self.emit_event(OptimizerEvent::InitialScan(export));
     }
 
     pub fn set_uid(&mut self, uid: u32) {
@@ -80,93 +129,110 @@ impl OptimizerExporter {
     }
 
     pub fn add_inventory(&mut self, bag: GetBagScRsp) {
-        let mut relics: Vec<Relic> = bag
+        let relics: Vec<Relic> = bag
             .relic_list
             .iter()
             .filter_map(|r| export_proto_relic(&self.database, r))
             .collect();
 
         info!(num = relics.len(), "found relics");
-        
-        #[cfg(feature = "stream")]
-        if let Some(tx) = &self.websocket_tx {
-            for relic in &relics {
-                let update = websocket::create_update("new_relic", relic.clone());
-                websocket::broadcast_message(tx, update);
-            }
+        for relic in &relics {
+            self.emit_event(OptimizerEvent::UpdateRelic(relic.clone()));
+            self.relics.insert(relic._uid, relic.clone());
         }
-        
-        self.relics.append(&mut relics);
 
-        let mut light_cones: Vec<LightCone> = bag
+        let light_cones: Vec<LightCone> = bag
             .equipment_list
             .iter()
             .filter_map(|equip| export_proto_light_cone(&self.database, equip))
             .collect();
 
         info!(num = light_cones.len(), "found light cones");
-        self.light_cones.append(&mut light_cones);
+        for light_cone in light_cones {
+            self.emit_event(OptimizerEvent::UpdateLightCone(light_cone.clone()));
+            self.light_cones.insert(light_cone._uid, light_cone);
+        }
     }
 
-    pub fn add_characters(&mut self, characters: GetAvatarDataScRsp) {
-        let (characters, multipath_characters) =
-            characters.avatar_list.iter().partition::<Vec<_>, _>(|a| {
-                MultiPathAvatarType::from_i32(a.base_avatar_id as i32).is_none()
-            });
+    pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) {
+        let character = export_proto_character(&self.database, proto_character).unwrap();
+        self.characters.insert(character.id, character.clone());
 
-        let mut characters: Vec<Character> = characters
-            .iter()
-            .filter_map(|char| export_proto_character(&self.database, char))
-            .collect();
+        if MultiPathAvatarType::from_i32(proto_character.base_avatar_id as i32).is_some() {
+            self.multipath_base_avatars.insert(proto_character.base_avatar_id, proto_character.clone());
 
-        info!(num = characters.len(), "found characters");
-        self.characters.append(&mut characters);
+            // Try to resolve any multipath characters that have this as their base avatar.
+            // TODO: Optimize by changing it to a map, keyed by base avatar id.
+            for unresolved_avatar_id in self.unresolved_multipath_characters.clone().iter() {
+                self.resolve_multipath_character(*unresolved_avatar_id);
+            }
+        } else {
+            // If the character is a multipath character, we need to wait for the 
+            // multipath packet to get the rest of the data, so only emit character
+            // here if it's not multipath.
 
-        info!(
-            num = multipath_characters.len(),
-            "found multipath base avatars"
-        );
-        self.multipath_base_avatars.extend(
-            multipath_characters
-                .into_iter()
-                .map(|c| (c.base_avatar_id, c.clone())),
-        );
+            self.emit_event(OptimizerEvent::UpdateCharacter(character.clone()));
+        }
     }
 
-    pub fn add_multipath_characters(&mut self, characters: GetMultiPathAvatarInfoScRsp) {
-        let mut characters: Vec<Character> = characters
-            .multi_path_avatar_type_info_list
-            .iter()
-            .filter_map(|char| export_proto_multipath_character(&self.database, char))
-            .collect();
+    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarTypeInfo) {
+        let character = export_proto_multipath_character(&self.database, proto_multipath_character).unwrap();
+        self.multipath_characters.insert(character.id, character.clone());
 
-        // Try to find a trailblazer to determine the gender
-        if let Some(trailblazer) = characters.iter().find(|c| c.name == "Trailblazer") {
-            self.trailblazer = Some(if trailblazer.id.parse::<u32>().unwrap() % 2 == 0 {
+        if self.resolve_multipath_character(character.id).is_none() {
+            info!(uid = &character.id, "multipath character not resolved"); // TODO: use DEBUG
+            self.unresolved_multipath_characters.insert(character.id);
+        }
+
+        // If it's the trailblazer, determine the gender
+        if character.name == "Trailblazer" {
+            self.trailblazer = Some(if character.id % 2 == 0 {
                 "Stelle"
             } else {
                 "Caelus"
             });
         }
-
-        info!(num = characters.len(), "found multipath characters");
-        self.multipath_characters.append(&mut characters);
     }
 
-    pub fn finalize_multipath_characters(&mut self) {
-        // Fetch level & ascension
-        for character in self.multipath_characters.iter_mut() {
-            if let Some(config) = self
-                .database
-                .multipath_avatar_config
-                .get(&character.id.parse().unwrap())
-            {
-                if let Some(base_avatar) = self.multipath_base_avatars.get(&config.BaseAvatarID) {
-                    character.level = base_avatar.level;
-                    character.ascension = base_avatar.promotion;
-                }
-            }
+    pub fn add_characters(&mut self, characters: GetAvatarDataScRsp) {
+        info!(num = characters.avatar_list.len(), "found characters");
+        for character in characters.avatar_list {
+            self.ingest_character(&character);
         }
+    }
+
+    pub fn add_multipath_characters(&mut self, characters: GetMultiPathAvatarInfoScRsp) {
+        info!(num = characters.multi_path_avatar_type_info_list.len(), "found multipath characters");
+        for multipath_avatar_info in characters.multi_path_avatar_type_info_list {
+            self.ingest_multipath_character(&multipath_avatar_info);
+        }
+    }
+
+    fn get_multipath_base_id(&self, avatar_id: u32) -> u32 {
+        self
+            .database
+            .multipath_avatar_config
+            .get(&avatar_id)
+            .expect("multipath character not found")
+            .BaseAvatarID
+    }
+
+    pub fn resolve_multipath_character(&mut self, character_id: u32) -> Option<()> {
+        let base_avatar_id = self.get_multipath_base_id(character_id);
+        let character = self.multipath_characters.get_mut(&character_id).unwrap();
+        if let Some(base_avatar) = self.multipath_base_avatars.get(&base_avatar_id) {
+            character.level = base_avatar.level;
+            character.ascension = base_avatar.promotion;
+
+            self.unresolved_multipath_characters.remove(&character_id);
+
+            let character = character.clone(); // Clone before emit to escape mutable borrow
+            self.emit_event(OptimizerEvent::UpdateCharacter(character));
+
+            return Some(());
+        }
+
+        return None;
     }
 
     pub fn process_player_sync(&mut self, sync: PlayerSyncScNotify) {
@@ -179,22 +245,8 @@ impl OptimizerExporter {
         if !relics.is_empty() {
             info!(num = relics.len(), "found updated relics");
             for relic in relics {
-                #[cfg(feature = "stream")]
-                if let Some(tx) = &self.websocket_tx {
-                    let event = if self.relics.iter().any(|r| r._uid == relic._uid) {
-                        "update_relic"
-                    } else {
-                        "new_relic"
-                    };
-                    let update = websocket::create_update(event, relic.clone());
-                    websocket::broadcast_message(tx, update);
-                }
-
-                if let Some(index) = self.relics.iter().position(|r| r._uid == relic._uid) {
-                    self.relics[index] = relic;
-                } else {
-                    self.relics.push(relic);
-                }
+                self.emit_event(OptimizerEvent::UpdateRelic(relic.clone()));
+                self.relics.insert(relic._uid, relic);
             }
         }
 
@@ -207,29 +259,18 @@ impl OptimizerExporter {
         if !light_cones.is_empty() {
             info!(num = light_cones.len(), "found updated light cones");
             for light_cone in light_cones {
-                if let Some(index) = self.light_cones.iter().position(|r| r._uid == light_cone._uid) {
-                    self.light_cones[index] = light_cone;
-                } else {
-                    self.light_cones.push(light_cone);
-                }
+                self.emit_event(OptimizerEvent::UpdateLightCone(light_cone.clone()));
+                self.light_cones.insert(light_cone._uid, light_cone);
             }
         }
 
         if !sync.del_relic_list.is_empty() {
             info!(num = sync.del_relic_list.len(), "found deleted relics");
             for del_relic in sync.del_relic_list {
-                #[cfg(feature = "stream")]
-                if let Some(tx) = &self.websocket_tx {
-                    if let Some(relic) = self.relics.iter().find(|r| r._uid == del_relic.to_string()) {
-                        let update = websocket::create_update("delete_relic", relic.clone());
-                        websocket::broadcast_message(tx, update);
-                    }
-                }
-
-                if let Some(index) = self.relics.iter().position(|r| r._uid == del_relic.to_string()) {
-                    self.relics.remove(index);
+                if self.relics.remove(&del_relic).is_some() {
+                    self.emit_event(OptimizerEvent::DeleteRelic(del_relic));
                 } else {
-                    warn!(uid = del_relic, "del_relic not found");
+                    warn!(uid = &del_relic, "del_relic not found");
                 }
             }
         }
@@ -237,11 +278,25 @@ impl OptimizerExporter {
         if !sync.del_equipment_list.is_empty() {
             info!(num = sync.del_equipment_list.len(), "found deleted light cones");
             for del_light_cone in sync.del_equipment_list {
-                if let Some(index) = self.light_cones.iter().position(|r| r._uid == del_light_cone.to_string()) {
-                    self.light_cones.remove(index);
+                if let Some(_) = self.light_cones.get(&del_light_cone) {
+                    self.emit_event(OptimizerEvent::DeleteLightCone(del_light_cone));
                 } else {
-                    warn!(uid = del_light_cone, "del_light_cone not found");
+                    warn!(uid = &del_light_cone, "del_light_cone not found");
                 }
+            }
+        }
+
+        if let Some(avatar_sync) = sync.avatar_sync.into_option() {
+            info!(num = avatar_sync.avatar_list.len(), "found avatar sync");
+            for avatar in avatar_sync.avatar_list {
+                self.ingest_character(&avatar);
+            }
+        }
+
+        if !sync.multi_path_avatar_type_info_list.is_empty() {
+            info!(num = sync.multi_path_avatar_type_info_list.len(), "found multipath avatar sync");
+            for multipath_avatar_info in sync.multi_path_avatar_type_info_list {
+                self.ingest_multipath_character(&multipath_avatar_info);
             }
         }
     }
@@ -253,6 +308,9 @@ impl Exporter for OptimizerExporter {
     fn read_command(&mut self, command: GameCommand) {
         match command.command_id {
             command_id::PlayerGetTokenScRsp => {
+                info!("detected new login attempt, resetting state");
+                self.reset();
+
                 debug!("detected uid");
                 let cmd = command.parse_proto::<PlayerGetTokenScRsp>();
                 match cmd {
@@ -310,6 +368,13 @@ impl Exporter for OptimizerExporter {
                 );
             }
         }
+
+        if !self.initialized && self.is_finished() {
+            self.initialized = true;
+            info!("finished initialization");
+
+            self.emit_initial_scan();
+        }
     }
 
     fn is_empty(&self) -> bool {
@@ -331,7 +396,7 @@ impl Exporter for OptimizerExporter {
     }
 
     #[instrument(skip_all)]
-    fn export(mut self) -> Option<Self::Export> {
+    fn export(&self) -> Option<Self::Export> {
         info!("exporting collected data");
 
         if self.is_empty() {
@@ -361,8 +426,10 @@ impl Exporter for OptimizerExporter {
 
         if self.multipath_characters.is_empty() {
             warn!("multipath characters were not recorded");
-        } else {
-            self.finalize_multipath_characters();
+        }
+
+        if !self.unresolved_multipath_characters.is_empty() {
+            warn!(num = self.unresolved_multipath_characters.len(), "multipath characters were not resolved");
         }
 
         let export = Export {
@@ -373,12 +440,13 @@ impl Exporter for OptimizerExporter {
                 uid: self.uid,
                 trailblazer: self.trailblazer,
             },
-            light_cones: self.light_cones,
-            relics: self.relics,
+            light_cones: self.light_cones.values().cloned().collect(),
+            relics: self.relics.values().cloned().collect(),
             characters: self
                 .characters
-                .into_iter()
-                .chain(self.multipath_characters)
+                .iter()
+                .chain(self.multipath_characters.iter())
+                .map(|(_id, c)| c.clone()) // Discard the key
                 .collect(),
         };
 
@@ -410,7 +478,7 @@ fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         .get(&relic_config.MainAffixGroup, &proto.main_affix_id)
         .unwrap();
 
-    let id = proto.unique_id.to_string();
+    let id = proto.unique_id;
     let level = proto.level;
     let lock = proto.is_protected;
     let discard = proto.is_discarded;
@@ -469,6 +537,7 @@ fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Su
     })
 }
 
+#[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Relic {
     pub set_id: String,
@@ -481,7 +550,8 @@ pub struct Relic {
     pub location: String,
     pub lock: bool,
     pub discard: bool,
-    pub _uid: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub _uid: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -549,7 +619,8 @@ fn sub_stat_to_export(s: &str) -> &'static str {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LightCone {
     pub id: String,
     pub name: String,
@@ -558,7 +629,8 @@ pub struct LightCone {
     pub superimposition: u32,
     pub location: String,
     pub lock: bool,
-    pub _uid: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub _uid: u32,
 }
 
 #[instrument(name = "light_cone", skip_all, fields(id = proto.tid))]
@@ -585,7 +657,7 @@ fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<Ligh
         superimposition,
         location,
         lock: proto.is_protected,
-        _uid: proto.unique_id.to_string(),
+        _uid: proto.unique_id,
     })
 }
 
@@ -603,7 +675,7 @@ fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Chara
     let (skills, traces, memosprite) = export_skill_tree(db, &proto.avatar_skilltree_list);
 
     Some(Character {
-        id: id.to_string(),
+        id,
         name,
         path,
         level,
@@ -630,11 +702,13 @@ fn export_proto_multipath_character(
 
     let (skills, traces, memosprite) = export_skill_tree(db, &proto.multipath_skilltree_list);
 
-    // TODO: figure out where level/ascension is stored
     Some(Character {
-        id: id.to_string(),
+        id,
         name,
         path,
+        // Level and ascension are stored in the base avatar
+        // in the main character list, set them to 0 for now.
+        // Will be updated in [finalize_multipath_characters]
         level: 0,
         ascension: 0,
         eidolon: proto.rank,
@@ -801,9 +875,11 @@ fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces
     (skills, traces, memosprite.if_present())
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Character {
-    pub id: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub id: u32,
     pub name: String,
     pub path: String,
     pub level: u32,
@@ -815,7 +891,7 @@ pub struct Character {
     pub memosprite: Option<Memosprite>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Skills {
     pub basic: u32,
     pub skill: u32,
@@ -823,7 +899,7 @@ pub struct Skills {
     pub talent: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Traces {
     pub ability_1: bool,
     pub ability_2: bool,
@@ -840,7 +916,7 @@ pub struct Traces {
     pub stat_10: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Memosprite {
     pub skill: u32,
     pub talent: u32,

@@ -12,6 +12,7 @@ use clap::Parser;
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use tracing::{debug, info, instrument, warn};
+use tracing_subscriber::filter::Directive;
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
 #[cfg(windows)] use {
@@ -21,10 +22,7 @@ use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
     tracing::error,
 };
 
-#[cfg(feature = "stream")] use {
-    reliquary_archiver::websocket::{self, Update},
-    reliquary_archiver::export::fribbels::Relic,
-};
+#[cfg(feature = "stream")] use reliquary_archiver::websocket;
 
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
@@ -245,15 +243,16 @@ where
             let rt = tokio::runtime::Runtime::new().unwrap();
             let _guard = rt.enter();
             
-            let (tx, ws_handle) = rt.block_on(websocket::start_websocket_server(WEBSOCKET_PORT));
+            let (client, ws_handle) = rt.block_on(websocket::start_websocket_server(WEBSOCKET_PORT));
             
             // Set streamer on the exporter if streaming is enabled
             #[cfg(feature = "stream")] {
-                exporter.set_streamer(Some(tx));
+                exporter.set_streamer(Some(client));
             }
             
             info!("WebSocket server running on ws://localhost:{}/ws", WEBSOCKET_PORT);
             info!("You can connect to this WebSocket server to receive real-time relic updates");
+            info!("New clients will receive all previously sent messages");
             
             let result = live_capture(args, exporter, sniffer);
             
@@ -346,10 +345,10 @@ where
                                     match command {
                                         Ok(command) => {
                                             if command.command_id == PlayerLoginScRsp {
-                                                info!("detected login");
+                                                info!("detected login start");
                                             }
             
-                                            if command.command_id == PlayerLoginFinishScRsp {
+                                            if !args.stream && command.command_id == PlayerLoginFinishScRsp {
                                                 info!("detected login end, assume initialization is finished");
                                                 break 'recv;
                                             }
