@@ -12,7 +12,6 @@ use clap::Parser;
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
 use tracing::{debug, info, instrument, warn};
-use tracing_subscriber::filter::Directive;
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
 #[cfg(windows)] use {
@@ -234,20 +233,22 @@ where
 }
 
 #[instrument(skip_all)]
-fn live_capture_wrapper<E>(args: &Args, mut exporter: E, sniffer: GameSniffer) -> Option<E::Export>
+fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
 {
+    let exporter = Arc::new(Mutex::new(exporter));
+
     #[cfg(feature = "stream")] {
         if args.stream {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let _guard = rt.enter();
             
-            let (client, ws_handle) = rt.block_on(websocket::start_websocket_server(WEBSOCKET_PORT));
+            let (client, ws_handle) = rt.block_on(websocket::start_websocket_server(WEBSOCKET_PORT, exporter.clone()));
             
             // Set streamer on the exporter if streaming is enabled
             #[cfg(feature = "stream")] {
-                exporter.set_streamer(Some(client));
+                exporter.lock().unwrap().set_streamer(Some(client));
             }
             
             info!("WebSocket server running on ws://localhost:{}/ws", WEBSOCKET_PORT);
@@ -256,13 +257,7 @@ where
             
             let result = live_capture(args, exporter, sniffer);
             
-            // If user interrupts with Ctrl+C, the capture will exit but the websocket server should continue running
-            rt.block_on(async {
-                // Only attempt to gracefully shut down when not streaming (or the app exits)
-                if !args.stream {
-                    ws_handle.abort();
-                }
-            });
+            ws_handle.abort();
             
             result
         } else {
@@ -276,7 +271,7 @@ where
 }
 
 #[instrument(skip_all)]
-fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
+fn live_capture<E>(args: &Args, exporter: Arc<Mutex<E>>, mut sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -353,7 +348,7 @@ where
                                                 break 'recv;
                                             }
             
-                                            exporter.read_command(command);
+                                            exporter.lock().unwrap().read_command(command);
                                         }
                                         Err(e) => {
                                             warn!(%e);
@@ -364,7 +359,7 @@ where
                             }
                         }
 
-                        if !args.stream && exporter.is_finished() {
+                        if !args.stream && exporter.lock().unwrap().is_finished() {
                             info!("retrieved all relevant packets, stop listening");
                             break 'recv;
                         }
@@ -387,5 +382,5 @@ where
         handle.join().expect("Failed to join capture thread");
     }
 
-    exporter.export()
+    exporter.lock().unwrap().export()
 }

@@ -67,7 +67,7 @@ pub struct OptimizerExporter {
 #[serde_as]
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "event", content = "data")]
-enum OptimizerEvent {
+pub enum OptimizerEvent {
     InitialScan(Export),
     UpdateLightCone(LightCone),
     UpdateRelic(Relic),
@@ -94,6 +94,15 @@ impl OptimizerExporter {
             #[cfg(feature = "stream")]
             websocket_tx: None,
         }
+    }
+
+    fn is_finishable(&self) -> bool {
+        self.trailblazer.is_some()
+            && self.uid.is_some()
+            && !self.relics.is_empty()
+            && !self.characters.is_empty()
+            && !self.multipath_characters.is_empty()
+            && !self.light_cones.is_empty()
     }
 
     fn emit_event(&self, event: OptimizerEvent) {
@@ -304,6 +313,7 @@ impl OptimizerExporter {
 
 impl Exporter for OptimizerExporter {
     type Export = Export;
+    type LiveEvent = OptimizerEvent;
 
     fn read_command(&mut self, command: GameCommand) {
         match command.command_id {
@@ -369,7 +379,7 @@ impl Exporter for OptimizerExporter {
             }
         }
 
-        if !self.initialized && self.is_finished() {
+        if !self.initialized && self.is_finishable() {
             self.initialized = true;
             info!("finished initialization");
 
@@ -387,12 +397,7 @@ impl Exporter for OptimizerExporter {
     }
 
     fn is_finished(&self) -> bool {
-        self.trailblazer.is_some()
-            && self.uid.is_some()
-            && !self.relics.is_empty()
-            && !self.characters.is_empty()
-            && !self.multipath_characters.is_empty()
-            && !self.light_cones.is_empty()
+        self.initialized
     }
 
     #[instrument(skip_all)]
@@ -451,6 +456,14 @@ impl Exporter for OptimizerExporter {
         };
 
         Some(export)
+    }
+
+    fn get_initial_event(&self) -> Option<OptimizerEvent> {
+        if self.is_finished() {
+            Some(OptimizerEvent::InitialScan(self.export().expect("marked as finished but data was not recorded")))
+        } else {
+            None
+        }
     }
 
     #[cfg(feature = "stream")]
