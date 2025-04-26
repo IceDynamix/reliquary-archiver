@@ -38,6 +38,10 @@ struct Args {
     #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,
+    /// Read packets from .etl file instead of capturing live packets
+    #[cfg(feature = "pktmon")]
+    #[arg(long)]
+    etl: Option<PathBuf>,
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
@@ -87,14 +91,19 @@ fn main() {
     let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
     let exporter = OptimizerExporter::new(database);
 
-    #[cfg(feature = "pcap")]
-    let export = match args.pcap {
-        Some(_) => file_capture(&args, exporter, sniffer),
-        None => live_capture_wrapper(&args, exporter, sniffer),
-    };
+    let export = 'export: {
+        #[cfg(feature = "pcap")]
+        if args.pcap.is_some() {
+            break 'export file_capture(&args, exporter, sniffer)
+        }
 
-    #[cfg(not(feature = "pcap"))]
-    let export = live_capture_wrapper(&args, exporter, sniffer);
+        #[cfg(feature = "pktmon")]
+        if args.etl.is_some() {
+            break 'export file_capture(&args, exporter, sniffer)
+        }
+
+        live_capture_wrapper(&args, exporter, sniffer)
+    };
 
     if let Some(export) = export {
         let output_file = match args.output {
@@ -196,27 +205,30 @@ fn tracing_init(args: &Args) {
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
 
-#[cfg(feature = "pcap")]
 #[instrument(skip_all)]
 fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
 {
-    let mut capture =
-        pcap::Capture::from_file(args.pcap.as_ref().unwrap()).expect("could not read pcap file");
+    enum ProcessResult {
+        Continue,
+        Stop,
+    }
 
-    capture.filter(PCAP_FILTER, false).unwrap();
-
-    info!("capturing");
-    while let Ok(packet) = capture.next_packet() {
-        info!("received packet: {:?}", packet.data.to_vec());
-        if let Ok(packets) = sniffer.receive_packet(packet.data.to_vec()) {
+    let mut process_packet = |payload: Vec<u8>| {
+        if let Ok(packets) = sniffer.receive_packet(payload) {
             for packet in packets {
                 match packet {
                     GamePacket::Commands(command) => {
                         match command {
                             Ok(command) => {
                                 exporter.read_command(command);
+
+                                if exporter.is_finished() {
+                                    info!("finished capturing");
+                                    // break 'capture;
+                                    return ProcessResult::Stop;
+                                }
                             }
                             Err(e) => {
                                 warn!(%e);
@@ -226,6 +238,44 @@ where
                     _ => {}
                 }
             }
+        }
+
+        ProcessResult::Continue
+    };
+
+    #[cfg(feature = "pcap")] {
+        if let Some(pcap_path) = args.pcap.as_ref() {
+            let mut capture = pcap::Capture::from_file(pcap_path).expect("could not read pcap file");
+
+            capture.filter(PCAP_FILTER, false).unwrap();
+
+            while let Ok(packet) = capture.next_packet() {
+                match process_packet(packet.data.to_vec()) {
+                    ProcessResult::Continue => {}
+                    ProcessResult::Stop => {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(feature = "pktmon")] {
+        if let Some(etl_path) = args.etl.as_ref() {
+            let mut capture = pktmon::EtlCapture::new(etl_path).expect("could not read etl file");
+
+            capture.start().expect("could not start etl capture");
+
+            while let Ok(packet) = capture.next_packet() {
+                match process_packet(packet.payload.to_vec()) {
+                    ProcessResult::Continue => {}
+                    ProcessResult::Stop => {
+                        break;
+                    }
+                }
+            }
+
+            capture.stop().expect("could not stop etl capture");
         }
     }
 
@@ -253,7 +303,6 @@ where
             
             info!("WebSocket server running on ws://localhost:{}/ws", WEBSOCKET_PORT);
             info!("You can connect to this WebSocket server to receive real-time relic updates");
-            info!("New clients will receive all previously sent messages");
             
             let result = live_capture(args, exporter, sniffer);
             
@@ -289,12 +338,12 @@ where
     #[cfg(windows)]
     let rx = {
         #[cfg(feature = "pcap")] {
-            capture::listen_on_all::<capture::pcap::PcapBackend>(abort_signal.clone())
+            capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
         }
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
             if unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
-                capture::listen_on_all::<capture::pktmon::PktmonBackend>(abort_signal.clone())
+                capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
             } else {
                 warn!("You must run this program as an administrator to capture packets");
                 return None;
@@ -303,15 +352,23 @@ where
     };
 
     #[cfg(not(windows))]
-    let rx = capture::listen_on_all::<capture::pcap::PcapBackend>(abort_signal.clone());
+    let rx = capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone());
 
     let (rx, join_handles) = rx.expect("Failed to start packet capture");
 
+    #[cfg(feature = "stream")]
+    let streaming = args.stream;
+
+    #[cfg(not(feature = "stream"))]
+    let streaming = false;
+
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
-    info!("listening with a timeout of {} seconds...", args.timeout);
+    if !streaming {
+        info!("listening with a timeout of {} seconds...", args.timeout);
+    }
 
     'recv: loop {
-        let received = if args.stream {
+        let received = if streaming {
             // If streaming, we don't want to timeout during inactivity
             rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
         } else {
@@ -342,8 +399,8 @@ where
                                             if command.command_id == PlayerLoginScRsp {
                                                 info!("detected login start");
                                             }
-            
-                                            if !args.stream && command.command_id == PlayerLoginFinishScRsp {
+                                            
+                                            if !streaming && command.command_id == PlayerLoginFinishScRsp {
                                                 info!("detected login end, assume initialization is finished");
                                                 break 'recv;
                                             }
@@ -359,7 +416,7 @@ where
                             }
                         }
 
-                        if !args.stream && exporter.lock().unwrap().is_finished() {
+                        if !streaming && exporter.lock().unwrap().is_finished() {
                             info!("retrieved all relevant packets, stop listening");
                             break 'recv;
                         }

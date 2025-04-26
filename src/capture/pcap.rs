@@ -14,7 +14,7 @@ pub struct PcapCapture {
 impl CaptureBackend for PcapBackend {
     type Device = PcapDevice;
     
-    fn list_devices() -> Result<Vec<Self::Device>> {
+    fn list_devices(&self) -> Result<Vec<Self::Device>> {
         Ok(PcapDevice::list()
             .map_err(|e| CaptureError::DeviceError(Box::new(e)))?
             .into_iter()

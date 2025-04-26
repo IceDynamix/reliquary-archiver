@@ -23,7 +23,7 @@ use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use reliquary::network::command::GameCommand;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
-use tracing::{debug, error, info, info_span, instrument, trace, warn};
+use tracing::{debug, info, info_span, instrument, trace, warn};
 
 #[cfg(feature = "stream")]
 use crate::websocket;
@@ -105,11 +105,11 @@ impl OptimizerExporter {
             && !self.light_cones.is_empty()
     }
 
-    fn emit_event(&self, event: OptimizerEvent) {
+    fn emit_event(&self, _event: OptimizerEvent) {
         #[cfg(feature = "stream")]
         if let Some(tx) = &self.websocket_tx {
             if self.initialized {
-                websocket::broadcast_message(tx, event);
+                websocket::broadcast_message(tx, _event);
             } else {
                 // Don't start sending real-time updates until we've completed initialization.
             }
@@ -129,8 +129,11 @@ impl OptimizerExporter {
     }
 
     fn emit_initial_scan(&self) {
-        let export = self.export().expect("initial scan failed");
-        self.emit_event(OptimizerEvent::InitialScan(export));
+        #[cfg(feature = "stream")]
+        if self.websocket_tx.is_some() {
+            let export = self.export().expect("initial scan failed");
+            self.emit_event(OptimizerEvent::InitialScan(export));
+        }
     }
 
     pub fn set_uid(&mut self, uid: u32) {

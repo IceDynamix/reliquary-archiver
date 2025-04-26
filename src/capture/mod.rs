@@ -9,6 +9,9 @@ use tracing::instrument;
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
 
+#[cfg(all(windows, feature = "pktmon"))]
+pub mod etl;
+
 #[cfg(feature = "pcap")]
 pub mod pcap;
 
@@ -85,17 +88,18 @@ pub trait CaptureBackend {
     type Device: CaptureDevice;
     
     /// List all available capture devices
-    fn list_devices() -> Result<Vec<Self::Device>>;
+    fn list_devices(&self) -> Result<Vec<Self::Device>>;
 }
 
 /// Start capturing packets from all available devices using the specified backend
 #[instrument(skip_all)]
 pub fn listen_on_all<B: CaptureBackend + 'static>(
+    backend: B,
     abort_signal: Arc<AtomicBool>,
 ) -> Result<(mpsc::Receiver<Packet>, Vec<JoinHandle<()>>)> {
     let (tx, rx) = mpsc::channel();
     
-    let devices = B::list_devices()?;
+    let devices = backend.list_devices()?;
     let mut join_handles = Vec::new();
     
     for device in devices {

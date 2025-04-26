@@ -1434,9 +1434,9 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "pktmon"
-version = "0.2.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a226c6f2d1546fa68af99210f324be24eca89b360670fe40b984e33ca7fc741"
+checksum = "ed9d546a02b878f5e66caf5b5a70fe836bb372c3e3f8dc6f763571d942efca84"
 dependencies = [
  "cidr",
  "log",
@@ -1666,6 +1666,7 @@ checksum = "2b15c43186be67a4fd63bee50d0303afffcef381492ebe2c5d87f324e1b8815c"
 [[package]]
 name = "reliquary"
 version = "10.0.0"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v10.0.0#e3be3cc12db32fabcfe61482cc03d67981721e6c"
 dependencies = [
  "base64",
  "etherparse",
@@ -1709,6 +1710,7 @@ dependencies = [
 [[package]]
 name = "reliquary-proc-macro"
 version = "0.1.1"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v10.0.0#e3be3cc12db32fabcfe61482cc03d67981721e6c"
 dependencies = [
  "quote",
  "syn",
