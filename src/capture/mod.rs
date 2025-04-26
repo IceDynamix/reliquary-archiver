@@ -9,9 +9,6 @@ use tracing::instrument;
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
 
-#[cfg(all(windows, feature = "pktmon"))]
-pub mod etl;
-
 #[cfg(feature = "pcap")]
 pub mod pcap;
 
