@@ -26,7 +26,7 @@ use reliquary_archiver::export::Exporter;
 
 mod capture;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 struct Args {
     #[arg()]
     /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
@@ -35,6 +35,10 @@ struct Args {
     #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,
+    /// Read packets from .etl file instead of capturing live packets
+    #[cfg(feature = "pktmon")]
+    #[arg(long)]
+    etl: Option<PathBuf>,
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
@@ -53,6 +57,31 @@ struct Args {
     /// Don't wait for enter to be pressed after capturing
     #[arg(short, long)]
     exit_after_capture: bool,
+}
+
+#[derive(Debug, Clone)]
+enum CaptureMode {
+    Live,
+    #[cfg(feature = "pcap")]
+    Pcap(PathBuf),
+    #[cfg(feature = "pktmon")]
+    Etl(PathBuf),
+}
+
+impl CaptureMode {
+    fn from_args(args: &Args) -> Self {
+        #[cfg(feature = "pcap")]
+        if let Some(path) = &args.pcap {
+            return CaptureMode::Pcap(path.clone());
+        }
+
+        #[cfg(feature = "pktmon")]
+        if let Some(path) = &args.etl {
+            return CaptureMode::Etl(path.clone());
+        }
+
+        CaptureMode::Live
+    }
 }
 
 fn main() {
@@ -76,14 +105,14 @@ fn main() {
     let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
     let exporter = OptimizerExporter::new(database);
 
-    #[cfg(feature = "pcap")]
-    let export = match args.pcap {
-        Some(_) => file_capture(&args, exporter, sniffer),
-        None => live_capture(&args, exporter, sniffer),
+    let capture_mode = CaptureMode::from_args(&args);
+    let export = match capture_mode {
+        CaptureMode::Live => live_capture(&args, exporter, sniffer),
+        #[cfg(feature = "pcap")]
+        CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
+        #[cfg(feature = "pktmon")]
+        CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
     };
-
-    #[cfg(not(feature = "pcap"))]
-    let export = live_capture(&args, exporter, sniffer);
 
     if let Some(export) = export {
         let output_file = match args.output {
@@ -185,38 +214,91 @@ fn tracing_init(args: &Args) {
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
 
-#[cfg(feature = "pcap")]
-#[instrument(skip_all)]
-fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
+// Helper function to process a packet and determine if capture should stop
+enum ProcessResult {
+    Continue,
+    Stop,
+}
+
+// Simplified packet processing for file captures
+fn file_process_packet<E>(exporter: &mut E, sniffer: &mut GameSniffer, payload: Vec<u8>) -> ProcessResult
 where
     E: Exporter,
 {
-    let mut capture =
-        pcap::Capture::from_file(args.pcap.as_ref().unwrap()).expect("could not read pcap file");
+    if let Ok(packets) = sniffer.receive_packet(payload) {
+        for packet in packets {
+            match packet {
+                GamePacket::Commands(command) => {
+                    match command {
+                        Ok(command) => {
+                            exporter.read_command(command);
 
-    capture.filter(PACKET_FILTER, false).unwrap();
-
-    info!("capturing");
-    while let Ok(packet) = capture.next_packet() {
-        if let Ok(packets) = sniffer.receive_packet(packet.data.to_vec()) {
-            for packet in packets {
-                match packet {
-                    GamePacket::Commands(command) => {
-                        match command {
-                            Ok(command) => {
-                                exporter.read_command(command);
-                            }
-                            Err(e) => {
-                                warn!(%e);
+                            if exporter.is_finished() {
+                                info!("finished capturing");
+                                return ProcessResult::Stop;
                             }
                         }
+                        Err(e) => {
+                            warn!(%e);
+                        }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
     }
 
+    ProcessResult::Continue
+}
+
+#[instrument(skip_all)]
+#[cfg(feature = "pcap")]
+fn capture_from_pcap<E>(
+    _args: &Args,
+    mut exporter: E,
+    mut sniffer: GameSniffer,
+    pcap_path: PathBuf,
+) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    info!("Capturing from pcap file: {}", pcap_path.display());
+    let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
+    capture.filter(PCAP_FILTER, false).unwrap();
+
+    while let Ok(packet) = capture.next_packet() {
+        match file_process_packet(&mut exporter, &mut sniffer, packet.data.to_vec()) {
+            ProcessResult::Continue => {},
+            ProcessResult::Stop => break,
+        }
+    }
+
+    exporter.export()
+}
+
+#[instrument(skip_all)]
+#[cfg(feature = "pktmon")]
+fn capture_from_etl<E>(
+    _args: &Args,
+    mut exporter: E,
+    mut sniffer: GameSniffer,
+    etl_path: PathBuf,
+) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    info!("Capturing from etl file: {}", etl_path.display());
+    let mut capture = pktmon::EtlCapture::new(&etl_path).expect("could not read etl file");
+    capture.start().expect("could not start etl capture");
+
+    for packet in capture.packets().unwrap() {
+        match file_process_packet(&mut exporter, &mut sniffer, packet.payload.to_vec()) {
+            ProcessResult::Continue => {},
+            ProcessResult::Stop => break,
+        }
+    }
+
+    capture.stop().expect("could not stop etl capture");
     exporter.export()
 }
 
@@ -239,12 +321,12 @@ where
     #[cfg(windows)]
     let rx = {
         #[cfg(feature = "pcap")] {
-            capture::listen_on_all::<capture::pcap::PcapBackend>(abort_signal.clone())
+            capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
         }
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
             if unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
-                capture::listen_on_all::<capture::pktmon::PktmonBackend>(abort_signal.clone())
+                capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
             } else {
                 warn!("You must run this program as an administrator to capture packets");
                 return None;
@@ -253,7 +335,7 @@ where
     };
 
     #[cfg(not(windows))]
-    let rx = capture::listen_on_all::<capture::pcap::PcapBackend>(abort_signal.clone());
+    let rx = capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone());
 
     let (rx, join_handles) = rx.expect("Failed to start packet capture");
 
@@ -273,8 +355,7 @@ where
                                             info!("detected connection established");
                                         }
                                         ConnectionPacket::Disconnected => {
-                                            // program is probably going to exit before this happens
-                                            // info!("detected connection disconnected");
+                                            info!("detected connection disconnected");
                                         }
                                         _ => {}
                                     }
@@ -283,19 +364,19 @@ where
                                     match command {
                                         Ok(command) => {
                                             if command.command_id == PlayerLoginScRsp {
-                                                info!("detected login");
+                                                info!("detected login start");
                                             }
-            
+
                                             if command.command_id == PlayerLoginFinishScRsp {
                                                 info!("detected login end, assume initialization is finished");
                                                 break 'recv;
                                             }
-            
+
                                             exporter.read_command(command);
                                         }
                                         Err(e) => {
                                             warn!(%e);
-                                            break;
+                                            break 'recv;
                                         }
                                     }
                                 }
@@ -309,13 +390,13 @@ where
                     }
                     Err(e) => {
                         warn!(%e);
-                        break;
+                        break 'recv;
                     }
                 }
             }
             Err(e) => {
                 warn!(%e);
-                break;
+                break 'recv;
             }
         }
     }

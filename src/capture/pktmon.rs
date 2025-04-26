@@ -16,7 +16,7 @@ pub struct PktmonCapture {
 impl CaptureBackend for PktmonBackend {
     type Device = PktmonCaptureDevice;
     
-    fn list_devices() -> Result<Vec<Self::Device>> {
+    fn list_devices(&self) -> Result<Vec<Self::Device>> {
         // PktMon doesn't need device selection - it captures all interfaces
         Ok(vec![PktmonCaptureDevice])
     }

@@ -27,7 +27,7 @@ ctrlc = "3.4.5"
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
-pktmon = { version = "0.2.0", optional = true }
+pktmon = { version = "0.4.0", optional = true }
 windows = { version = "0.61", features = ["Win32_UI_Shell"] }
 
 [build-dependencies]
@@ -46,6 +46,6 @@ lto = true
 overflow-checks = false # see comment above
 
 [features]
-default = ["pktmon"]
+default = ["pcap", "pktmon"]
 pktmon = ["dep:pktmon"]
 pcap = ["dep:pcap"]
