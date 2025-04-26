@@ -45,10 +45,15 @@ struct Args {
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
-    /// Disable timeout and listen indefinitely, hosts a websocket server on port 49134 to stream relic/lc updates in real-time
+    /// Host a websocket server to stream relic/lc updates in real-time.
+    /// This also disables the timeout
     #[cfg(feature = "stream")]
     #[arg(long)]
     stream: bool,
+    /// Port to listen on for the websocket server, defaults to 53313
+    #[cfg(feature = "stream")]
+    #[arg(long, default_value_t = 53313)] // Seele :)
+    websocket_port: u16,
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -66,9 +71,30 @@ struct Args {
     exit_after_capture: bool,
 }
 
-// Default port for the websocket server
-#[cfg(feature = "stream")]
-const WEBSOCKET_PORT: u16 = 53313; // Seele :)
+#[derive(Debug, Clone)]
+enum CaptureMode {
+    Live,
+    #[cfg(feature = "pcap")]
+    Pcap(PathBuf),
+    #[cfg(feature = "pktmon")]
+    Etl(PathBuf),
+}
+
+impl CaptureMode {
+    fn from_args(args: &Args) -> Self {
+        #[cfg(feature = "pcap")]
+        if let Some(path) = &args.pcap {
+            return CaptureMode::Pcap(path.clone());
+        }
+
+        #[cfg(feature = "pktmon")]
+        if let Some(path) = &args.etl {
+            return CaptureMode::Etl(path.clone());
+        }
+
+        CaptureMode::Live
+    }
+}
 
 fn main() {
     color_eyre::install().unwrap();
@@ -91,18 +117,13 @@ fn main() {
     let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
     let exporter = OptimizerExporter::new(database);
 
-    let export = 'export: {
+    let capture_mode = CaptureMode::from_args(&args);
+    let export = match capture_mode {
+        CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
         #[cfg(feature = "pcap")]
-        if args.pcap.is_some() {
-            break 'export file_capture(&args, exporter, sniffer)
-        }
-
+        CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
         #[cfg(feature = "pktmon")]
-        if args.etl.is_some() {
-            break 'export file_capture(&args, exporter, sniffer)
-        }
-
-        live_capture_wrapper(&args, exporter, sniffer)
+        CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
     };
 
     if let Some(export) = export {
@@ -205,80 +226,91 @@ fn tracing_init(args: &Args) {
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
 
-#[instrument(skip_all)]
-fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
+// Helper function to process a packet and determine if capture should stop
+enum ProcessResult {
+    Continue,
+    Stop,
+}
+
+// Simplified packet processing for file captures
+fn file_process_packet<E>(exporter: &mut E, sniffer: &mut GameSniffer, payload: Vec<u8>) -> ProcessResult
 where
     E: Exporter,
 {
-    enum ProcessResult {
-        Continue,
-        Stop,
-    }
+    if let Ok(packets) = sniffer.receive_packet(payload) {
+        for packet in packets {
+            match packet {
+                GamePacket::Commands(command) => {
+                    match command {
+                        Ok(command) => {
+                            exporter.read_command(command);
 
-    let mut process_packet = |payload: Vec<u8>| {
-        if let Ok(packets) = sniffer.receive_packet(payload) {
-            for packet in packets {
-                match packet {
-                    GamePacket::Commands(command) => {
-                        match command {
-                            Ok(command) => {
-                                exporter.read_command(command);
-
-                                if exporter.is_finished() {
-                                    info!("finished capturing");
-                                    // break 'capture;
-                                    return ProcessResult::Stop;
-                                }
-                            }
-                            Err(e) => {
-                                warn!(%e);
+                            if exporter.is_finished() {
+                                info!("finished capturing");
+                                return ProcessResult::Stop;
                             }
                         }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        ProcessResult::Continue
-    };
-
-    #[cfg(feature = "pcap")] {
-        if let Some(pcap_path) = args.pcap.as_ref() {
-            let mut capture = pcap::Capture::from_file(pcap_path).expect("could not read pcap file");
-
-            capture.filter(PCAP_FILTER, false).unwrap();
-
-            while let Ok(packet) = capture.next_packet() {
-                match process_packet(packet.data.to_vec()) {
-                    ProcessResult::Continue => {}
-                    ProcessResult::Stop => {
-                        break;
+                        Err(e) => {
+                            warn!(%e);
+                        }
                     }
                 }
+                _ => {}
             }
         }
     }
 
-    #[cfg(feature = "pktmon")] {
-        if let Some(etl_path) = args.etl.as_ref() {
-            let mut capture = pktmon::EtlCapture::new(etl_path).expect("could not read etl file");
+    ProcessResult::Continue
+}
 
-            capture.start().expect("could not start etl capture");
+#[instrument(skip_all)]
+#[cfg(feature = "pcap")]
+fn capture_from_pcap<E>(
+    _args: &Args, 
+    mut exporter: E, 
+    mut sniffer: GameSniffer,
+    pcap_path: PathBuf,
+) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    info!("Capturing from pcap file: {}", pcap_path.display());
+    let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
+    capture.filter(PCAP_FILTER, false).unwrap();
 
-            while let Ok(packet) = capture.next_packet() {
-                match process_packet(packet.payload.to_vec()) {
-                    ProcessResult::Continue => {}
-                    ProcessResult::Stop => {
-                        break;
-                    }
-                }
-            }
-
-            capture.stop().expect("could not stop etl capture");
+    while let Ok(packet) = capture.next_packet() {
+        match file_process_packet(&mut exporter, &mut sniffer, packet.data.to_vec()) {
+            ProcessResult::Continue => {},
+            ProcessResult::Stop => break,
         }
     }
 
+    exporter.export()
+}
+
+#[instrument(skip_all)]
+#[cfg(feature = "pktmon")]
+fn capture_from_etl<E>(
+    _args: &Args, 
+    mut exporter: E, 
+    mut sniffer: GameSniffer,
+    etl_path: PathBuf,
+) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    info!("Capturing from etl file: {}", etl_path.display());
+    let mut capture = pktmon::EtlCapture::new(&etl_path).expect("could not read etl file");
+    capture.start().expect("could not start etl capture");
+
+    while let Ok(packet) = capture.next_packet() {
+        match file_process_packet(&mut exporter, &mut sniffer, packet.payload.to_vec()) {
+            ProcessResult::Continue => {},
+            ProcessResult::Stop => break,
+        }
+    }
+
+    capture.stop().expect("could not stop etl capture");
     exporter.export()
 }
 
@@ -294,14 +326,12 @@ where
             let rt = tokio::runtime::Runtime::new().unwrap();
             let _guard = rt.enter();
             
-            let (client, ws_handle) = rt.block_on(websocket::start_websocket_server(WEBSOCKET_PORT, exporter.clone()));
+            let port = args.websocket_port;
+            let (client, ws_handle) = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
             
-            // Set streamer on the exporter if streaming is enabled
-            #[cfg(feature = "stream")] {
-                exporter.lock().unwrap().set_streamer(Some(client));
-            }
+            exporter.lock().unwrap().set_streamer(Some(client));
             
-            info!("WebSocket server running on ws://localhost:{}/ws", WEBSOCKET_PORT);
+            info!("WebSocket server running on ws://localhost:{}/ws", port);
             info!("You can connect to this WebSocket server to receive real-time relic updates");
             
             let result = live_capture(args, exporter, sniffer);
@@ -387,8 +417,7 @@ where
                                             info!("detected connection established");
                                         }
                                         ConnectionPacket::Disconnected => {
-                                            // program is probably going to exit before this happens
-                                            // info!("detected connection disconnected");
+                                            info!("detected connection disconnected");
                                         }
                                         _ => {}
                                     }
@@ -409,7 +438,7 @@ where
                                         }
                                         Err(e) => {
                                             warn!(%e);
-                                            break;
+                                            break 'recv;
                                         }
                                     }
                                 }
@@ -423,13 +452,13 @@ where
                     }
                     Err(e) => {
                         warn!(%e);
-                        break;
+                        break 'recv;
                     }
                 }
             }
             Err(e) => {
                 warn!(%e);
-                break;
+                break 'recv;
             }
         }
     }
