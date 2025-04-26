@@ -1,14 +1,16 @@
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::{mpsc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+#[cfg(feature = "pcap")] use capture::PCAP_FILTER;
 
 use chrono::Local;
 use clap::Parser;
-use pcap::{ConnectionStatus, Device, Error};
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
-use tracing::{debug, info, instrument, trace, warn};
+use tracing::{debug, info, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
 #[cfg(windows)] use {
@@ -22,16 +24,21 @@ use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 
-const PACKET_FILTER: &str = "udp portrange 23301-23302";
+mod capture;
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 struct Args {
     #[arg()]
     /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
     output: Option<PathBuf>,
     /// Read packets from .pcap file instead of capturing live packets
+    #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,
+    /// Read packets from .etl file instead of capturing live packets
+    #[cfg(feature = "pktmon")]
+    #[arg(long)]
+    etl: Option<PathBuf>,
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
@@ -50,6 +57,31 @@ struct Args {
     /// Don't wait for enter to be pressed after capturing
     #[arg(short, long)]
     exit_after_capture: bool,
+}
+
+#[derive(Debug, Clone)]
+enum CaptureMode {
+    Live,
+    #[cfg(feature = "pcap")]
+    Pcap(PathBuf),
+    #[cfg(feature = "pktmon")]
+    Etl(PathBuf),
+}
+
+impl CaptureMode {
+    fn from_args(args: &Args) -> Self {
+        #[cfg(feature = "pcap")]
+        if let Some(path) = &args.pcap {
+            return CaptureMode::Pcap(path.clone());
+        }
+
+        #[cfg(feature = "pktmon")]
+        if let Some(path) = &args.etl {
+            return CaptureMode::Etl(path.clone());
+        }
+
+        CaptureMode::Live
+    }
 }
 
 fn main() {
@@ -73,9 +105,13 @@ fn main() {
     let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
     let exporter = OptimizerExporter::new(database);
 
-    let export = match args.pcap {
-        Some(_) => file_capture(&args, exporter, sniffer),
-        None => live_capture(&args, exporter, sniffer),
+    let capture_mode = CaptureMode::from_args(&args);
+    let export = match capture_mode {
+        CaptureMode::Live => live_capture(&args, exporter, sniffer),
+        #[cfg(feature = "pcap")]
+        CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
+        #[cfg(feature = "pktmon")]
+        CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
     };
 
     if let Some(export) = export {
@@ -178,37 +214,91 @@ fn tracing_init(args: &Args) {
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
 
-#[instrument(skip_all)]
-fn file_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
+// Helper function to process a packet and determine if capture should stop
+enum ProcessResult {
+    Continue,
+    Stop,
+}
+
+// Simplified packet processing for file captures
+fn file_process_packet<E>(exporter: &mut E, sniffer: &mut GameSniffer, payload: Vec<u8>) -> ProcessResult
 where
     E: Exporter,
 {
-    let mut capture =
-        pcap::Capture::from_file(args.pcap.as_ref().unwrap()).expect("could not read pcap file");
+    if let Ok(packets) = sniffer.receive_packet(payload) {
+        for packet in packets {
+            match packet {
+                GamePacket::Commands(command) => {
+                    match command {
+                        Ok(command) => {
+                            exporter.read_command(command);
 
-    capture.filter(PACKET_FILTER, false).unwrap();
-
-    info!("capturing");
-    while let Ok(packet) = capture.next_packet() {
-        if let Ok(packets) = sniffer.receive_packet(packet.data.to_vec()) {
-            for packet in packets {
-                match packet {
-                    GamePacket::Commands(command) => {
-                        match command {
-                            Ok(command) => {
-                                exporter.read_command(command);
-                            }
-                            Err(e) => {
-                                warn!(%e);
+                            if exporter.is_finished() {
+                                info!("finished capturing");
+                                return ProcessResult::Stop;
                             }
                         }
+                        Err(e) => {
+                            warn!(%e);
+                        }
                     }
-                    _ => {}
                 }
+                _ => {}
             }
         }
     }
 
+    ProcessResult::Continue
+}
+
+#[instrument(skip_all)]
+#[cfg(feature = "pcap")]
+fn capture_from_pcap<E>(
+    _args: &Args,
+    mut exporter: E,
+    mut sniffer: GameSniffer,
+    pcap_path: PathBuf,
+) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    info!("Capturing from pcap file: {}", pcap_path.display());
+    let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
+    capture.filter(PCAP_FILTER, false).unwrap();
+
+    while let Ok(packet) = capture.next_packet() {
+        match file_process_packet(&mut exporter, &mut sniffer, packet.data.to_vec()) {
+            ProcessResult::Continue => {},
+            ProcessResult::Stop => break,
+        }
+    }
+
+    exporter.export()
+}
+
+#[instrument(skip_all)]
+#[cfg(feature = "pktmon")]
+fn capture_from_etl<E>(
+    _args: &Args,
+    mut exporter: E,
+    mut sniffer: GameSniffer,
+    etl_path: PathBuf,
+) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    info!("Capturing from etl file: {}", etl_path.display());
+    let mut capture = pktmon::EtlCapture::new(&etl_path).expect("could not read etl file");
+    capture.start().expect("could not start etl capture");
+
+    for packet in capture.packets().unwrap() {
+        match file_process_packet(&mut exporter, &mut sniffer, packet.payload.to_vec()) {
+            ProcessResult::Continue => {},
+            ProcessResult::Stop => break,
+        }
+    }
+
+    capture.stop().expect("could not stop etl capture");
     exporter.export()
 }
 
@@ -217,29 +307,37 @@ fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Op
 where
     E: Exporter,
 {
-    let (tx, rx) = mpsc::channel();
-    let mut join_handles = Vec::new();
+    let abort_signal = Arc::new(AtomicBool::new(false));
 
-    // we need to specify a specific network device when using pcap to capture network packets.
-    // to lessen the burden on the user, we instead just capture *all* valid network devices
-    // by capturing each on a different thread and sending the captured packets to a mpsc channel
-    for device in Device::list()
-        .unwrap()
-        .into_iter()
-        .filter(|d| matches!(d.flags.connection_status, ConnectionStatus::Connected))
-        .filter(|d| !d.addresses.is_empty())
-        .filter(|d| !d.flags.is_loopback())
     {
-        let tx = tx.clone();
-        let handle = std::thread::spawn(move || capture_device(device, tx));
-        join_handles.push(handle);
+        let abort_signal = abort_signal.clone();
+        if let Err(e) = ctrlc::set_handler(move || {
+            abort_signal.store(true, Ordering::Relaxed);
+        }) {
+            error!("Failed to set Ctrl-C handler: {}", e);
+        }
     }
 
-    // we clone tx into every thread, but at the end the original tx still remains.
-    // rx.recv will continue to listen while at least one tx is still alive.
-    // we drop the original tx to make sure that there are no tx alive after all threads
-    // have dropped theirs
-    drop(tx);
+    #[cfg(windows)]
+    let rx = {
+        #[cfg(feature = "pcap")] {
+            capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
+        }
+
+        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
+            if unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
+                capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
+            } else {
+                warn!("You must run this program as an administrator to capture packets");
+                return None;
+            }
+        }
+    };
+
+    #[cfg(not(windows))]
+    let rx = capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone());
+
+    let (rx, join_handles) = rx.expect("Failed to start packet capture");
 
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
     info!("listening with a timeout of {} seconds...", args.timeout);
@@ -247,7 +345,7 @@ where
     'recv: loop {
         match rx.recv_timeout(Duration::from_secs(args.timeout)) {
             Ok(packet) => {
-                match sniffer.receive_packet(packet.to_vec()) {
+                match sniffer.receive_packet(packet.data) {
                     Ok(packets) => {
                         for packet in packets {
                             match packet {
@@ -257,8 +355,7 @@ where
                                             info!("detected connection established");
                                         }
                                         ConnectionPacket::Disconnected => {
-                                            // program is probably going to exit before this happens
-                                            // info!("detected connection disconnected");
+                                            info!("detected connection disconnected");
                                         }
                                         _ => {}
                                     }
@@ -267,19 +364,19 @@ where
                                     match command {
                                         Ok(command) => {
                                             if command.command_id == PlayerLoginScRsp {
-                                                info!("detected login");
+                                                info!("detected login start");
                                             }
-            
+
                                             if command.command_id == PlayerLoginFinishScRsp {
                                                 info!("detected login end, assume initialization is finished");
                                                 break 'recv;
                                             }
-            
+
                                             exporter.read_command(command);
                                         }
                                         Err(e) => {
                                             warn!(%e);
-                                            break;
+                                            break 'recv;
                                         }
                                     }
                                 }
@@ -293,70 +390,21 @@ where
                     }
                     Err(e) => {
                         warn!(%e);
-                        break;
+                        break 'recv;
                     }
                 }
             }
             Err(e) => {
                 warn!(%e);
-                break;
+                break 'recv;
             }
         }
+    }
+
+    abort_signal.store(true, Ordering::Relaxed);
+    for handle in join_handles {
+        handle.join().expect("Failed to join capture thread");
     }
 
     exporter.export()
-}
-
-#[instrument(skip_all, fields(device = device.desc))]
-fn capture_device(device: Device, tx: mpsc::Sender<Vec<u8>>) {
-    let mut capture = pcap::Capture::from_device(device)
-        .unwrap()
-        .immediate_mode(true)
-        .promisc(true)
-        .timeout(0) // explicitly disable timeout??
-        .open()
-        .unwrap();
-
-    capture.filter(PACKET_FILTER, true).unwrap();
-
-    debug!("listening");
-
-    let mut has_captured = false;
-
-    loop {
-        match capture.next_packet() {
-            Ok(packet) => {
-                trace!("captured packet");
-                if let Err(e) = tx.send(packet.data.to_vec()) {
-                    debug!("channel closed: {e}");
-                    break;
-                }
-
-                has_captured = true;
-            }
-            Err(e) => {
-                // we only really care about capture errors on devices that we already know
-                // are relevant (have sent packets before) and send those errors on warn level.
-                //
-                // if a capture errors right after initialization or on a device that did
-                // not receive any relevant packets, error is less useful to the user,
-                // so we lower the logging level
-
-                if !has_captured {
-                    debug!(?e);
-                    break;
-                } else if matches!(e, Error::TimeoutExpired) {
-                    // somehow a timeout error can still happen even if i explicitly
-                    // disable the timeout?? why :sob:
-                    debug!(?e);
-                    continue;
-                } else {
-                    warn!(?e);
-                    break;
-                }
-            }
-        }
-    }
-
-    debug!("stop listening");
 }

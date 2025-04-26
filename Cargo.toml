@@ -15,17 +15,20 @@ base64 = "0.22.1"
 clap = { version = "4.5.31", features = ["derive"] }
 chrono = "0.4.40"
 color-eyre = "0.6.3"
-pcap = "2.2.0"
-protobuf = "=3.7.1"                                                             # match the protobuf version used in reliquary-codegen
+pcap = { version = "2.2.0", optional = true }
+protobuf = "=3.7.1" # match the protobuf version used in reliquary-codegen
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = { version = "2.12.1" }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v10.0.0", features = ["proto-rqa"] }
+ctrlc = "3.4.5"
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
+pktmon = { version = "0.4.0", optional = true }
+windows = { version = "0.61", features = ["Win32_UI_Shell"] }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
@@ -41,3 +44,8 @@ overflow-checks = false
 opt-level = "z"         # optimize for size
 lto = true
 overflow-checks = false # see comment above
+
+[features]
+default = ["pcap", "pktmon"]
+pktmon = ["dep:pktmon"]
+pcap = ["dep:pcap"]
