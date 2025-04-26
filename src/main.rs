@@ -194,11 +194,10 @@ where
     let mut capture =
         pcap::Capture::from_file(args.pcap.as_ref().unwrap()).expect("could not read pcap file");
 
-    capture.filter(PCAP_FILTER, false).unwrap();
+    capture.filter(PACKET_FILTER, false).unwrap();
 
     info!("capturing");
     while let Ok(packet) = capture.next_packet() {
-        info!("received packet: {:?}", packet.data.to_vec());
         if let Ok(packets) = sniffer.receive_packet(packet.data.to_vec()) {
             for packet in packets {
                 match packet {
