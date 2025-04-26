@@ -46,6 +46,6 @@ lto = true
 overflow-checks = false # see comment above
 
 [features]
-default = ["pcap", "pktmon"]
+default = ["pcap"]
 pktmon = ["dep:pktmon"]
 pcap = ["dep:pcap"]
