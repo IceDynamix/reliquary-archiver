@@ -7,10 +7,13 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::export::database::Database;
 use protobuf::Enum;
-use reliquary::network::command::command_id;
+use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
+use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
+use reliquary::network::command::{command_id, proto::PlayerLoginScRsp::PlayerLoginScRsp};
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::AvatarSkillTree::AvatarSkillTree as ProtoSkillTree;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
+use reliquary::network::command::proto::Material::Material as ProtoMaterial;
 use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
 use reliquary::network::command::proto::GetMultiPathAvatarInfoScRsp::GetMultiPathAvatarInfoScRsp;
@@ -36,6 +39,8 @@ pub struct Export {
     pub build: &'static str,
     pub version: u32,
     pub metadata: Metadata,
+    pub gacha: GachaInfo,
+    pub materials: Vec<Material>,
     pub light_cones: Vec<LightCone>,
     pub relics: Vec<Relic>,
     pub characters: Vec<Character>,
@@ -47,12 +52,34 @@ pub struct Metadata {
     pub trailblazer: Option<&'static str>,
 }
 
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
+pub struct GachaInfo {
+    pub stellar_jade: u32,
+    pub oneric_shards: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BannerType {
+    Character,
+    LightCone,
+    Standard,
+}
+
+#[derive(Debug, Clone)]
+pub struct BannerInfo {
+    pub rate_up_item_list: Vec<u32>,
+    pub banner_type: BannerType,
+}
+
 pub struct OptimizerExporter {
     database: Database,
 
     initialized: bool,
     uid: Option<u32>,
     trailblazer: Option<&'static str>,
+    banners: BTreeMap<u32, BannerInfo>,
+    gacha: GachaInfo,
+    materials: BTreeMap<u32, Material>,
     light_cones: BTreeMap<u32, LightCone>,
     relics: BTreeMap<u32, Relic>,
     characters: BTreeMap<u32, Character>,
@@ -69,11 +96,68 @@ pub struct OptimizerExporter {
 #[serde(tag = "event", content = "data")]
 pub enum OptimizerEvent {
     InitialScan(Export),
-    UpdateLightCone(LightCone),
-    UpdateRelic(Relic),
-    UpdateCharacter(Character),
-    DeleteRelic(#[serde_as(as = "DisplayFromStr")] u32),
-    DeleteLightCone(#[serde_as(as = "DisplayFromStr")] u32),
+    UpdateGacha(GachaInfo),
+    UpdatePity(Vec<PityUpdate>),
+    UpdateMaterials(Vec<Material>),
+    UpdateLightCones(Vec<LightCone>),
+    UpdateRelics(Vec<Relic>),
+    UpdateCharacters(Vec<Character>),
+    DeleteRelics(#[serde_as(as = "Vec<DisplayFromStr>")] Vec<u32>),
+    DeleteLightCones(#[serde_as(as = "Vec<DisplayFromStr>")] Vec<u32>),
+}
+
+#[derive(Serialize, Debug, Clone, Copy)]
+pub enum PityPool {
+    Character5Star,
+    LightCone5Star,
+    Standard5Star,
+    
+    Character4Star,
+    LightCone4Star,
+    Standard4Star,
+}
+
+#[derive(Serialize, Debug, Clone, Copy)]
+#[serde(tag = "kind")]
+pub enum PityUpdate {
+    AddPity {
+        banner_id: u32,
+        pool: PityPool,
+        amount: u32,
+    },
+    ResetPity {
+        banner_id: u32,
+        pool: PityPool,
+        amount: u32,
+        set_guarantee: bool,
+    },
+}
+
+impl PityUpdate {
+    pub fn increment(&mut self) {
+        match self {
+            PityUpdate::AddPity { amount, .. } => *amount += 1,
+            PityUpdate::ResetPity { amount, .. } => *amount += 1,
+        }
+    }
+
+    pub fn reset(&mut self, guarantee: bool) {
+        match self {
+            PityUpdate::AddPity { banner_id, pool, amount } => {
+                // Convert to the other variant.
+                *self = PityUpdate::ResetPity { 
+                    banner_id: *banner_id,
+                    pool: *pool,
+                    amount: *amount,
+                    set_guarantee: guarantee,
+                }
+            },
+            PityUpdate::ResetPity { amount, set_guarantee, .. } => {
+                *amount = 0;
+                *set_guarantee = guarantee;
+            },
+        }
+    }
 }
 
 impl OptimizerExporter {
@@ -84,6 +168,9 @@ impl OptimizerExporter {
             initialized: false,
             uid: None,
             trailblazer: None,
+            banners: BTreeMap::new(),
+            gacha: GachaInfo::default(),
+            materials: BTreeMap::new(),
             light_cones: BTreeMap::new(),
             relics: BTreeMap::new(),
             characters: BTreeMap::new(),
@@ -140,6 +227,11 @@ impl OptimizerExporter {
         self.uid = Some(uid);
     }
 
+    pub fn set_currency_count(&mut self, login: PlayerLoginScRsp) {
+        self.gacha.oneric_shards = login.basic_info.oneric_shard_count;
+        self.gacha.stellar_jade = login.basic_info.stellar_jade_count;
+    }
+
     pub fn add_inventory(&mut self, bag: GetBagScRsp) {
         let relics: Vec<Relic> = bag
             .relic_list
@@ -149,7 +241,6 @@ impl OptimizerExporter {
 
         info!(num = relics.len(), "found relics");
         for relic in &relics {
-            self.emit_event(OptimizerEvent::UpdateRelic(relic.clone()));
             self.relics.insert(relic._uid, relic.clone());
         }
 
@@ -161,12 +252,22 @@ impl OptimizerExporter {
 
         info!(num = light_cones.len(), "found light cones");
         for light_cone in light_cones {
-            self.emit_event(OptimizerEvent::UpdateLightCone(light_cone.clone()));
             self.light_cones.insert(light_cone._uid, light_cone);
+        }
+
+        let materials: Vec<Material> = bag
+            .material_list
+            .iter()
+            .filter_map(|m| export_proto_material(&self.database, m))
+            .collect();
+
+        info!(num = materials.len(), "found materials");
+        for material in materials {
+            self.materials.insert(material.id, material);
         }
     }
 
-    pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) {
+    pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) -> Option<Character> {
         let character = export_proto_character(&self.database, proto_character).unwrap();
         self.characters.insert(character.id, character.clone());
 
@@ -178,23 +279,20 @@ impl OptimizerExporter {
             for unresolved_avatar_id in self.unresolved_multipath_characters.clone().iter() {
                 self.resolve_multipath_character(*unresolved_avatar_id);
             }
+
+            return None;
         } else {
             // If the character is a multipath character, we need to wait for the 
             // multipath packet to get the rest of the data, so only emit character
             // here if it's not multipath.
 
-            self.emit_event(OptimizerEvent::UpdateCharacter(character.clone()));
+            return Some(character);
         }
     }
 
-    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarTypeInfo) {
+    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarTypeInfo) -> Option<Character> {
         let character = export_proto_multipath_character(&self.database, proto_multipath_character).unwrap();
         self.multipath_characters.insert(character.id, character.clone());
-
-        if self.resolve_multipath_character(character.id).is_none() {
-            info!(uid = &character.id, "multipath character not resolved"); // TODO: use DEBUG
-            self.unresolved_multipath_characters.insert(character.id);
-        }
 
         // If it's the trailblazer, determine the gender
         if character.name == "Trailblazer" {
@@ -203,6 +301,15 @@ impl OptimizerExporter {
             } else {
                 "Caelus"
             });
+        }
+
+        if let Some(character) = self.resolve_multipath_character(character.id) {
+            return Some(character);
+        } else {
+            debug!(uid = &character.id, "multipath character not resolved");
+            self.unresolved_multipath_characters.insert(character.id);
+
+            return None;
         }
     }
 
@@ -229,7 +336,7 @@ impl OptimizerExporter {
             .BaseAvatarID
     }
 
-    pub fn resolve_multipath_character(&mut self, character_id: u32) -> Option<()> {
+    pub fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
         let base_avatar_id = self.get_multipath_base_id(character_id);
         let character = self.multipath_characters.get_mut(&character_id).unwrap();
         if let Some(base_avatar) = self.multipath_base_avatars.get(&base_avatar_id) {
@@ -238,10 +345,7 @@ impl OptimizerExporter {
 
             self.unresolved_multipath_characters.remove(&character_id);
 
-            let character = character.clone(); // Clone before emit to escape mutable borrow
-            self.emit_event(OptimizerEvent::UpdateCharacter(character));
-
-            return Some(());
+            return Some(character.clone());
         }
 
         return None;
@@ -256,10 +360,11 @@ impl OptimizerExporter {
 
         if !relics.is_empty() {
             info!(num = relics.len(), "found updated relics");
-            for relic in relics {
-                self.emit_event(OptimizerEvent::UpdateRelic(relic.clone()));
+            for relic in relics.clone() {
                 self.relics.insert(relic._uid, relic);
             }
+
+            self.emit_event(OptimizerEvent::UpdateRelics(relics));
         }
 
         let light_cones: Vec<LightCone> = sync
@@ -270,46 +375,156 @@ impl OptimizerExporter {
 
         if !light_cones.is_empty() {
             info!(num = light_cones.len(), "found updated light cones");
-            for light_cone in light_cones {
-                self.emit_event(OptimizerEvent::UpdateLightCone(light_cone.clone()));
+            for light_cone in light_cones.clone() {
                 self.light_cones.insert(light_cone._uid, light_cone);
             }
+
+            self.emit_event(OptimizerEvent::UpdateLightCones(light_cones));
+        }
+
+        let materials: Vec<Material> = sync
+            .material_list
+            .iter()
+            .filter_map(|m| export_proto_material(&self.database, m))
+            .collect();
+
+        if !materials.is_empty() {
+            info!(num = materials.len(), "found updated materials");
+            for material in materials.clone() {
+                self.materials.insert(material.id, material);
+            }
+
+            self.emit_event(OptimizerEvent::UpdateMaterials(materials));
+        }
+
+        if let Some(basic_info) = sync.basic_info.into_option() {
+            self.gacha.oneric_shards = basic_info.oneric_shard_count;
+            self.gacha.stellar_jade = basic_info.stellar_jade_count;
+
+            self.emit_event(OptimizerEvent::UpdateGacha(self.gacha.clone()));
         }
 
         if !sync.del_relic_list.is_empty() {
             info!(num = sync.del_relic_list.len(), "found deleted relics");
-            for del_relic in sync.del_relic_list {
-                if self.relics.remove(&del_relic).is_some() {
-                    self.emit_event(OptimizerEvent::DeleteRelic(del_relic));
-                } else {
+            for del_relic in sync.del_relic_list.iter() {
+                if self.relics.remove(del_relic).is_none() {
                     warn!(uid = &del_relic, "del_relic not found");
                 }
             }
+
+            self.emit_event(OptimizerEvent::DeleteRelics(sync.del_relic_list));
         }
 
         if !sync.del_equipment_list.is_empty() {
             info!(num = sync.del_equipment_list.len(), "found deleted light cones");
-            for del_light_cone in sync.del_equipment_list {
-                if let Some(_) = self.light_cones.get(&del_light_cone) {
-                    self.emit_event(OptimizerEvent::DeleteLightCone(del_light_cone));
-                } else {
+            for del_light_cone in sync.del_equipment_list.iter() {
+                if self.light_cones.remove(del_light_cone).is_none() {
                     warn!(uid = &del_light_cone, "del_light_cone not found");
+                }
+            }
+
+            self.emit_event(OptimizerEvent::DeleteLightCones(sync.del_equipment_list));
+        }
+
+        let mut updated_characters = Vec::new();
+
+        if let Some(avatar_sync) = sync.avatar_sync.into_option() {
+            for avatar in avatar_sync.avatar_list {
+                if let Some(character) = self.ingest_character(&avatar) {
+                    updated_characters.push(character);
                 }
             }
         }
 
-        if let Some(avatar_sync) = sync.avatar_sync.into_option() {
-            info!(num = avatar_sync.avatar_list.len(), "found avatar sync");
-            for avatar in avatar_sync.avatar_list {
-                self.ingest_character(&avatar);
+        if !sync.multi_path_avatar_type_info_list.is_empty() {
+            for multipath_avatar_info in sync.multi_path_avatar_type_info_list {
+                if let Some(character) = self.ingest_multipath_character(&multipath_avatar_info) {
+                    updated_characters.push(character);
+                } else {
+                    warn!(uid = &multipath_avatar_info.avatar_id.value(), "multipath character not resolved");
+                }
             }
         }
 
-        if !sync.multi_path_avatar_type_info_list.is_empty() {
-            info!(num = sync.multi_path_avatar_type_info_list.len(), "found multipath avatar sync");
-            for multipath_avatar_info in sync.multi_path_avatar_type_info_list {
-                self.ingest_multipath_character(&multipath_avatar_info);
+        if !updated_characters.is_empty() {
+            info!(num = updated_characters.len(), "found updated characters");
+            self.emit_event(OptimizerEvent::UpdateCharacters(updated_characters));
+        }
+    }
+
+    fn is_lightcone(&self, item_id: u32) -> bool {
+        self.database.equipment_config.get(&item_id).is_some()
+    }
+
+    pub fn process_gacha_info(&mut self, gacha_info: GetGachaInfoScRsp) {
+        for banner in gacha_info.gacha_info_list {
+            self.banners.insert(banner.gacha_id, BannerInfo {
+                rate_up_item_list: banner.item_detail_list,
+                banner_type: match banner.gacha_id {
+                    1001 => BannerType::Standard,
+                    _ => {
+                        if self.is_lightcone(*banner.prize_item_list.first().unwrap()) {
+                            BannerType::LightCone
+                        } else {
+                            BannerType::Character
+                        }
+                    },
+                },
+            });
+        }
+    }
+
+    pub fn process_gacha(&mut self, gacha: DoGachaScRsp) {
+        if let Some(banner) = self.banners.get(&gacha.gacha_id) {
+            let (pool_4, pool_5) = match banner.banner_type {
+                BannerType::Standard => (PityPool::Standard4Star, PityPool::Standard5Star),
+                BannerType::LightCone => (PityPool::LightCone4Star, PityPool::LightCone5Star),
+                BannerType::Character => (PityPool::Character4Star, PityPool::Character5Star),
+            };
+
+            let mut pity_4 = PityUpdate::AddPity { banner_id: gacha.gacha_id, pool: pool_4, amount: 0 };
+            let mut pity_5 = PityUpdate::AddPity { banner_id: gacha.gacha_id, pool: pool_5, amount: 0 };
+
+            for item in gacha.gacha_item_list {
+                let grade = if let Some(lc_config) = self.database.equipment_config.get(&item.gacha_item.item_id) {
+                    match lc_config.Rarity.as_str() {
+                        "CombatPowerLightconeRarity5" => 5,
+                        "CombatPowerLightconeRarity4" => 4,
+                        "CombatPowerLightconeRarity3" => 3,
+                        _ => panic!("Unknown light cone rarity: {}", lc_config.Rarity),
+                    }
+                } else if let Some(avatar_config) = self.database.avatar_config.get(&item.gacha_item.item_id) {
+                    match avatar_config.Rarity.as_str() {
+                        "CombatPowerAvatarRarityType5" => 5,
+                        "CombatPowerAvatarRarityType4" => 4,
+                        _ => panic!("Unknown avatar rarity: {}", avatar_config.Rarity),
+                    }
+                } else {
+                    panic!("item not found: {}", item.gacha_item.item_id);
+                };
+
+                let was_rate_up = banner.rate_up_item_list.contains(&item.gacha_item.item_id);
+                let next_is_guarantee = !was_rate_up;
+
+                match grade {
+                    5 => {
+                        pity_4.increment();
+                        pity_5.reset(next_is_guarantee);
+                    },
+                    4 => {
+                        pity_4.reset(next_is_guarantee);
+                        pity_5.increment();
+                    },
+                    _ => {
+                        pity_4.increment();
+                        pity_5.increment();
+                    }
+                }
             }
+
+            self.emit_event(OptimizerEvent::UpdatePity(vec![pity_4, pity_5]));
+        } else {
+            warn!(gacha_id = &gacha.gacha_id, "gacha info not found");
         }
     }
 }
@@ -330,6 +545,16 @@ impl Exporter for OptimizerExporter {
                     Ok(cmd) => self.set_uid(cmd.uid),
                     Err(error) => {
                         warn!(%error, "could not parse token command");
+                    }
+                }
+            }
+            command_id::PlayerLoginScRsp => {
+                debug!("detected login info packet");
+                let cmd = command.parse_proto::<PlayerLoginScRsp>();
+                match cmd {
+                    Ok(cmd) => self.set_currency_count(cmd),
+                    Err(error) => {
+                        warn!(%error, "could not parse login info data command");
                     }
                 }
             }
@@ -370,6 +595,26 @@ impl Exporter for OptimizerExporter {
                     Ok(cmd) => self.process_player_sync(cmd),
                     Err(error) => {
                         warn!(%error, "could not parse player sync data command");
+                    }
+                }
+            }
+            command_id::GetGachaInfoScRsp => {
+                debug!("detected gacha info packet");
+                let cmd = command.parse_proto::<GetGachaInfoScRsp>();
+                match cmd {
+                    Ok(cmd) => self.process_gacha_info(cmd),
+                    Err(error) => {
+                        warn!(%error, "could not parse gacha info data command");
+                    }
+                }
+            }
+            command_id::DoGachaScRsp => {
+                debug!("detected gacha packet");
+                let cmd = command.parse_proto::<DoGachaScRsp>();
+                match cmd {
+                    Ok(cmd) => self.process_gacha(cmd),
+                    Err(error) => {
+                        warn!(%error, "could not parse gacha data command");
                     }
                 }
             }
@@ -448,6 +693,8 @@ impl Exporter for OptimizerExporter {
                 uid: self.uid,
                 trailblazer: self.trailblazer,
             },
+            gacha: self.gacha,
+            materials: self.materials.values().cloned().collect(),
             light_cones: self.light_cones.values().cloned().collect(),
             relics: self.relics.values().cloned().collect(),
             characters: self
@@ -473,6 +720,38 @@ impl Exporter for OptimizerExporter {
     fn set_streamer(&mut self, tx: Option<websocket::ClientSender>) {
         self.websocket_tx = tx;
     }
+}
+
+#[serde_as]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Material {
+    #[serde_as(as = "DisplayFromStr")]
+    pub id: u32,
+    pub name: String,
+    pub count: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expire_time: Option<u64>,
+}
+
+#[instrument(name = "material", skip_all, fields(id = proto.tid))]
+fn export_proto_material(db: &Database, proto: &ProtoMaterial) -> Option<Material> {
+    let cfg = db.item_config.get(&proto.tid)?;
+    let id = cfg.ID;
+    let name = cfg
+        .ItemName
+        .map(|hash| db.text_map.get(&hash))
+        .flatten()
+        .map(|s| s.to_string())?;
+    let count = proto.num;
+
+    debug!(material = name, count, "detected");
+
+    Some(Material {
+        id,
+        name,
+        count,
+        expire_time: None,
+    })
 }
 
 fn format_location(avatar_id: u32) -> String {
@@ -518,7 +797,7 @@ fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         .collect();
 
     Some(Relic {
-        set_id: set_id.to_string(),
+        set_id,
         name: set_name,
         slot,
         rarity,
@@ -556,7 +835,8 @@ fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Su
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Relic {
-    pub set_id: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub set_id: u32,
     pub name: String,
     pub slot: &'static str,
     pub rarity: u32,
@@ -638,7 +918,8 @@ fn sub_stat_to_export(s: &str) -> &'static str {
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LightCone {
-    pub id: String,
+    #[serde_as(as = "DisplayFromStr")]
+    pub id: u32,
     pub name: String,
     pub level: u32,
     pub ascension: u32,
@@ -652,7 +933,7 @@ pub struct LightCone {
 #[instrument(name = "light_cone", skip_all, fields(id = proto.tid))]
 fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<LightCone> {
     let cfg = db.equipment_config.get(&proto.tid)?;
-    let id = cfg.EquipmentID.to_string();
+    let id = cfg.EquipmentID;
     let name = cfg
         .EquipmentName
         .lookup(&db.text_map)

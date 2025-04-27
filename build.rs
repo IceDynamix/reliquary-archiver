@@ -4,7 +4,7 @@ use std::fs::File;
 use std::path::Path;
 
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, MultiplePathAvatarConfigMap,
+    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap,
     RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::{ResourceMap, TextMapEntry};
@@ -29,8 +29,27 @@ macro_rules! download_config_and_store_text_hashes {
             },
             <$t>::get_json_name(),
         )
-    };
+    };    
 }
+
+macro_rules! download_config_and_store_partial_text_hashes {
+    ($t:ty, $field:ident, $hashes:ident) => {
+        write_to_out(
+            {
+                let url = resource_url::<$t>();
+                let value = download_as_json::<$t>(&url);
+                for cfg in value.0.iter() {
+                    if let Some(hash) = cfg.$field {
+                        $hashes.insert(hash);
+                    }
+                }
+                value
+            },
+            <$t>::get_json_name(),
+        )
+    };    
+}
+
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
@@ -44,6 +63,7 @@ fn main() {
     download_config_and_store_text_hashes!(AvatarConfigMap, AvatarName, text_hashes);
     download_config_and_store_text_hashes!(EquipmentConfigMap, EquipmentName, text_hashes);
     download_config_and_store_text_hashes!(RelicSetConfigMap, SetName, text_hashes);
+    download_config_and_store_partial_text_hashes!(ItemConfigMap, ItemName, text_hashes);
 
     download_config::<AvatarSkillTreeConfigMap>();
     download_config::<MultiplePathAvatarConfigMap>();
