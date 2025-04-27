@@ -18,7 +18,7 @@ use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
     std::env,
     std::process::Command,
     self_update::cargo_crate_version,
-    tracing::error,
+    tracing::error
 };
 
 #[cfg(feature = "stream")] use reliquary_archiver::websocket;
@@ -356,7 +356,8 @@ where
 {
     let abort_signal = Arc::new(AtomicBool::new(false));
 
-    {
+    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
+    #[cfg(not(target_os = "linux"))] {
         let abort_signal = abort_signal.clone();
         if let Err(e) = ctrlc::set_handler(move || {
             abort_signal.store(true, Ordering::Relaxed);
