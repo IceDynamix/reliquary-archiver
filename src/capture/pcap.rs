@@ -33,7 +33,7 @@ impl CaptureDevice for PcapDevice {
             .map_err(|e| CaptureError::DeviceError(Box::new(e)))?
             .immediate_mode(true)
             .promisc(true)
-            .timeout(1000) // explicitly disable timeout??
+            .timeout(1000)
             .open()
             .map_err(|e| CaptureError::CaptureError { has_captured: false, error: Box::new(e) })?;
 
