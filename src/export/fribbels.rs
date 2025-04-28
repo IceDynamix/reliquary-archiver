@@ -39,7 +39,7 @@ pub struct Export {
     pub build: &'static str,
     pub version: u32,
     pub metadata: Metadata,
-    pub gacha: GachaInfo,
+    pub gacha: GachaFunds,
     pub materials: Vec<Material>,
     pub light_cones: Vec<LightCone>,
     pub relics: Vec<Relic>,
@@ -53,12 +53,12 @@ pub struct Metadata {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, Default)]
-pub struct GachaInfo {
+pub struct GachaFunds {
     pub stellar_jade: u32,
     pub oneric_shards: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Serialize, Debug, Clone, Copy)]
 pub enum BannerType {
     Character,
     LightCone,
@@ -78,7 +78,7 @@ pub struct OptimizerExporter {
     uid: Option<u32>,
     trailblazer: Option<&'static str>,
     banners: BTreeMap<u32, BannerInfo>,
-    gacha: GachaInfo,
+    gacha: GachaFunds,
     materials: BTreeMap<u32, Material>,
     light_cones: BTreeMap<u32, LightCone>,
     relics: BTreeMap<u32, Relic>,
@@ -96,8 +96,8 @@ pub struct OptimizerExporter {
 #[serde(tag = "event", content = "data")]
 pub enum OptimizerEvent {
     InitialScan(Export),
-    UpdateGacha(GachaInfo),
-    UpdatePity(Vec<PityUpdate>),
+    GachaResult(GachaResult),
+    UpdateGachaFunds(GachaFunds),
     UpdateMaterials(Vec<Material>),
     UpdateLightCones(Vec<LightCone>),
     UpdateRelics(Vec<Relic>),
@@ -106,28 +106,22 @@ pub enum OptimizerEvent {
     DeleteLightCones(#[serde_as(as = "Vec<DisplayFromStr>")] Vec<u32>),
 }
 
-#[derive(Serialize, Debug, Clone, Copy)]
-pub enum PityPool {
-    Character5Star,
-    LightCone5Star,
-    Standard5Star,
-    
-    Character4Star,
-    LightCone4Star,
-    Standard4Star,
+#[derive(Serialize, Debug, Clone)]
+pub struct GachaResult {
+    pub banner_id: u32,
+    pub banner_type: BannerType,
+    pub pity_4: PityUpdate,
+    pub pity_5: PityUpdate,
+    pub pull_results: Vec<u32>,
 }
 
 #[derive(Serialize, Debug, Clone, Copy)]
 #[serde(tag = "kind")]
 pub enum PityUpdate {
     AddPity {
-        banner_id: u32,
-        pool: PityPool,
         amount: u32,
     },
     ResetPity {
-        banner_id: u32,
-        pool: PityPool,
         amount: u32,
         set_guarantee: bool,
     },
@@ -143,11 +137,9 @@ impl PityUpdate {
 
     pub fn reset(&mut self, guarantee: bool) {
         match self {
-            PityUpdate::AddPity { banner_id, pool, amount } => {
+            PityUpdate::AddPity { amount } => {
                 // Convert to the other variant.
-                *self = PityUpdate::ResetPity { 
-                    banner_id: *banner_id,
-                    pool: *pool,
+                *self = PityUpdate::ResetPity {
                     amount: *amount,
                     set_guarantee: guarantee,
                 }
@@ -169,7 +161,7 @@ impl OptimizerExporter {
             uid: None,
             trailblazer: None,
             banners: BTreeMap::new(),
-            gacha: GachaInfo::default(),
+            gacha: GachaFunds::default(),
             materials: BTreeMap::new(),
             light_cones: BTreeMap::new(),
             relics: BTreeMap::new(),
@@ -401,7 +393,7 @@ impl OptimizerExporter {
             self.gacha.oneric_shards = basic_info.oneric_shard_count;
             self.gacha.stellar_jade = basic_info.stellar_jade_count;
 
-            self.emit_event(OptimizerEvent::UpdateGacha(self.gacha.clone()));
+            self.emit_event(OptimizerEvent::UpdateGachaFunds(self.gacha.clone()));
         }
 
         if !sync.del_relic_list.is_empty() {
@@ -476,16 +468,17 @@ impl OptimizerExporter {
 
     pub fn process_gacha(&mut self, gacha: DoGachaScRsp) {
         if let Some(banner) = self.banners.get(&gacha.gacha_id) {
-            let (pool_4, pool_5) = match banner.banner_type {
-                BannerType::Standard => (PityPool::Standard4Star, PityPool::Standard5Star),
-                BannerType::LightCone => (PityPool::LightCone4Star, PityPool::LightCone5Star),
-                BannerType::Character => (PityPool::Character4Star, PityPool::Character5Star),
+            let mut gacha_result = GachaResult {
+                banner_id: gacha.gacha_id,
+                banner_type: banner.banner_type,
+                pity_4: PityUpdate::AddPity { amount: 0 },
+                pity_5: PityUpdate::AddPity { amount: 0 },
+                pull_results: Vec::new(),
             };
 
-            let mut pity_4 = PityUpdate::AddPity { banner_id: gacha.gacha_id, pool: pool_4, amount: 0 };
-            let mut pity_5 = PityUpdate::AddPity { banner_id: gacha.gacha_id, pool: pool_5, amount: 0 };
-
             for item in gacha.gacha_item_list {
+                gacha_result.pull_results.push(item.gacha_item.item_id);
+
                 let grade = if let Some(lc_config) = self.database.equipment_config.get(&item.gacha_item.item_id) {
                     match lc_config.Rarity.as_str() {
                         "CombatPowerLightconeRarity5" => 5,
@@ -508,21 +501,21 @@ impl OptimizerExporter {
 
                 match grade {
                     5 => {
-                        pity_4.increment();
-                        pity_5.reset(next_is_guarantee);
+                        gacha_result.pity_4.increment();
+                        gacha_result.pity_5.reset(next_is_guarantee);
                     },
                     4 => {
-                        pity_4.reset(next_is_guarantee);
-                        pity_5.increment();
+                        gacha_result.pity_4.reset(next_is_guarantee);
+                        gacha_result.pity_5.increment();
                     },
                     _ => {
-                        pity_4.increment();
-                        pity_5.increment();
+                        gacha_result.pity_4.increment();
+                        gacha_result.pity_5.increment();
                     }
                 }
             }
 
-            self.emit_event(OptimizerEvent::UpdatePity(vec![pity_4, pity_5]));
+            self.emit_event(OptimizerEvent::GachaResult(gacha_result));
         } else {
             warn!(gacha_id = &gacha.gacha_id, "gacha info not found");
         }
