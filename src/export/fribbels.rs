@@ -136,18 +136,9 @@ impl PityUpdate {
     }
 
     pub fn reset(&mut self, guarantee: bool) {
-        match self {
-            PityUpdate::AddPity { amount } => {
-                // Convert to the other variant.
-                *self = PityUpdate::ResetPity {
-                    amount: *amount,
-                    set_guarantee: guarantee,
-                }
-            },
-            PityUpdate::ResetPity { amount, set_guarantee, .. } => {
-                *amount = 0;
-                *set_guarantee = guarantee;
-            },
+        *self = PityUpdate::ResetPity {
+            amount: 0,
+            set_guarantee: guarantee,
         }
     }
 }
