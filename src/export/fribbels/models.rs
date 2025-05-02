@@ -54,12 +54,15 @@ pub enum OptimizerEvent {
     DeleteLightCones(#[serde_as(as = "Vec<DisplayFromStr>")] Vec<u32>),
 }
 
+#[serde_as]
 #[derive(Serialize, Debug, Clone)]
 pub struct GachaResult {
+    #[serde_as(as = "DisplayFromStr")]
     pub banner_id: u32,
     pub banner_type: BannerType,
     pub pity_4: PityUpdate,
     pub pity_5: PityUpdate,
+    #[serde_as(as = "Vec<DisplayFromStr>")]
     pub pull_results: Vec<u32>,
 }
 
