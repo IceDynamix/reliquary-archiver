@@ -56,7 +56,6 @@ async fn ws_handler<E: Exporter>(
     ws: WebSocketUpgrade,
     Extension(state): Extension<Arc<ApplicationState<E>>>,
 ) -> axum::response::Response {
-    info!("New client connected");
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -64,7 +63,7 @@ async fn handle_socket<E: Exporter>(
     socket: WebSocket,
     state: Arc<ApplicationState<E>>,
 ) {
-    info!("New socket connected");
+    info!("New client connected");
     let (mut sender, mut receiver) = socket.split();
 
     // Send the initial exporter state to the client
@@ -125,7 +124,7 @@ pub fn broadcast_message<T: Serialize>(
 ) {
     // Broadcast to all connected clients
     let message = serde_json::to_string(&message).unwrap_or_default();
-    if let Err(e) = client.send(message) {
-        warn!("Failed to send message to client: {}", e);
+    if client.send(message).is_err() {
+        warn!("No connected clients! Please turn on 'Live Imports' in the Optimizer Import tab.");
     }
 }
