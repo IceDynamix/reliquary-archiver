@@ -67,6 +67,16 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         .filter_map(|substat| export_substat(db, rarity, substat))
         .collect();
 
+    let reroll_substats = if proto.reroll_sub_affix_list.is_empty() {
+        None
+    } else {
+        Some(proto
+            .reroll_sub_affix_list
+            .iter()
+            .filter_map(|substat| export_substat(db, rarity, substat))
+            .collect())
+    };
+
     Some(Relic {
         set_id,
         name: set_name,
@@ -75,6 +85,7 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         level,
         mainstat,
         substats,
+        reroll_substats,
         location,
         lock,
         discard,

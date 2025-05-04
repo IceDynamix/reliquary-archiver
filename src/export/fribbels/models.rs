@@ -116,6 +116,8 @@ pub struct Relic {
     pub level: u32,
     pub mainstat: String,
     pub substats: Vec<Substat>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reroll_substats: Option<Vec<Substat>>,
     pub location: String,
     pub lock: bool,
     pub discard: bool,
