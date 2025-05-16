@@ -403,8 +403,17 @@ where
     }
 
     abort_signal.store(true, Ordering::Relaxed);
-    for handle in join_handles {
-        handle.join().expect("Failed to join capture thread");
+
+    #[cfg(target_os = "linux")] {
+        // Detach join handles on linux since pcap timeout will not fire if no packets are received on some interface
+        drop(join_handles);
+    }
+
+    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
+    #[cfg(not(target_os = "linux"))] {
+        for handle in join_handles {
+            handle.join().expect("Failed to join capture thread");
+        }
     }
 
     exporter.export()
