@@ -25,7 +25,7 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
   ![archiver listening for timeout](./listening_for_timeout.png)
 - start the game
 - if successful, the archiver should output a file to `archiver_output.json`
-  ![archiver visual guide](./archiver_visual_guide.gif)
+  ![archiver visual guide](./archiver_visual_guide.webp)
 
 you might have to disable your VPN or enable/disable wifi!
 
