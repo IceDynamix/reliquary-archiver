@@ -8,24 +8,15 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 
 ## run
 
-- requires [npcap](https://npcap.com/) (windows) or `libpcap` (linux)
-    - when installing on windows, make sure to enable the "winpcap api-compatible mode".
-      if this is grayed out for you, see [here](https://github.com/IceDynamix/reliquary-archiver/issues/2)
-      for more details
-        - if you use wifi, enable `Support raw 802.11 traffic (and monitor mode) for wireless adapters`
-    - when building on Linux, set the `CAP_NET_RAW` capability on the resulting executable (
-      via [pcap(3pcap)](https://man.archlinux.org/man/pcap.3pcap#Under~5))
-      ```sh
-      sudo setcap CAP_NET_RAW=+ep target/release/reliquary-archiver
-      ```
-- download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
+- If on Linux, or you know you want to use pcap (if you don't know what this means, you don't need to worry about it), follow the [pcap instructions](#pcap-instructions) at the bottom
+- Download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
 - **Launch the game and get to this screen. Do not go into the game yet**
   ![main menu start screen](./hsr_hyperdrive.jpg)
 - run the archiver executable and wait until it says "listening with a timeout"
   ![archiver listening for timeout](./listening_for_timeout.png)
 - start the game
 - if successful, the archiver should output a file to `archiver_output.json`
-  ![archiver visual guide](./archiver_visual_guide.gif)
+  ![archiver visual guide](./archiver_visual_guide.webp)
 
 you might have to disable your VPN or enable/disable wifi!
 
@@ -38,7 +29,6 @@ Arguments:
   [OUTPUT]  Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
 
 Options:
-      --pcap <PCAP>              Read packets from .pcap file instead of capturing live packets
       --timeout <TIMEOUT>        How long to wait in seconds until timeout is triggered for live captures [default: 120]
   -v, --verbose...               How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
   -l, --log-path <LOG_PATH>      Path to output log to
@@ -46,6 +36,12 @@ Options:
       --auth-token <AUTH_TOKEN>  Github Auth token to use when checking for updates, only applicable on Windows
   -e, --exit-after-capture       Don't wait for enter to be pressed after capturing
   -h, --help                     Print help
+
+Pcap Only:
+      --pcap <PCAP>              Read packets from .pcap file instead of capturing live packets
+
+Pktmon Only:
+      --etl <ETL>                Read packets from .etl file instead of capturing live packets
 ```
 
 to customize logging, either
@@ -58,12 +54,28 @@ to output logs to a file, provide `--log-path <path>`. file logs will always be 
 
 ## build from source
 
-- follow instructions [here](https://github.com/rust-pcap/pcap?tab=readme-ov-file#building)
+- If building on Linux, or Windows with pcap, follow instructions [here](https://github.com/rust-pcap/pcap?tab=readme-ov-file#building)
     - for me on windows, adding the `Packet.lib` and `wpcap.lib` from the sdk (check the x64 or arm dir)
       to this directory was enough to link successfully
 - `cargo build` / `cargo run`
 
 note that the necessary resource files are downloaded in the build script (`build.rs`) and compiled into the binary.
+
+## pcap instructions
+
+When running with the `pcap` feature (optional on Windows, required on Linux),
+the following requirements apply:
+
+- requires [npcap](https://npcap.com/) (windows) or `libpcap` (linux)
+    - when installing on windows, make sure to enable the "winpcap api-compatible mode".
+      if this is grayed out for you, see [here](https://github.com/IceDynamix/reliquary-archiver/issues/2)
+      for more details
+        - if you use wifi, enable `Support raw 802.11 traffic (and monitor mode) for wireless adapters`
+    - when building on Linux, set the `CAP_NET_RAW` capability on the resulting executable (
+      via [pcap(3pcap)](https://man.archlinux.org/man/pcap.3pcap#Under~5))
+      ```sh
+      sudo setcap CAP_NET_RAW=+ep target/release/reliquary-archiver
+      ```
 
 ## related projects
 

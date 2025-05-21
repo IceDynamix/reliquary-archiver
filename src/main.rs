@@ -170,6 +170,12 @@ fn update(auth_token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         update_builder.auth_token(token);
     }
 
+    if cfg!(feature = "pcap") {
+        update_builder.identifier("pcap");
+    } else if cfg!(feature = "pktmon") {
+        update_builder.identifier("pktmon");
+    }
+
     let status = update_builder.build()?.update()?;
 
     if status.updated() {
@@ -356,16 +362,6 @@ where
 {
     let abort_signal = Arc::new(AtomicBool::new(false));
 
-    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
-    #[cfg(not(target_os = "linux"))] {
-        let abort_signal = abort_signal.clone();
-        if let Err(e) = ctrlc::set_handler(move || {
-            abort_signal.store(true, Ordering::Relaxed);
-        }) {
-            error!("Failed to set Ctrl-C handler: {}", e);
-        }
-    }
-
     #[cfg(windows)]
     let rx = {
         #[cfg(feature = "pcap")] {
@@ -376,7 +372,41 @@ where
             if unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
                 capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
             } else {
-                warn!("You must run this program as an administrator to capture packets");
+
+                fn confirm(msg: &str) -> bool {
+                    use std::io::Write;
+                
+                    print!("{}", msg);
+                    if std::io::stdout().flush().is_err() {
+                        return false;
+                    }
+
+                    let mut input = String::new();
+                    if std::io::stdin().read_line(&mut input).is_err() {
+                        return false;
+                    }
+
+                    input = input.trim().to_lowercase();
+                    input.starts_with("y") || input.is_empty()
+                }
+
+                println!();
+                println!("===========================================================================================================");
+                println!("                       Administrative privileges are required to capture packets");
+                println!("===========================================================================================================");
+                println!();
+                println!("Reliquary Archiver now uses PacketMonitor (pktmon) to capture the game traffic instead of npcap on Windows");
+                println!("Due to the way pktmon works, it requires running the application as an administrator");
+                println!();
+                println!("If you don't feel comfortable running the application as an administrator, you can download the pcap");
+                println!("version of Reliquary Archiver from the GitHub releases page.");
+                println!();
+                if confirm("Would you like to restart the application with elevated privileges? (Y/n): ") {
+                    if let Err(e) = escalate_to_admin() {
+                        error!("Failed to escalate privileges: {}", e);
+                    }
+                }
+
                 return None;
             }
         }
@@ -416,6 +446,10 @@ where
                                     match c {
                                         ConnectionPacket::HandshakeEstablished => {
                                             info!("detected connection established");
+
+                                            if cfg!(all(feature = "pcap", windows)) {
+                                                info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
+                                            }
                                         }
                                         ConnectionPacket::Disconnected => {
                                             info!("detected connection disconnected");
@@ -465,9 +499,60 @@ where
     }
 
     abort_signal.store(true, Ordering::Relaxed);
-    for handle in join_handles {
-        handle.join().expect("Failed to join capture thread");
+
+    #[cfg(target_os = "linux")] {
+        // Detach join handles on linux since pcap timeout will not fire if no packets are received on some interface
+        drop(join_handles);
+    }
+
+    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
+    #[cfg(not(target_os = "linux"))] {
+        for handle in join_handles {
+            handle.join().expect("Failed to join capture thread");
+        }
     }
 
     exporter.lock().unwrap().export()
+}
+
+#[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
+    use windows::Win32::System::Console::GetConsoleWindow;
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER, SW_SHOWNORMAL};
+    use windows::core::PCWSTR;
+    use windows::core::w;
+    use std::os::windows::ffi::OsStrExt;
+
+    let args_str = env::args().skip(1).collect::<Vec<_>>().join(" ");
+
+    let exe_path = env::current_exe()
+        .expect("Failed to get current exe")
+        .as_os_str()
+        .encode_wide()
+        .chain(Some(0))
+        .collect::<Vec<_>>();
+    let args = args_str.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
+
+    unsafe {
+        let mut options = SHELLEXECUTEINFOW {
+            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+            fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE,
+            hwnd: GetWindow(GetConsoleWindow(), GW_OWNER).unwrap_or(GetConsoleWindow()),
+            lpVerb: w!("runas"),
+            lpFile: PCWSTR(exe_path.as_ptr()),
+            lpParameters: PCWSTR(args.as_ptr()),
+            lpDirectory: PCWSTR::null(),
+            nShow: SW_SHOWNORMAL.0,
+            lpIDList: std::ptr::null_mut(),
+            lpClass: PCWSTR::null(),
+            dwHotKey: 0,
+            ..Default::default()
+        };
+        
+        ShellExecuteExW(&mut options)?;
+    };
+
+    // Exit the current process since we launched a new elevated one
+    std::process::exit(0);
 }

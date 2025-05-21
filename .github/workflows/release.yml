@@ -31,8 +31,14 @@ jobs:
         run: |
           unzip -p npcap-sdk.zip Lib/x64/Packet.lib > Packet.lib
           unzip -p npcap-sdk.zip Lib/x64/wpcap.lib > wpcap.lib
-      - name: Build Windows exe
-        run: cargo build --release
+      - name: Build pcap Windows exe
+        run: cargo build --release --no-default-features --features pcap
+      - name: Move pcap exe
+        run: mv target/release/reliquary-archiver.exe target/release/reliquary-archiver-pcap-x64.exe
+      - name: Build pktmon Windows exe
+        run: cargo build --release --no-default-features --features pktmon
+      - name: Move pktmon exe
+        run: mv target/release/reliquary-archiver.exe target/release/reliquary-archiver-pktmon-x64.exe
       - name: Push updated version
         run: |
           git config user.name "reliquary-archiver bot"
@@ -43,8 +49,12 @@ jobs:
           git push origin main
       - uses: actions/upload-artifact@v4
         with:
-          name: reliquary-archiver_x64
-          path: target/release/reliquary-archiver.exe
+          name: reliquary-archiver-pcap-x64
+          path: target/release/reliquary-archiver-pcap-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reliquary-archiver-pktmon-x64
+          path: target/release/reliquary-archiver-pktmon-x64.exe
   create-release:
     runs-on: ubuntu-latest
     needs: [build-windows]
@@ -56,10 +66,13 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: reliquary-archiver_x64
-          path: x64
-      - name: Append version to exe
-        run: mv x64/reliquary-archiver.exe ./reliquary-archiver_x64.exe
+          name: reliquary-archiver-pcap-x64
+          path: ./
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: reliquary-archiver-pktmon-x64
+          path: ./
       - name: Create and push version tag
         run: |
           git tag v${{inputs.nextVersion}}
