@@ -384,6 +384,10 @@ where
                                     match c {
                                         ConnectionPacket::HandshakeEstablished => {
                                             info!("detected connection established");
+
+                                            if cfg!(all(feature = "pcap", windows)) {
+                                                info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
+                                            }
                                         }
                                         ConnectionPacket::Disconnected => {
                                             info!("detected connection disconnected");
