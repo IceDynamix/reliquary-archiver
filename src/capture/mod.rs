@@ -94,6 +94,19 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
     backend: B,
     abort_signal: Arc<AtomicBool>,
 ) -> Result<(mpsc::Receiver<Packet>, Vec<JoinHandle<()>>)> {
+    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
+    #[cfg(not(target_os = "linux"))] {
+        use std::sync::atomic::Ordering;
+        use tracing::error;
+
+        let abort_signal = abort_signal.clone();
+        if let Err(e) = ctrlc::set_handler(move || {
+            abort_signal.store(true, Ordering::Relaxed);
+        }) {
+            error!("Failed to set Ctrl-C handler: {}", e);
+        }
+    }
+
     let (tx, rx) = mpsc::channel();
     
     let devices = backend.list_devices()?;

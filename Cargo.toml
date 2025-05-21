@@ -28,7 +28,13 @@ ctrlc = "3.4.5"
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
 pktmon = { version = "0.4.0", optional = true }
-windows = { version = "0.61", features = ["Win32_UI_Shell"] }
+windows = { version = "0.61", features = [
+    "Win32_UI_Shell", 
+    "Win32_UI_WindowsAndMessaging", 
+    "Win32_System_Registry", 
+    "Win32_Foundation",
+    "Win32_System_Console",
+] }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
