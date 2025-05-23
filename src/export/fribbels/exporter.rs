@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::export::database::Database;
 use crate::export::fribbels::models::*;
-use crate::export::Exporter;
+use crate::export::{Exporter};
 
 use reliquary::network::command::{command_id, GameCommand};
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
@@ -17,7 +17,7 @@ use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
 use tracing::{debug, info, instrument, trace, warn};
 
 #[cfg(feature = "stream")]
-use crate::websocket;
+use tokio::sync::broadcast;
 
 pub struct OptimizerExporter {
     pub(super) database: Database,
@@ -37,7 +37,7 @@ pub struct OptimizerExporter {
     pub(super) unresolved_multipath_characters: HashSet<u32>,
 
     #[cfg(feature = "stream")]
-    websocket_tx: Option<websocket::ClientSender>,
+    pub(super) event_channel: broadcast::Sender<OptimizerEvent>,
 }
 
 impl OptimizerExporter {
@@ -60,18 +60,16 @@ impl OptimizerExporter {
             unresolved_multipath_characters: HashSet::new(),
 
             #[cfg(feature = "stream")]
-            websocket_tx: None,
+            event_channel: broadcast::channel(16).0,
         }
     }
 
     fn emit_event(&self, event: OptimizerEvent) {
-        #[cfg(feature = "stream")]
-        if let Some(tx) = &self.websocket_tx {
-            if self.initialized {
-                websocket::broadcast_message(tx, event);
-            } else {
-                // Don't start sending real-time updates until we've completed initialization.
-            }
+        if self.initialized {
+            // Send only fails if there are no active receivers. We don't care if this is the case.
+            self.event_channel.send(event).ok();
+        } else {
+            // Don't start sending real-time updates until we've completed initialization.
         }
     }
 
@@ -108,12 +106,10 @@ impl OptimizerExporter {
             && self.light_cones.is_empty()
     }
 
+    #[cfg(feature = "stream")]
     fn emit_initial_scan(&self) {
-        #[cfg(feature = "stream")]
-        if self.websocket_tx.is_some() {
-            let export = self.export().expect("initial scan failed");
-            self.emit_event(OptimizerEvent::InitialScan(export));
-        }
+        let export = self.export().expect("initial scan failed");
+        self.emit_event(OptimizerEvent::InitialScan(export));
     }
 }
 
@@ -228,6 +224,7 @@ impl Exporter for OptimizerExporter {
             self.initialized = true;
             info!("finished initialization");
 
+            #[cfg(feature = "stream")]
             self.emit_initial_scan();
         }
     }
@@ -236,7 +233,7 @@ impl Exporter for OptimizerExporter {
         self.is_empty()
     }
 
-    fn is_finished(&self) -> bool {
+    fn is_initialized(&self) -> bool {
         self.initialized
     }
 
@@ -300,16 +297,15 @@ impl Exporter for OptimizerExporter {
         Some(export)
     }
 
-    fn get_initial_event(&self) -> Option<OptimizerEvent> {
-        if self.is_finished() {
-            Some(OptimizerEvent::InitialScan(self.export().expect("marked as finished but data was not recorded")))
-        } else {
-            None
-        }
-    }
-
     #[cfg(feature = "stream")]
-    fn set_streamer(&mut self, tx: Option<websocket::ClientSender>) {
-        self.websocket_tx = tx;
+    fn subscribe(&self) -> (Option<OptimizerEvent>, broadcast::Receiver<OptimizerEvent>) {
+        (
+            if self.is_initialized() {
+                Some(OptimizerEvent::InitialScan(self.export().expect("marked as initialized but data was not recorded")))
+            } else {
+                None
+            },
+            self.event_channel.subscribe()
+        )
     }
-} 
+}

@@ -21,7 +21,7 @@ use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
     tracing::error
 };
 
-#[cfg(feature = "stream")] use reliquary_archiver::websocket;
+#[cfg(feature = "stream")] mod websocket;
 
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
@@ -251,7 +251,7 @@ where
                         Ok(command) => {
                             exporter.read_command(command);
 
-                            if exporter.is_finished() {
+                            if exporter.is_initialized() {
                                 info!("finished capturing");
                                 return ProcessResult::Stop;
                             }
@@ -333,16 +333,14 @@ where
             let _guard = rt.enter();
             
             let port = args.websocket_port;
-            let (client, ws_handle) = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
-            
-            exporter.lock().unwrap().set_streamer(Some(client));
+            let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
             
             info!("WebSocket server running on ws://localhost:{}/ws", port);
             info!("You can connect to this WebSocket server to receive real-time relic updates");
             
             let result = live_capture(args, exporter, sniffer);
             
-            ws_handle.abort();
+            ws_server.abort();
             
             result
         } else {
@@ -480,7 +478,7 @@ where
                             }
                         }
 
-                        if !streaming && exporter.lock().unwrap().is_finished() {
+                        if !streaming && exporter.lock().unwrap().is_initialized() {
                             info!("retrieved all relevant packets, stop listening");
                             break 'recv;
                         }

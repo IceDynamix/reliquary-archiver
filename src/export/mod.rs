@@ -1,25 +1,26 @@
 use reliquary::network::command::GameCommand;
 use serde::Serialize;
 
-#[cfg(feature = "stream")]
-use crate::websocket;
-
 pub mod database;
 pub mod fribbels;
 
 pub trait Exporter: Send + 'static {
     type Export: Send;
-    type LiveEvent: Send + Serialize;
 
     fn read_command(&mut self, command: GameCommand);
     fn is_empty(&self) -> bool;
-    fn is_finished(&self) -> bool;
+    fn is_initialized(&self) -> bool;
     fn export(&self) -> Option<Self::Export>;
 
-    fn get_initial_event(&self) -> Option<Self::LiveEvent>;
-
     #[cfg(feature = "stream")]
-    fn set_streamer(&mut self, _tx: Option<websocket::ClientSender>) {
-        // Default implementation that does nothing
-    }
+    type LiveEvent: Send + Serialize + Clone;
+
+    /// Returns a tuple containing an initial export if the exporter is initialized and a broadcast receiver for live events.
+    /// 
+    /// The first element of the tuple is an optional initial event that represents the current state.
+    /// The second element is a broadcast receiver that will receive all future live events.
+    /// 
+    /// This method is only available when the "stream" feature is enabled.
+    #[cfg(feature = "stream")]
+    fn subscribe(&self) -> (Option<Self::LiveEvent>, tokio::sync::broadcast::Receiver<Self::LiveEvent>);
 }
