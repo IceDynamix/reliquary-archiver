@@ -1,5 +1,4 @@
 use reliquary::network::command::GameCommand;
-use serde::Serialize;
 
 pub mod database;
 pub mod fribbels;
@@ -13,7 +12,7 @@ pub trait Exporter: Send + 'static {
     fn export(&self) -> Option<Self::Export>;
 
     #[cfg(feature = "stream")]
-    type LiveEvent: Send + Serialize + Clone;
+    type LiveEvent: serde::Serialize + Send + Clone;
 
     /// Returns a tuple containing an initial export if the exporter is initialized and a broadcast receiver for live events.
     /// 

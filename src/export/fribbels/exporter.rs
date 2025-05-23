@@ -64,9 +64,11 @@ impl OptimizerExporter {
         }
     }
 
+    #[allow(unused_variables)]
     fn emit_event(&self, event: OptimizerEvent) {
         if self.initialized {
             // Send only fails if there are no active receivers. We don't care if this is the case.
+            #[cfg(feature = "stream")]
             self.event_channel.send(event).ok();
         } else {
             // Don't start sending real-time updates until we've completed initialization.
@@ -115,6 +117,8 @@ impl OptimizerExporter {
 
 impl Exporter for OptimizerExporter {
     type Export = Export;
+
+    #[cfg(feature = "stream")]
     type LiveEvent = OptimizerEvent;
 
     fn read_command(&mut self, command: GameCommand) {
@@ -172,21 +176,6 @@ impl Exporter for OptimizerExporter {
                     }
                 }
             }
-            command_id::PlayerSyncScNotify => {
-                debug!("detected player sync packet");
-                let cmd = command.parse_proto::<PlayerSyncScNotify>();
-                match cmd {
-                    Ok(cmd) => {
-                        let events = self.handle_player_sync(cmd);
-                        for event in events {
-                            self.emit_event(event);
-                        }
-                    },
-                    Err(error) => {
-                        warn!(%error, "could not parse player sync data command");
-                    }
-                }
-            }
             command_id::GetGachaInfoScRsp => {
                 debug!("detected gacha info packet");
                 let cmd = command.parse_proto::<GetGachaInfoScRsp>();
@@ -208,6 +197,21 @@ impl Exporter for OptimizerExporter {
                     },
                     Err(error) => {
                         warn!(%error, "could not parse gacha data command");
+                    }
+                }
+            }
+            command_id::PlayerSyncScNotify => {
+                debug!("detected player sync packet");
+                let cmd = command.parse_proto::<PlayerSyncScNotify>();
+                match cmd {
+                    Ok(cmd) => {
+                        let events = self.handle_player_sync(cmd);
+                        for event in events {
+                            self.emit_event(event);
+                        }
+                    },
+                    Err(error) => {
+                        warn!(%error, "could not parse player sync data command");
                     }
                 }
             }
