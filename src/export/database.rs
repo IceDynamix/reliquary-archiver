@@ -1,7 +1,7 @@
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, MultiplePathAvatarConfigMap,
+    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap,
     RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::text_map::TextMap;
@@ -13,6 +13,7 @@ pub struct Database {
     pub avatar_config: AvatarConfigMap,
     pub avatar_skill_tree_config: AvatarSkillTreeConfigMap,
     pub equipment_config: EquipmentConfigMap,
+    pub item_config: ItemConfigMap,
     pub multipath_avatar_config: MultiplePathAvatarConfigMap,
     pub relic_config: RelicConfigMap,
     pub relic_set_config: RelicSetConfigMap,
@@ -45,6 +46,10 @@ impl Database {
             equipment_config: Self::parse_json(include_str!(concat!(
                 env!("OUT_DIR"),
                 "/EquipmentConfig.json"
+            ))),
+            item_config: Self::parse_json(include_str!(concat!(
+                env!("OUT_DIR"),
+                "/ItemConfig.json"
             ))),
             multipath_avatar_config: Self::parse_json(include_str!(concat!(
                 env!("OUT_DIR"),

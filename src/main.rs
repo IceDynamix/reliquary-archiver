@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,6 +20,8 @@ use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
     self_update::cargo_crate_version,
     tracing::error
 };
+
+#[cfg(feature = "stream")] mod websocket;
 
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
@@ -42,6 +45,15 @@ struct Args {
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
+    /// Host a websocket server to stream relic/lc updates in real-time.
+    /// This also disables the timeout
+    #[cfg(feature = "stream")]
+    #[arg(long)]
+    stream: bool,
+    /// Port to listen on for the websocket server, defaults to 53313
+    #[cfg(feature = "stream")]
+    #[arg(long, default_value_t = 53313)] // Seele :)
+    websocket_port: u16,
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -107,7 +119,7 @@ fn main() {
 
     let capture_mode = CaptureMode::from_args(&args);
     let export = match capture_mode {
-        CaptureMode::Live => live_capture(&args, exporter, sniffer),
+        CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
         #[cfg(feature = "pcap")]
         CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
         #[cfg(feature = "pktmon")]
@@ -239,7 +251,7 @@ where
                         Ok(command) => {
                             exporter.read_command(command);
 
-                            if exporter.is_finished() {
+                            if exporter.is_initialized() {
                                 info!("finished capturing");
                                 return ProcessResult::Stop;
                             }
@@ -297,7 +309,7 @@ where
     let mut capture = pktmon::EtlCapture::new(&etl_path).expect("could not read etl file");
     capture.start().expect("could not start etl capture");
 
-    for packet in capture.packets().unwrap() {
+    while let Ok(packet) = capture.next_packet() {
         match file_process_packet(&mut exporter, &mut sniffer, packet.payload.to_vec()) {
             ProcessResult::Continue => {},
             ProcessResult::Stop => break,
@@ -308,8 +320,40 @@ where
     exporter.export()
 }
 
+fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    let exporter = Arc::new(Mutex::new(exporter));
+
+    #[cfg(feature = "stream")] {
+        if args.stream {
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            let _guard = rt.enter();
+
+            let port = args.websocket_port;
+            let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
+
+            info!("WebSocket server running on ws://localhost:{}/ws", port);
+            info!("You can connect to this WebSocket server to receive real-time relic updates");
+
+            let result = live_capture(args, exporter, sniffer);
+
+            ws_server.abort();
+
+            result
+        } else {
+            live_capture(args, exporter, sniffer)
+        }
+    }
+
+    #[cfg(not(feature = "stream"))] {
+        live_capture(args, exporter, sniffer)
+    }
+}
+
 #[instrument(skip_all)]
-fn live_capture<E>(args: &Args, mut exporter: E, mut sniffer: GameSniffer) -> Option<E::Export>
+fn live_capture<E>(args: &Args, exporter: Arc<Mutex<E>>, mut sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -328,7 +372,7 @@ where
 
                 fn confirm(msg: &str) -> bool {
                     use std::io::Write;
-                
+
                     print!("{}", msg);
                     if std::io::stdout().flush().is_err() {
                         return false;
@@ -370,11 +414,26 @@ where
 
     let (rx, join_handles) = rx.expect("Failed to start packet capture");
 
+    #[cfg(feature = "stream")]
+    let streaming = args.stream;
+
+    #[cfg(not(feature = "stream"))]
+    let streaming = false;
+
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
-    info!("listening with a timeout of {} seconds...", args.timeout);
+    if !streaming {
+        info!("listening with a timeout of {} seconds...", args.timeout);
+    }
 
     'recv: loop {
-        match rx.recv_timeout(Duration::from_secs(args.timeout)) {
+        let received = if streaming {
+            // If streaming, we don't want to timeout during inactivity
+            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        } else {
+            rx.recv_timeout(Duration::from_secs(args.timeout))
+        };
+
+        match received {
             Ok(packet) => {
                 match sniffer.receive_packet(packet.data) {
                     Ok(packets) => {
@@ -402,12 +461,12 @@ where
                                                 info!("detected login start");
                                             }
 
-                                            if command.command_id == PlayerLoginFinishScRsp {
+                                            if !streaming && command.command_id == PlayerLoginFinishScRsp {
                                                 info!("detected login end, assume initialization is finished");
                                                 break 'recv;
                                             }
 
-                                            exporter.read_command(command);
+                                            exporter.lock().unwrap().read_command(command);
                                         }
                                         Err(e) => {
                                             warn!(%e);
@@ -418,7 +477,7 @@ where
                             }
                         }
 
-                        if exporter.is_finished() {
+                        if !streaming && exporter.lock().unwrap().is_initialized() {
                             info!("retrieved all relevant packets, stop listening");
                             break 'recv;
                         }
@@ -450,7 +509,7 @@ where
         }
     }
 
-    exporter.export()
+    exporter.lock().unwrap().export()
 }
 
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
@@ -487,7 +546,7 @@ fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
             dwHotKey: 0,
             ..Default::default()
         };
-        
+
         ShellExecuteExW(&mut options)?;
     };
 
