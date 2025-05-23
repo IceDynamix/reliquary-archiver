@@ -29,7 +29,7 @@ macro_rules! download_config_and_store_text_hashes {
             },
             <$t>::get_json_name(),
         )
-    };    
+    };
 }
 
 macro_rules! download_config_and_store_partial_text_hashes {

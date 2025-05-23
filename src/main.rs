@@ -272,8 +272,8 @@ where
 #[instrument(skip_all)]
 #[cfg(feature = "pcap")]
 fn capture_from_pcap<E>(
-    _args: &Args, 
-    mut exporter: E, 
+    _args: &Args,
+    mut exporter: E,
     mut sniffer: GameSniffer,
     pcap_path: PathBuf,
 ) -> Option<E::Export>
@@ -297,8 +297,8 @@ where
 #[instrument(skip_all)]
 #[cfg(feature = "pktmon")]
 fn capture_from_etl<E>(
-    _args: &Args, 
-    mut exporter: E, 
+    _args: &Args,
+    mut exporter: E,
     mut sniffer: GameSniffer,
     etl_path: PathBuf,
 ) -> Option<E::Export>
@@ -320,7 +320,6 @@ where
     exporter.export()
 }
 
-#[instrument(skip_all)]
 fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
@@ -331,17 +330,17 @@ where
         if args.stream {
             let rt = tokio::runtime::Runtime::new().unwrap();
             let _guard = rt.enter();
-            
+
             let port = args.websocket_port;
             let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
-            
+
             info!("WebSocket server running on ws://localhost:{}/ws", port);
             info!("You can connect to this WebSocket server to receive real-time relic updates");
-            
+
             let result = live_capture(args, exporter, sniffer);
-            
+
             ws_server.abort();
-            
+
             result
         } else {
             live_capture(args, exporter, sniffer)
@@ -373,7 +372,7 @@ where
 
                 fn confirm(msg: &str) -> bool {
                     use std::io::Write;
-                
+
                     print!("{}", msg);
                     if std::io::stdout().flush().is_err() {
                         return false;
@@ -461,12 +460,12 @@ where
                                             if command.command_id == PlayerLoginScRsp {
                                                 info!("detected login start");
                                             }
-                                            
+
                                             if !streaming && command.command_id == PlayerLoginFinishScRsp {
                                                 info!("detected login end, assume initialization is finished");
                                                 break 'recv;
                                             }
-            
+
                                             exporter.lock().unwrap().read_command(command);
                                         }
                                         Err(e) => {
@@ -547,7 +546,7 @@ fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
             dwHotKey: 0,
             ..Default::default()
         };
-        
+
         ShellExecuteExW(&mut options)?;
     };
 
