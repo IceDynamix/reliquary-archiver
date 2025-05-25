@@ -1,4 +1,5 @@
 use std::fs::File;
+use std::panic;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
@@ -100,52 +101,59 @@ fn main() {
     color_eyre::install().unwrap();
     let args = Args::parse();
 
+    // Copy the exit_after_capture flag to a local variable before args is moved into the closure
+    let exit_after_capture = args.exit_after_capture;
+
     tracing_init(&args);
 
     debug!(?args);
 
-    // Only self update on Windows, since that's the only platform we ship releases for
-    #[cfg(windows)] {
-        if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
-            if let Err(e) = update(args.auth_token.as_deref()) {
-                error!("Failed to update: {}", e);
+    if let Err(_) = panic::catch_unwind(move || {
+        // Only self update on Windows, since that's the only platform we ship releases for
+        #[cfg(windows)] {
+            if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
+                if let Err(e) = update(args.auth_token.as_deref()) {
+                    error!("Failed to update: {}", e);
+                }
             }
         }
-    }
 
-    let database = Database::new();
-    let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
-    let exporter = OptimizerExporter::new(database);
+        let database = Database::new();
+        let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
+        let exporter = OptimizerExporter::new(database);
 
-    let capture_mode = CaptureMode::from_args(&args);
-    let export = match capture_mode {
-        CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
-        #[cfg(feature = "pcap")]
-        CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
-        #[cfg(feature = "pktmon")]
-        CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
-    };
-
-    if let Some(export) = export {
-        let output_file = match args.output {
-            Some(out) => out,
-            _ => PathBuf::from(Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string()),
+        let capture_mode = CaptureMode::from_args(&args);
+        let export = match capture_mode {
+            CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
+            #[cfg(feature = "pcap")]
+            CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
+            #[cfg(feature = "pktmon")]
+            CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
         };
-        let file = File::create(&output_file).unwrap();
-        serde_json::to_writer_pretty(&file, &export).unwrap();
-        info!(
-            "wrote output to {}",
-            output_file.canonicalize().unwrap().display()
-        );
-    } else {
-        warn!("skipped writing output");
+
+        if let Some(export) = export {
+            let output_file = match args.output {
+                Some(out) => out,
+                _ => PathBuf::from(Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string()),
+            };
+            let file = File::create(&output_file).unwrap();
+            serde_json::to_writer_pretty(&file, &export).unwrap();
+            info!(
+                "wrote output to {}",
+                output_file.canonicalize().unwrap().display()
+            );
+        } else {
+            warn!("skipped writing output");
+        }
+
+        if let Some(log_path) = args.log_path {
+            info!("wrote logs to {}", log_path.display());
+        }
+    }) {
+        error!("the application panicked, this is a bug, please report it on GitHub or Discord");
     }
 
-    if let Some(log_path) = args.log_path {
-        info!("wrote logs to {}", log_path.display());
-    }
-
-    if !args.exit_after_capture {
+    if !exit_after_capture {
         info!("press enter to close");
         std::io::stdin().read_line(&mut String::new()).unwrap();
     }
