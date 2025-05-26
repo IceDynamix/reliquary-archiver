@@ -32,11 +32,11 @@ jobs:
           unzip -p npcap-sdk.zip Lib/x64/Packet.lib > Packet.lib
           unzip -p npcap-sdk.zip Lib/x64/wpcap.lib > wpcap.lib
       - name: Build pcap Windows exe
-        run: cargo build --release --no-default-features --features pcap
+        run: cargo build --release --no-default-features --features pcap,stream
       - name: Move pcap exe
         run: mv target/release/reliquary-archiver.exe target/release/reliquary-archiver-pcap-x64.exe
       - name: Build pktmon Windows exe
-        run: cargo build --release --no-default-features --features pktmon
+        run: cargo build --release --no-default-features --features pktmon,stream
       - name: Move pktmon exe
         run: mv target/release/reliquary-archiver.exe target/release/reliquary-archiver-pktmon-x64.exe
       - name: Push updated version

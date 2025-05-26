@@ -22,9 +22,9 @@ jobs:
           unzip -p npcap-sdk.zip Lib/x64/Packet.lib > Packet.lib
           unzip -p npcap-sdk.zip Lib/x64/wpcap.lib > wpcap.lib
       - name: Build pcap Windows exe
-        run: cargo build --verbose --release --no-default-features --features pcap
+        run: cargo build --verbose --no-default-features --features pcap,stream
       - name: Build pktmon Windows exe
-        run: cargo build --verbose --release --no-default-features --features pktmon
+        run: cargo build --verbose --no-default-features --features pktmon,stream
 
   build-linux:
     runs-on: ubuntu-latest
@@ -34,4 +34,4 @@ jobs:
     - name: Install libpcap
       run: sudo apt install -y libpcap-dev
     - name: Build
-      run: cargo build --verbose
+      run: cargo build --verbose --no-default-features --features pcap,stream
