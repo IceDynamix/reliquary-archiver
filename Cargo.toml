@@ -24,6 +24,10 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = { version = "2.12.1" }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v11.0.2", features = ["proto-rqa"] }
 ctrlc = "3.4.5"
+axum = { version = "0.8.3", optional = true, features = ["ws", "tracing"]}
+tokio = { version = "1.44.2", optional = true, features = ["full"] }
+futures = { version = "0.3.31", optional = true }
+serde_with = "3.12.0"
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
@@ -52,6 +56,7 @@ lto = true
 overflow-checks = false # see comment above
 
 [features]
-default = ["pcap"]
+default = ["stream", "pcap"]
 pktmon = ["dep:pktmon"]
 pcap = ["dep:pcap"]
+stream = ["dep:axum", "dep:tokio", "dep:futures"]
