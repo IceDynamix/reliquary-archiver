@@ -12,14 +12,13 @@ use chrono::Local;
 use clap::Parser;
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, info, instrument, warn, error};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
 #[cfg(windows)] use {
     std::env,
     std::process::Command,
     self_update::cargo_crate_version,
-    tracing::error
 };
 
 #[cfg(feature = "stream")] mod websocket;
