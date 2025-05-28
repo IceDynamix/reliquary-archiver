@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::export::database::Database;
+use crate::export::database::{get_database, Database};
 use crate::export::fribbels::models::*;
 use crate::export::{Exporter};
 
@@ -20,7 +20,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use tokio::sync::broadcast;
 
 pub struct OptimizerExporter {
-    pub(super) database: Database,
+    pub(super) database: &'static Database,
     
     // State fields
     pub(super) initialized: bool,
@@ -40,10 +40,16 @@ pub struct OptimizerExporter {
     pub(super) event_channel: broadcast::Sender<OptimizerEvent>,
 }
 
+impl Default for OptimizerExporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OptimizerExporter {
-    pub fn new(database: Database) -> OptimizerExporter {
+    pub fn new() -> OptimizerExporter {
         OptimizerExporter {
-            database,
+            database: get_database(),
             
             // Initialize state fields
             initialized: false,

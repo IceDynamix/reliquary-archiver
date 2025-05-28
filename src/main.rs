@@ -28,6 +28,8 @@ use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 
 mod capture;
+mod view;
+mod worker;
 
 #[derive(Parser, Debug, Clone)]
 struct Args {
@@ -117,33 +119,74 @@ fn main() {
             }
         }
 
-        let database = Database::new();
-        let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
-        let exporter = OptimizerExporter::new(database);
+        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+        if !unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
+            fn confirm(msg: &str) -> bool {
+                use std::io::Write;
 
-        let capture_mode = CaptureMode::from_args(&args);
-        let export = match capture_mode {
-            CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
-            #[cfg(feature = "pcap")]
-            CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
-            #[cfg(feature = "pktmon")]
-            CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
-        };
+                print!("{}", msg);
+                if std::io::stdout().flush().is_err() {
+                    return false;
+                }
 
-        if let Some(export) = export {
-            let output_file = match args.output {
-                Some(out) => out,
-                _ => PathBuf::from(Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string()),
-            };
-            let file = File::create(&output_file).unwrap();
-            serde_json::to_writer_pretty(&file, &export).unwrap();
-            info!(
-                "wrote output to {}",
-                output_file.canonicalize().unwrap().display()
-            );
-        } else {
-            warn!("skipped writing output");
+                let mut input = String::new();
+                if std::io::stdin().read_line(&mut input).is_err() {
+                    return false;
+                }
+
+                input = input.trim().to_lowercase();
+                input.starts_with("y") || input.is_empty()
+            }
+
+            println!();
+            println!("===========================================================================================================");
+            println!("                       Administrative privileges are required to capture packets");
+            println!("===========================================================================================================");
+            println!();
+            println!("Reliquary Archiver now uses PacketMonitor (pktmon) to capture the game traffic instead of npcap on Windows");
+            println!("Due to the way pktmon works, it requires running the application as an administrator");
+            println!();
+            println!("If you don't feel comfortable running the application as an administrator, you can download the pcap");
+            println!("version of Reliquary Archiver from the GitHub releases page.");
+            println!();
+            if confirm("Would you like to restart the application with elevated privileges? (Y/n): ") {
+                if let Err(e) = escalate_to_admin() {
+                    error!("Failed to escalate privileges: {}", e);
+                }
+            }
+
+            return;
         }
+
+        view::run().unwrap();
+
+        // let database = Database::new();
+        // let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
+        // let exporter = OptimizerExporter::new(database);
+
+        // let capture_mode = CaptureMode::from_args(&args);
+        // let export = match capture_mode {
+        //     CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
+        //     #[cfg(feature = "pcap")]
+        //     CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
+        //     #[cfg(feature = "pktmon")]
+        //     CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
+        // };
+
+        // if let Some(export) = export {
+        //     let output_file = match args.output {
+        //         Some(out) => out,
+        //         _ => PathBuf::from(Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string()),
+        //     };
+        //     let file = File::create(&output_file).unwrap();
+        //     serde_json::to_writer_pretty(&file, &export).unwrap();
+        //     info!(
+        //         "wrote output to {}",
+        //         output_file.canonicalize().unwrap().display()
+        //     );
+        // } else {
+        //     warn!("skipped writing output");
+        // }
 
         if let Some(log_path) = args.log_path {
             info!("wrote logs to {}", log_path.display());
@@ -339,14 +382,14 @@ where
             let _guard = rt.enter();
 
             let port = args.websocket_port;
-            let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
+            // let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
 
             info!("WebSocket server running on ws://localhost:{}/ws", port);
             info!("You can connect to this WebSocket server to receive real-time relic updates");
 
             let result = live_capture(args, exporter, sniffer);
 
-            ws_server.abort();
+            // ws_server.abort();
 
             result
         } else {
@@ -366,58 +409,15 @@ where
 {
     let abort_signal = Arc::new(AtomicBool::new(false));
 
-    #[cfg(windows)]
     let rx = {
         #[cfg(feature = "pcap")] {
             capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
         }
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
-            if unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
-                capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
-            } else {
-
-                fn confirm(msg: &str) -> bool {
-                    use std::io::Write;
-
-                    print!("{}", msg);
-                    if std::io::stdout().flush().is_err() {
-                        return false;
-                    }
-
-                    let mut input = String::new();
-                    if std::io::stdin().read_line(&mut input).is_err() {
-                        return false;
-                    }
-
-                    input = input.trim().to_lowercase();
-                    input.starts_with("y") || input.is_empty()
-                }
-
-                println!();
-                println!("===========================================================================================================");
-                println!("                       Administrative privileges are required to capture packets");
-                println!("===========================================================================================================");
-                println!();
-                println!("Reliquary Archiver now uses PacketMonitor (pktmon) to capture the game traffic instead of npcap on Windows");
-                println!("Due to the way pktmon works, it requires running the application as an administrator");
-                println!();
-                println!("If you don't feel comfortable running the application as an administrator, you can download the pcap");
-                println!("version of Reliquary Archiver from the GitHub releases page.");
-                println!();
-                if confirm("Would you like to restart the application with elevated privileges? (Y/n): ") {
-                    if let Err(e) = escalate_to_admin() {
-                        error!("Failed to escalate privileges: {}", e);
-                    }
-                }
-
-                return None;
-            }
+            capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
         }
     };
-
-    #[cfg(not(windows))]
-    let rx = capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone());
 
     let (rx, join_handles) = rx.expect("Failed to start packet capture");
 

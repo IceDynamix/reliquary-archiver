@@ -4,14 +4,12 @@ use axum::{
     Extension, Router,
 };
 use futures::{
-    sink::SinkExt,
-    stream::{SplitSink, StreamExt},
+    lock::Mutex, sink::SinkExt, stream::{SplitSink, StreamExt}
 };
 use reliquary_archiver::export::Exporter;
 use serde::Serialize;
 use std::{
-    error::Error,
-    sync::{Arc, Mutex},
+    error::Error, io, sync::Arc
 };
 use tracing::{debug, info, warn};
 
@@ -22,7 +20,7 @@ struct WebSocketServerState<E: Exporter> {
 pub async fn start_websocket_server<E: Exporter>(
     port: u16,
     exporter: Arc<Mutex<E>>,
-) -> tokio::task::JoinHandle<()> {
+) -> Result<(), String> {
     let state = Arc::new(WebSocketServerState {
         exporter: exporter.clone(),
     });
@@ -34,16 +32,20 @@ pub async fn start_websocket_server<E: Exporter>(
     let server_addr = format!("0.0.0.0:{}", port);
     info!("Starting WebSocket server on {}", server_addr);
 
+    let listener = tokio::net::TcpListener::bind(server_addr.parse::<std::net::SocketAddr>().unwrap())
+        .await.map_err(|e| {
+            match e.kind() {
+                io::ErrorKind::AddrInUse => "Address already in use, please close any other instances of the application".to_string(),
+                _ => e.to_string()
+            }
+        })?;
+
     tokio::spawn(async move {
-        let listener =
-            tokio::net::TcpListener::bind(server_addr.parse::<std::net::SocketAddr>().unwrap())
-                .await
-                .unwrap();
         debug!("Listening on {}", listener.local_addr().unwrap());
-        if let Err(e) = axum::serve(listener, app.into_make_service()).await {
-            warn!("Server error: {}", e);
-        }
-    })
+        axum::serve(listener, app.into_make_service()).await.unwrap();
+    });
+
+    Ok(())
 }
 
 async fn ws_handler<E: Exporter>(
@@ -68,7 +70,7 @@ async fn handle_socket<E: Exporter>(socket: WebSocket, state: Arc<WebSocketServe
     let (mut sender, mut receiver) = socket.split();
 
     // Subscribe to the exporter's event channel
-    let (initial_event, mut rx) = state.exporter.lock().unwrap().subscribe();
+    let (initial_event, mut rx) = state.exporter.lock().await.subscribe();
 
     // Send the initial exporter state to the client
     if let Some(event) = initial_event {

@@ -28,6 +28,8 @@ axum = { version = "0.8.3", optional = true, features = ["ws", "tracing"]}
 tokio = { version = "1.44.2", optional = true, features = ["full"] }
 futures = { version = "0.3.31", optional = true }
 serde_with = "3.12.0"
+iced = { git = "https://github.com/iced-rs/iced", rev = "f929a20d29689af4ac873c1b34282c1f37f38f45", features = ["image", "tokio", "svg", "advanced"] }
+open = "5.3.2"
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
@@ -43,6 +45,9 @@ windows = { version = "0.61", features = [
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v11.0.2", features = ["proto-rqa"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1.12"
 
 [profile.dev]
 # there's a field in the kcp protocol that hyv uses differently from the default implementation

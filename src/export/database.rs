@@ -7,6 +7,7 @@ use reliquary::resource::excel::{
 use reliquary::resource::text_map::TextMap;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use tracing::{info, instrument};
 
 pub struct Database {
@@ -21,6 +22,11 @@ pub struct Database {
     pub relic_sub_affix_config: RelicSubAffixConfigMap,
     pub text_map: TextMap,
     pub keys: HashMap<u32, Vec<u8>>,
+}
+
+pub fn get_database() -> &'static Database {
+    static DATABASE: OnceLock<Database> = OnceLock::new();
+    DATABASE.get_or_init(|| Database::new())
 }
 
 impl Database {
