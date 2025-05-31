@@ -75,7 +75,7 @@ fn main() {
 
     write_to_out(download_as_json::<Value>(KEY_URL), "keys.json");
 
-    if cfg!(target_os = "windows") {
+    #[cfg(target_os = "windows")] {
         let mut res = winres::WindowsResource::new();
         res.set_icon("assets/icon.ico")
            .set("InternalName", "Reliquary Archiver");

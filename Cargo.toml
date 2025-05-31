@@ -28,7 +28,7 @@ axum = { version = "0.8.3", optional = true, features = ["ws", "tracing"]}
 tokio = { version = "1.44.2", optional = true, features = ["full"] }
 futures = { version = "0.3.31", optional = true }
 serde_with = "3.12.0"
-iced = { git = "https://github.com/iced-rs/iced", rev = "f929a20d29689af4ac873c1b34282c1f37f38f45", features = ["image", "tokio", "svg", "advanced"] }
+iced = { git = "https://github.com/iced-rs/iced", rev = "7afbb89ebfd49aa86453d45f7d9c13a7c48b58f2", features = ["image", "tokio", "svg", "advanced"] }
 open = "5.3.2"
 
 [target.'cfg(windows)'.dependencies]

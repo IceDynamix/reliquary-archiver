@@ -14,9 +14,12 @@ use iced::Subscription;
 use iced::Task;
 use reliquary::network::command::command_id::PlayerLoginFinishScRsp;
 use reliquary::network::command::command_id::PlayerLoginScRsp;
+use reliquary::network::command::GameCommand;
+use reliquary::network::command::GameCommandError;
 use reliquary::network::ConnectionPacket;
 use reliquary::network::GamePacket;
 use reliquary::network::GameSniffer;
+use reliquary::network::NetworkError;
 use reliquary_archiver::export::database::get_database;
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::Export;
@@ -33,7 +36,8 @@ use crate::websocket::start_websocket_server;
 #[derive(Debug, Clone)]
 pub enum WorkerEvent {
     Ready(mpsc::Sender<WorkerCommand>),
-    Event(OptimizerEvent),
+    ExportEvent(OptimizerEvent),
+    Metric(SnifferMetric),
 }
 
 pub enum WorkerCommand {
@@ -82,12 +86,14 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
 
         let (_, mut rx) = exporter.lock().await.subscribe();
 
+        let (metric_tx, mut metric_rx) = mpsc::channel(100);
+
         let abort_signal = { // Need to spawn a real thread since the packet capture is blocking
             let exporter = exporter.clone();
 
             AbortOnDrop::new(move |abort_signal| {
                 std::thread::spawn(move || {
-                    live_capture(abort_signal, exporter, sniffer)
+                    live_capture(abort_signal, exporter, sniffer, metric_tx)
                 })
             })
         };
@@ -108,10 +114,14 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
                     }
                 }
 
+                metric = metric_rx.select_next_some() => {
+                    output.send(WorkerEvent::Metric(metric)).await.ok();
+                }
+
                 event = rx.recv() => {
                     match event {
                         Ok(event) => {
-                            output.send(WorkerEvent::Event(event)).await.unwrap();
+                            output.send(WorkerEvent::ExportEvent(event)).await.unwrap(); // TODO: handle error
                         }
                         Err(e) => {
                             warn!(%e);
@@ -124,8 +134,23 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
     })
 }
 
+#[derive(Debug, Clone)]
+pub enum SnifferMetric {
+    ConnectionEstablished,
+    ConnectionDisconnected,
+    NetworkPacketReceived,
+    GameCommandsReceived(usize),
+    DecryptionKeyMissing,
+    NetworkError,
+}
+
 #[instrument(skip_all)]
-fn live_capture<E: Exporter>(abort_signal: Arc<AtomicBool>, exporter: Arc<Mutex<E>>, mut sniffer: GameSniffer) {
+fn live_capture<E: Exporter>(
+    abort_signal: Arc<AtomicBool>, 
+    exporter: Arc<Mutex<E>>, 
+    mut sniffer: GameSniffer,
+    mut metric_tx: mpsc::Sender<SnifferMetric>,
+) {
     let rx = {
         #[cfg(feature = "pcap")] {
             capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
@@ -152,14 +177,19 @@ fn live_capture<E: Exporter>(abort_signal: Arc<AtomicBool>, exporter: Arc<Mutex<
     'recv: loop {
         match rx.recv() {
             Ok(packet) => {
+                block_on(metric_tx.send(SnifferMetric::NetworkPacketReceived)).ok();
+
                 match sniffer.receive_packet(packet.data) {
                     Ok(packets) => {
+                        block_on(metric_tx.send(SnifferMetric::GameCommandsReceived(packets.len()))).ok();
+
                         for packet in packets {
                             match packet {
                                 GamePacket::Connection(c) => {
                                     match c {
                                         ConnectionPacket::HandshakeEstablished => {
                                             info!("detected connection established");
+                                            block_on(metric_tx.send(SnifferMetric::ConnectionEstablished)).ok();
 
                                             if cfg!(all(feature = "pcap", windows)) {
                                                 info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
@@ -167,6 +197,7 @@ fn live_capture<E: Exporter>(abort_signal: Arc<AtomicBool>, exporter: Arc<Mutex<
                                         }
                                         ConnectionPacket::Disconnected => {
                                             info!("detected connection disconnected");
+                                            block_on(metric_tx.send(SnifferMetric::ConnectionDisconnected)).ok();
                                         }
                                         _ => {}
                                     }
@@ -182,7 +213,11 @@ fn live_capture<E: Exporter>(abort_signal: Arc<AtomicBool>, exporter: Arc<Mutex<
                                         }
                                         Err(e) => {
                                             warn!(%e);
-                                            break 'recv;
+                                            if let GameCommandError::DecryptionKeyMissing = e {
+                                                block_on(metric_tx.send(SnifferMetric::DecryptionKeyMissing)).ok();
+                                            } else {
+                                                block_on(metric_tx.send(SnifferMetric::NetworkError)).ok();
+                                            }
                                         }
                                     }
                                 }
@@ -191,11 +226,16 @@ fn live_capture<E: Exporter>(abort_signal: Arc<AtomicBool>, exporter: Arc<Mutex<
                     }
                     Err(e) => {
                         warn!(%e);
-                        break 'recv;
+                        if let NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) = e {
+                            block_on(metric_tx.send(SnifferMetric::DecryptionKeyMissing)).ok();
+                        } else {
+                            block_on(metric_tx.send(SnifferMetric::NetworkError)).ok();
+                        }
                     }
                 }
             }
             Err(e) => {
+                // Channel was closed
                 warn!(%e);
                 break 'recv;
             }

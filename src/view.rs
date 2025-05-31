@@ -1,7 +1,7 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::{Duration, Instant}};
 
 use futures::{channel::oneshot, lock::Mutex, StreamExt};
-use iced::{alignment::Vertical, border, font, padding, widget::{self, button, column, mouse_area, row, svg, text, Button, Text}, window::icon, Background, Border, Color, Element, Font, Task, Theme};
+use iced::{alignment::Vertical, border, font, padding, widget::{self, button, column, mouse_area, row, svg, text, Button, Text}, window::icon, Alignment, Background, Border, Color, Element, Font, Subscription, Task, Theme};
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use tracing::info;
 
@@ -17,6 +17,14 @@ pub struct RootState {
     ws_status: WebSocketStatus,
 
     worker_sender: Option<worker::WorkerHandle>,
+
+    connected: bool,
+    packets_received: usize,
+    commands_received: usize,
+    decryption_key_missing: usize,
+    network_errors: usize,
+
+    last_command_time: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -34,6 +42,8 @@ pub enum RootMessage {
     GoToLink(String),
 
     WSStatus(WebSocketStatus),
+
+    CheckConnection(Instant),
 }
 
 trait FontSettings {
@@ -134,7 +144,9 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
         github_button(),
         discord_button(),
         help_arrow
-    ].align_y(Vertical::Bottom);
+    ]
+        .align_y(Vertical::Bottom)
+        .spacing(4);
 
     let github_box = column![
         icon_row,
@@ -148,9 +160,29 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
     }
         .size(12);
     
+    let content = column![
+        text("Waiting for login...").size(24),
+        text("Please log into the game. If you are already in-game, you must log out and log back in."),
+    ].align_x(Alignment::Center);
+
+    let connection_status = if state.connected {
+        text(format!("connected, {} packets received", state.packets_received))
+    } else {
+        text("disconnected").style(text::danger)
+    }.size(12);
+
+    let footer = row![
+        ws_status,
+        widget::horizontal_space(),
+        connection_status,
+    ]
+        .align_y(Vertical::Bottom)
+        .spacing(4);
+
     column![
         github_box,
-        widget::bottom(ws_status)
+        widget::center(content),
+        footer,
     ]
         .padding(10)
         .spacing(10)
@@ -158,8 +190,6 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> {
-    // match message {
-    // }
     info!("update: {:?}", message);
 
     match message {
@@ -169,7 +199,39 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> 
         RootMessage::WorkerEvent(worker::WorkerEvent::Ready(sender)) => {
             state.worker_sender = Some(sender);
         }
-        RootMessage::WorkerEvent(worker::WorkerEvent::Event(_)) => {
+        RootMessage::WorkerEvent(worker::WorkerEvent::Metric(metric)) => {
+            match metric {
+                worker::SnifferMetric::ConnectionEstablished => {
+                    state.connected = true;
+                }
+                worker::SnifferMetric::ConnectionDisconnected => {
+                    state.connected = false;
+                }
+                worker::SnifferMetric::NetworkPacketReceived => {
+                    state.packets_received += 1;
+                }
+                worker::SnifferMetric::GameCommandsReceived(commands) => {
+                    state.connected = true; // Must be connected to receive commands
+                    state.commands_received += commands;
+                    state.last_command_time = Some(Instant::now());
+                }
+                worker::SnifferMetric::DecryptionKeyMissing => {
+                    state.decryption_key_missing += 1;
+                }
+                worker::SnifferMetric::NetworkError => {
+                    state.network_errors += 1;
+                }
+            }
+        }
+        RootMessage::CheckConnection(now) => {
+            if let Some(last_command_time) = state.last_command_time {
+                if now.duration_since(last_command_time) > Duration::from_secs(60) {
+                    // Assume the connection is lost
+                    state.connected = false;
+                }
+            }
+        }
+        RootMessage::WorkerEvent(worker::WorkerEvent::ExportEvent(_)) => {
             // TODO: handle event
         }
         RootMessage::WSStatus(status) => {
@@ -178,6 +240,14 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> 
     }
 
     Task::none()
+}
+
+pub fn subscription(state: &RootState) -> Subscription<RootMessage> {
+    if state.connected {
+        iced::time::every(Duration::from_secs(60)).map(|now| RootMessage::CheckConnection(now))
+    } else {
+        Subscription::none()
+    }
 }
 
 pub fn run() -> iced::Result {
@@ -201,6 +271,7 @@ pub fn run() -> iced::Result {
         update,
         view,
     )
+        .title("Reliquary Archiver")
         .window(iced::window::Settings { 
             icon: Some(icon::from_file_data(LOGO, None).expect("Failed to load icon")),
             ..Default::default()

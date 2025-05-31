@@ -193,9 +193,7 @@ fn main() {
         }
     }) {
         error!("the application panicked, this is a bug, please report it on GitHub or Discord");
-    }
 
-    if !exit_after_capture {
         info!("press enter to close");
         std::io::stdin().read_line(&mut String::new()).unwrap();
     }
