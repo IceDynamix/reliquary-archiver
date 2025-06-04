@@ -1,15 +1,16 @@
-use std::{sync::Arc, time::{Duration, Instant}};
+use std::{sync::{Arc, LazyLock}, time::{Duration, Instant}};
 
 use futures::{channel::oneshot, lock::Mutex, StreamExt};
 use iced::{alignment::Vertical, border, font, padding, widget::{self, button, column, mouse_area, row, svg, text, Button, Text}, window::icon, Alignment, Background, Border, Color, Element, Font, Subscription, Task, Theme};
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use tracing::info;
+use widgets::spinner::spinner;
+
+mod widgets;
 
 use crate::{websocket::start_websocket_server, worker::{self, archiver_worker}};
 
-const LOGO: &[u8] = include_bytes!("../assets/icon256.png");
-
-const HELP_ARROW: &[u8] = include_bytes!("../assets/arrow_up.svg");
+const LOGO: &[u8] = include_bytes!("../../assets/icon256.png");
 
 #[derive(Default)]
 pub struct RootState {
@@ -25,6 +26,8 @@ pub struct RootState {
     network_errors: usize,
 
     last_command_time: Option<Instant>,
+
+    test: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -44,6 +47,8 @@ pub enum RootMessage {
     WSStatus(WebSocketStatus),
 
     CheckConnection(Instant),
+
+    Test,
 }
 
 trait FontSettings {
@@ -102,8 +107,8 @@ fn branded_svg(brand_color: Color) -> impl Fn(&Theme, svg::Status) -> svg::Style
     }
 }
 
-fn social_button(icon: svg::Handle, brand_color: Color, link: String) -> Element<'static, RootMessage> {
-    let button = Button::new(
+fn social_button(icon: svg::Handle, brand_color: Color, link: String) -> Button<'static, RootMessage> {
+    Button::new(
         svg(icon)
             .width(48)
             .height(48)
@@ -111,39 +116,54 @@ fn social_button(icon: svg::Handle, brand_color: Color, link: String) -> Element
     )
         .padding(4)
         .style(ghost_button)
-        .on_press(RootMessage::GoToLink(link));
-
-    mouse_area(button).interaction(iced::mouse::Interaction::Pointer).into()
+        .on_press(RootMessage::GoToLink(link))
+        .into()
 }
 
-fn github_button() -> Element<'static, RootMessage> {
+fn github_button() -> Button<'static, RootMessage> {
+    static GITHUB_LOGO: LazyLock<svg::Handle> = LazyLock::new(|| {
+        svg::Handle::from_memory(include_bytes!("../../assets/github.svg"))
+    });
+
     social_button(
-        svg::Handle::from_memory(include_bytes!("../assets/github.svg")), 
+        GITHUB_LOGO.clone(), 
         Color::from_rgb8(0x18, 0x17, 0x17),
         "https://github.com/IceDynamix/reliquary-archiver".to_string()
     )
 }
 
-fn discord_button() -> Element<'static, RootMessage> {
+fn discord_button() -> Button<'static, RootMessage> {
+    static DISCORD_LOGO: LazyLock<svg::Handle> = LazyLock::new(|| {
+        svg::Handle::from_memory(include_bytes!("../../assets/discord.svg"))
+    });    
+    
     social_button(
-        svg::Handle::from_memory(include_bytes!("../assets/discord.svg")), 
+        DISCORD_LOGO.clone(), 
         Color::from_rgb8(0x58, 0x65, 0xF2),
         "https://discord.gg/EbZXfRDQpu".to_string()
     )
 }
 
-pub fn view(state: &RootState) -> Element<RootMessage> {
-    let help_text = text("have questions or issues?").size(16).font(inter().styled(font::Style::Italic).weight(font::Weight::Semibold));
+fn help_arrow() -> iced::widget::Svg<'static> {
+    static HELP_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| {
+        svg::Handle::from_memory(include_bytes!("../../assets/arrow_up.svg"))
+    });
 
-    let help_arrow = svg(svg::Handle::from_memory(HELP_ARROW))
+    svg(HELP_ARROW.clone())
         .width(44)
         .height(44)
-        .style(|theme: &Theme, _| svg::Style { color: Some(theme.extended_palette().background.base.text) });
+        .style(|theme: &Theme, _| svg::Style { color: Some(theme.extended_palette().background.base.text) })
+}
+
+pub fn view(state: &RootState) -> Element<RootMessage> {
+    let help_text = text("have questions or issues?").size(16).font(inter().styled(font::Style::Italic).weight(font::Weight::Semibold));
 
     let icon_row = row![
         github_button(),
         discord_button(),
-        help_arrow
+        help_arrow(),
+        spinner().completed(state.test),
+        button(text("test")).on_press(RootMessage::Test)
     ]
         .align_y(Vertical::Bottom)
         .spacing(4);
@@ -166,7 +186,7 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
     ].align_x(Alignment::Center);
 
     let connection_status = if state.connected {
-        text(format!("connected, {} packets received", state.packets_received))
+        text(format!("connected, {}/{} pkts/cmds received", state.packets_received, state.commands_received))
     } else {
         text("disconnected").style(text::danger)
     }.size(12);
@@ -196,33 +216,9 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> 
         RootMessage::GoToLink(link) => {
             open::that(link).unwrap();
         }
-        RootMessage::WorkerEvent(worker::WorkerEvent::Ready(sender)) => {
-            state.worker_sender = Some(sender);
-        }
-        RootMessage::WorkerEvent(worker::WorkerEvent::Metric(metric)) => {
-            match metric {
-                worker::SnifferMetric::ConnectionEstablished => {
-                    state.connected = true;
-                }
-                worker::SnifferMetric::ConnectionDisconnected => {
-                    state.connected = false;
-                }
-                worker::SnifferMetric::NetworkPacketReceived => {
-                    state.packets_received += 1;
-                }
-                worker::SnifferMetric::GameCommandsReceived(commands) => {
-                    state.connected = true; // Must be connected to receive commands
-                    state.commands_received += commands;
-                    state.last_command_time = Some(Instant::now());
-                }
-                worker::SnifferMetric::DecryptionKeyMissing => {
-                    state.decryption_key_missing += 1;
-                }
-                worker::SnifferMetric::NetworkError => {
-                    state.network_errors += 1;
-                }
-            }
-        }
+
+        RootMessage::WorkerEvent(event) => handle_worker_event(state, event),
+
         RootMessage::CheckConnection(now) => {
             if let Some(last_command_time) = state.last_command_time {
                 if now.duration_since(last_command_time) > Duration::from_secs(60) {
@@ -231,15 +227,56 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> 
                 }
             }
         }
-        RootMessage::WorkerEvent(worker::WorkerEvent::ExportEvent(_)) => {
-            // TODO: handle event
-        }
+
         RootMessage::WSStatus(status) => {
             state.ws_status = status;
+        }
+
+        RootMessage::Test => {
+            state.test = !state.test;
         }
     }
 
     Task::none()
+}
+
+fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) {
+    match event {
+        worker::WorkerEvent::Ready(sender) => {
+            state.worker_sender = Some(sender);
+        }
+        worker::WorkerEvent::Metric(metric) => {
+            handle_sniffer_metric(state, metric);
+        }
+        worker::WorkerEvent::ExportEvent(_) => {
+            // TODO: handle event
+        }
+    }
+}
+
+fn handle_sniffer_metric(state: &mut RootState, metric: worker::SnifferMetric) {
+    match metric {
+        worker::SnifferMetric::ConnectionEstablished => {
+            state.connected = true;
+        }
+        worker::SnifferMetric::ConnectionDisconnected => {
+            state.connected = false;
+        }
+        worker::SnifferMetric::NetworkPacketReceived => {
+            state.packets_received += 1;
+        }
+        worker::SnifferMetric::GameCommandsReceived(commands) => {
+            state.connected = true; // Must be connected to receive commands
+            state.commands_received += commands;
+            state.last_command_time = Some(Instant::now());
+        }
+        worker::SnifferMetric::DecryptionKeyMissing => {
+            state.decryption_key_missing += 1;
+        }
+        worker::SnifferMetric::NetworkError => {
+            state.network_errors += 1;
+        }
+    }
 }
 
 pub fn subscription(state: &RootState) -> Subscription<RootMessage> {
@@ -261,7 +298,7 @@ pub fn run() -> iced::Result {
                     Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
                     Task::future(start_websocket_server(53313, exporter.clone())).map(|e| {
                         match e {
-                            Ok(()) => RootMessage::WSStatus(WebSocketStatus::Running { port: 53313 }),
+                            Ok(port) => RootMessage::WSStatus(WebSocketStatus::Running { port }),
                             Err(e) => RootMessage::WSStatus(WebSocketStatus::Failed { error: e })
                         }
                     }),
@@ -276,14 +313,15 @@ pub fn run() -> iced::Result {
             icon: Some(icon::from_file_data(LOGO, None).expect("Failed to load icon")),
             ..Default::default()
         })
-        .font(include_bytes!("../assets/fonts/inter/Inter_18pt-400-Regular.ttf"))
-        .font(include_bytes!("../assets/fonts/inter/Inter_18pt-400-Italic.ttf"))
-        .font(include_bytes!("../assets/fonts/inter/Inter_18pt-500-Medium.ttf"))
-        .font(include_bytes!("../assets/fonts/inter/Inter_18pt-500-MediumItalic.ttf"))
-        .font(include_bytes!("../assets/fonts/inter/Inter_18pt-600-SemiBold.ttf"))
-        .font(include_bytes!("../assets/fonts/inter/Inter_18pt-600-SemiBoldItalic.ttf"))
-        .font(include_bytes!("../assets/fonts/inter/Inter_18pt-700-Bold.ttf"))
-        .font(include_bytes!("../assets/fonts/inter/Inter_18pt-700-BoldItalic.ttf"))
+        .subscription(subscription)
+        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-400-Regular.ttf"))
+        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-400-Italic.ttf"))
+        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-500-Medium.ttf"))
+        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-500-MediumItalic.ttf"))
+        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-600-SemiBold.ttf"))
+        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-600-SemiBoldItalic.ttf"))
+        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-Bold.ttf"))
+        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-BoldItalic.ttf"))
         .default_font(Font::with_name("Inter 18pt"))
         .theme(|_state| Theme::Light)
         .run()

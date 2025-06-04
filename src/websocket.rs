@@ -20,7 +20,7 @@ struct WebSocketServerState<E: Exporter> {
 pub async fn start_websocket_server<E: Exporter>(
     port: u16,
     exporter: Arc<Mutex<E>>,
-) -> Result<(), String> {
+) -> Result<u16, String> {
     let state = Arc::new(WebSocketServerState {
         exporter: exporter.clone(),
     });
@@ -45,7 +45,7 @@ pub async fn start_websocket_server<E: Exporter>(
         axum::serve(listener, app.into_make_service()).await.unwrap();
     });
 
-    Ok(())
+    Ok(port)
 }
 
 async fn ws_handler<E: Exporter>(

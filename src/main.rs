@@ -28,7 +28,7 @@ use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 
 mod capture;
-mod view;
+mod gui;
 mod worker;
 
 #[derive(Parser, Debug, Clone)]
@@ -158,7 +158,7 @@ fn main() {
             return;
         }
 
-        view::run().unwrap();
+        gui::run().unwrap();
 
         // let database = Database::new();
         // let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
