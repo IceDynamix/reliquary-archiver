@@ -130,7 +130,7 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
             let mut capture = match device.create_capture() {
                 Ok(c) => c,
                 Err(e) => {
-                    tracing::debug!("Failed to create capture: {:#?}", e);
+                    tracing::warn!("Failed to create capture: {:#?}", e);
                     return;
                 }
             };
@@ -151,7 +151,7 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
                         // not receive any relevant packets, error is less useful to the user,
                         // so we lower the logging level
                         if !has_captured {
-                            tracing::debug!("Capture error: {:#?}", error);
+                            tracing::info!("Capture error: {:#?}", error);
                         } else {
                             tracing::warn!("Capture error: {:#?}", error);
                         }
