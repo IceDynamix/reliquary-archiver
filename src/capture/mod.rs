@@ -1,7 +1,7 @@
 use std::error::Error;
+use std::fmt::{Debug, Display};
 use std::sync::atomic::AtomicBool;
 use std::sync::{mpsc, Arc};
-use std::fmt::{Debug, Display};
 use std::thread::JoinHandle;
 
 use tracing::instrument;
@@ -27,7 +27,10 @@ pub enum CaptureError {
     DeviceError(Box<dyn Error>),
 
     FilterError(Box<dyn Error>),
-    CaptureError { has_captured: bool, error: Box<dyn Error> },
+    CaptureError {
+        has_captured: bool,
+        error: Box<dyn Error>,
+    },
     ChannelClosed,
 }
 
@@ -66,7 +69,7 @@ pub struct Packet {
 pub trait PacketCapture: Send {
     /// Start capturing packets and send them through the channel
     fn capture_packets(
-        &mut self, 
+        &mut self,
         tx: mpsc::Sender<Packet>,
         abort_signal: Arc<AtomicBool>,
     ) -> Result<()>;
@@ -75,7 +78,7 @@ pub trait PacketCapture: Send {
 /// Trait for creating packet capture instances
 pub trait CaptureDevice: Send + Debug {
     type Capture: PacketCapture;
-    
+
     /// Create a new capture instance from this device
     fn create_capture(&self) -> Result<Self::Capture>;
 }
@@ -83,7 +86,7 @@ pub trait CaptureDevice: Send + Debug {
 /// Get all available capture devices for a specific backend
 pub trait CaptureBackend {
     type Device: CaptureDevice;
-    
+
     /// List all available capture devices
     fn list_devices(&self) -> Result<Vec<Self::Device>>;
 }
@@ -95,7 +98,8 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
     abort_signal: Arc<AtomicBool>,
 ) -> Result<(mpsc::Receiver<Packet>, Vec<JoinHandle<()>>)> {
     // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
-    #[cfg(not(target_os = "linux"))] {
+    #[cfg(not(target_os = "linux"))]
+    {
         use std::sync::atomic::Ordering;
         use tracing::error;
 
@@ -108,10 +112,14 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
     }
 
     let (tx, rx) = mpsc::channel();
-    
+
     let devices = backend.list_devices()?;
     let mut join_handles = Vec::new();
-    
+
+    if devices.is_empty() {
+        tracing::warn!("Could not find any network devices");
+    }
+
     for device in devices {
         let tx = tx.clone();
         let abort_signal = abort_signal.clone();
@@ -126,13 +134,16 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
                     return;
                 }
             };
-            
+
             if let Err(e) = capture.capture_packets(tx, abort_signal) {
                 match e {
                     CaptureError::ChannelClosed => {
                         tracing::debug!("Channel closed");
                     }
-                    CaptureError::CaptureError { has_captured, error } => {
+                    CaptureError::CaptureError {
+                        has_captured,
+                        error,
+                    } => {
                         // we only really care about capture errors on devices that we already know
                         // are relevant (have sent packets before) and send those errors on warn level.
                         //
