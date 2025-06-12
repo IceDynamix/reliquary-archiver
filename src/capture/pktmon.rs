@@ -1,6 +1,7 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
 use super::*;
+use futures::{executor::block_on, SinkExt};
 use mpsc::RecvTimeoutError;
 use ::pktmon::{Capture, filter::{PktMonFilter, TransportProtocol}};
 
@@ -55,7 +56,7 @@ impl CaptureDevice for PktmonCaptureDevice {
 
 impl PacketCapture for PktmonCapture {
     #[instrument(skip_all)]
-    fn capture_packets(&mut self, tx: mpsc::Sender<Packet>, abort_signal: Arc<AtomicBool>) -> Result<()> {
+    fn capture_packets(&mut self, mut tx: mpsc::Sender<Packet>, abort_signal: Arc<AtomicBool>) -> Result<()> {
         let mut has_captured = false;
 
         self.capture.start()
@@ -68,7 +69,7 @@ impl PacketCapture for PktmonCapture {
                         data: packet.payload.to_vec(),
                     };
             
-                    tx.send(packet).map_err(|_| CaptureError::ChannelClosed)?;
+                    block_on(tx.send(packet)).map_err(|_| CaptureError::ChannelClosed)?;
                     has_captured = true;
                 }
                 Err(e) => {

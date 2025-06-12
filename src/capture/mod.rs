@@ -1,9 +1,10 @@
 use std::error::Error;
 use std::sync::atomic::AtomicBool;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc};
 use std::fmt::{Debug, Display};
 use std::thread::JoinHandle;
 
+use futures::channel::mpsc;
 use tracing::instrument;
 
 #[cfg(all(windows, feature = "pktmon"))]
@@ -107,7 +108,7 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
         }
     }
 
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel(128);
     
     let devices = backend.list_devices()?;
     let mut join_handles = Vec::new();

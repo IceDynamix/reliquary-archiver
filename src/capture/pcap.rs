@@ -1,6 +1,7 @@
 use std::sync::atomic::Ordering;
 
 use super::*;
+use futures::{executor::block_on, SinkExt};
 use ::pcap::{self, Active, Device as PcapDevice, Capture};
 use tracing::{debug, instrument};
 
@@ -46,7 +47,7 @@ impl CaptureDevice for PcapDevice {
 
 impl PacketCapture for PcapCapture {
     #[instrument(skip_all, fields(device = self.device.desc))]
-    fn capture_packets(&mut self, tx: mpsc::Sender<Packet>, abort_signal: Arc<AtomicBool>) -> Result<()> {
+    fn capture_packets(&mut self, mut tx: mpsc::Sender<Packet>, abort_signal: Arc<AtomicBool>) -> Result<()> {
         let mut has_captured = false;
 
         while !abort_signal.load(Ordering::Relaxed) {
@@ -56,7 +57,7 @@ impl PacketCapture for PcapCapture {
                         data: packet.data.to_vec(),
                     };
 
-                    tx.send(packet).map_err(|_| CaptureError::ChannelClosed)?;
+                    block_on(tx.send(packet)).map_err(|_| CaptureError::ChannelClosed)?;
                     has_captured = true;
                 }
                 Err(e) => {

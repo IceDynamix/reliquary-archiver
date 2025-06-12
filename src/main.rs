@@ -431,11 +431,13 @@ where
     }
 
     'recv: loop {
-        let received = if streaming {
+        let received: Result<capture::Packet, RecvTimeoutError> = if streaming {
             // If streaming, we don't want to timeout during inactivity
-            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        //     rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+            todo!()
         } else {
-            rx.recv_timeout(Duration::from_secs(args.timeout))
+        //     rx.recv_timeout(Duration::from_secs(args.timeout))
+            todo!()
         };
 
         match received {

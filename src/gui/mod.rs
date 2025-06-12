@@ -1,16 +1,34 @@
 use std::{sync::{Arc, LazyLock}, time::{Duration, Instant}};
 
-use futures::{channel::oneshot, lock::Mutex, StreamExt};
-use iced::{alignment::Vertical, border, font, padding, widget::{self, button, column, mouse_area, row, svg, text, Button, Text}, window::icon, Alignment, Background, Border, Color, Element, Font, Subscription, Task, Theme};
-use reliquary_archiver::export::fribbels::OptimizerExporter;
+use chrono::Local;
+use futures::{lock::Mutex, SinkExt};
+use iced::{alignment::Vertical, border, font, widget::{self, button, column, container, container::rounded_box, grid, horizontal_space, row, svg, text, Button}, window::icon, Alignment, Background, Color, Element, Font, Length, Subscription, Task, Theme};
+use reliquary_archiver::export::fribbels::{OptimizerEvent, OptimizerExporter};
+use stylefns::{rounded_box_md, rounded_button_primary, rounded_button_secondary, text_muted};
 use tracing::info;
 use widgets::spinner::spinner;
+use fonts::{inter, lucide, FontSettings};
 
 mod widgets;
+mod fonts;
+mod stylefns;
 
 use crate::{websocket::start_websocket_server, worker::{self, archiver_worker}};
 
 const LOGO: &[u8] = include_bytes!("../../assets/icon256.png");
+
+#[derive(Debug, Clone)]
+struct FileExtension {
+    description: String,
+    extensions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct FileContainer {
+    name: String,
+    content: String,
+    ext: FileExtension,
+}
 
 #[derive(Default)]
 pub struct RootState {
@@ -26,6 +44,8 @@ pub struct RootState {
     network_errors: usize,
 
     last_command_time: Option<Instant>,
+
+    json_export: Option<FileContainer>,
 
     test: bool,
 }
@@ -48,28 +68,15 @@ pub enum RootMessage {
 
     CheckConnection(Instant),
 
+    #[cfg(feature="pcap")]
+    OpenPcapPicker,
+
+    #[cfg(feature="pcap")]
+    OpenPcap(Option<rfd::FileHandle>),
+
+    DownloadFile(FileContainer),
+
     Test,
-}
-
-trait FontSettings {
-    fn weight(self, weight: font::Weight) -> Self;
-    fn styled(self, style: font::Style) -> Self;
-}
-
-impl FontSettings for Font {
-    fn weight(mut self, weight: font::Weight) -> Self {
-        self.weight = weight;
-        self
-    }
-
-    fn styled(mut self, style: font::Style) -> Self {
-        self.style = style;
-        self
-    }
-}
-
-fn inter() -> Font {
-    Font::with_name("Inter 18pt")
 }
 
 fn ghost_button(theme: &Theme, status: button::Status) -> button::Style {
@@ -155,6 +162,54 @@ fn help_arrow() -> iced::widget::Svg<'static> {
         .style(|theme: &Theme, _| svg::Style { color: Some(theme.extended_palette().background.base.text) })
 }
 
+fn file_size(size: usize) -> String {
+    let size_f = size as f64;
+    if size < 1024 {
+        format!("{} B", size)
+    } else if size < 1024 * 1024 {
+        format!("{:.2} KB", size_f / 1024.0)
+    } else {
+        format!("{:.2} MB", size_f / 1024.0 / 1024.0)
+    }
+}
+
+fn download_view<'a>(file: Option<&FileContainer>) -> Element<'a, RootMessage> {
+    container(
+        row![
+            button(lucide::arrow_down_to_line(32))
+                .style(rounded_button_secondary)
+                .padding(8)
+                .on_press_maybe(file.map(|f| RootMessage::DownloadFile(f.clone()))),
+
+            // horizontal_space(),
+
+            if let Some(file) = file {
+                Element::from(column![
+                    text(file.name.clone()).size(14),
+                    text(file_size(file.content.len())).size(12).style(text_muted),
+                ]
+                    .align_x(Alignment::Start)
+                    .spacing(4)
+                    .padding([4, 8])
+                )
+            } else {
+                text("Export not ready")
+                    .size(14)
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center)
+                    .into()
+            }
+
+            // horizontal_space(),
+        ]
+            .align_y(Alignment::Center)
+            .spacing(4)
+    )
+        .style(rounded_box_md)
+        .width(400)
+        .into()
+}
+
 pub fn view(state: &RootState) -> Element<RootMessage> {
     let help_text = text("have questions or issues?").size(16).font(inter().styled(font::Style::Italic).weight(font::Weight::Semibold));
 
@@ -162,8 +217,8 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
         github_button(),
         discord_button(),
         help_arrow(),
-        spinner().completed(state.test),
-        button(text("test")).on_press(RootMessage::Test)
+        // spinner().completed(state.test),
+        // button(text("test")).on_press(RootMessage::Test)
     ]
         .align_y(Vertical::Bottom)
         .spacing(4);
@@ -180,10 +235,29 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
     }
         .size(12);
     
-    let content = column![
-        text("Waiting for login...").size(24),
-        text("Please log into the game. If you are already in-game, you must log out and log back in."),
-    ].align_x(Alignment::Center);
+    let mut content = vec![
+        text("Waiting for login...").size(24).into(),
+        text("Please log into the game. If you are already in-game, you must log out and log back in.").into(),
+    ];
+
+    content.push(row![
+        button(
+            text("Upload .pcap").align_y(Alignment::Center).height(Length::Fill)
+        )
+            .on_press(RootMessage::OpenPcapPicker)
+            .style(rounded_button_primary)
+            .padding([8, 16])
+            .height(Length::Fill),
+        download_view(state.json_export.as_ref()),
+    ]
+        .height(Length::Shrink)
+        .spacing(10)
+        .into()
+    );
+
+    // content.push();
+
+    let content = column(content).align_x(Alignment::Center);
 
     let connection_status = if state.connected {
         text(format!("connected, {}/{} pkts/cmds received", state.packets_received, state.commands_received))
@@ -199,18 +273,18 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
         .align_y(Vertical::Bottom)
         .spacing(4);
 
-    column![
+    Into::<Element<RootMessage>>::into(column![
         github_box,
-        widget::center(content),
+        widget::center(content).padding(20),
         footer,
     ]
         .padding(10)
-        .spacing(10)
-        .into()
+        .spacing(10))
+        // .explain(Color::from_rgb8(0xFF, 0, 0))
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> {
-    info!("update: {:?}", message);
+    // info!("update: {:?}", message);
 
     match message {
         RootMessage::GoToLink(link) => {
@@ -232,6 +306,39 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> 
             state.ws_status = status;
         }
 
+        #[cfg(feature="pcap")]
+        RootMessage::OpenPcapPicker => {
+            return Task::perform(
+                rfd::AsyncFileDialog::new()
+                    .set_title("Select a packet capture file")
+                    .add_filter("Packet Captures", &["pcap", "pcapng"])
+                    .pick_file(), 
+                RootMessage::OpenPcap
+            );
+        }
+
+        #[cfg(feature="pcap")]
+        RootMessage::OpenPcap(file) => {
+            if let Some(file) = file {
+                let mut sender = state.worker_sender.as_ref().unwrap().clone();
+                return Task::future(async move {
+                    sender.send(worker::WorkerCommand::ProcessRecorded(file.path().to_path_buf())).await
+                }).discard();
+            }
+        }
+
+        RootMessage::DownloadFile(file) => {            
+            if let Some(path) = rfd::FileDialog::new()
+                .set_file_name(&file.name)
+                .add_filter(&file.ext.description, &file.ext.extensions)
+                .save_file()
+            {
+                if let Err(e) = std::fs::write(&path, file.content) {
+                    eprintln!("Failed to save file: {}", e);
+                }
+            }
+        }
+
         RootMessage::Test => {
             state.test = !state.test;
         }
@@ -248,8 +355,22 @@ fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) {
         worker::WorkerEvent::Metric(metric) => {
             handle_sniffer_metric(state, metric);
         }
-        worker::WorkerEvent::ExportEvent(_) => {
-            // TODO: handle event
+        worker::WorkerEvent::ExportEvent(event) => {
+            match event {
+                OptimizerEvent::InitialScan(scan) => {
+                    state.json_export = Some(
+                        FileContainer {
+                            name: Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string(),
+                            content: serde_json::to_string_pretty(&scan).unwrap(),
+                            ext: FileExtension {
+                                description: "JSON files".to_string(),
+                                extensions: vec!["json".to_string()],
+                            }
+                        }
+                    );
+                }
+                _ => {} // TODO: handle other events
+            }
         }
     }
 }
@@ -314,6 +435,7 @@ pub fn run() -> iced::Result {
             ..Default::default()
         })
         .subscription(subscription)
+        .font(include_bytes!("../../assets/fonts/lucide.ttf"))
         .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-400-Regular.ttf"))
         .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-400-Italic.ttf"))
         .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-500-Medium.ttf"))
@@ -323,6 +445,6 @@ pub fn run() -> iced::Result {
         .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-Bold.ttf"))
         .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-BoldItalic.ttf"))
         .default_font(Font::with_name("Inter 18pt"))
-        .theme(|_state| Theme::Light)
+        .theme(|_state| Theme::Oxocarbon)
         .run()
 }

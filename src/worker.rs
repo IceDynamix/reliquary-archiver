@@ -43,6 +43,7 @@ pub enum WorkerEvent {
 pub enum WorkerCommand {
     Abort,
     MakeExport(oneshot::Sender<Option<Export>>),
+    ProcessRecorded(std::path::PathBuf),
 }
 
 pub type WorkerHandle = mpsc::Sender<WorkerCommand>;
@@ -51,11 +52,11 @@ pub type WorkerHandle = mpsc::Sender<WorkerCommand>;
 //     Subscription::run(move || archiver_worker(exporter))
 // }
 
-struct AbortOnDrop(Arc<AtomicBool>, Option<std::thread::JoinHandle<()>>);
+struct AbortOnDrop(Arc<AtomicBool>, Option<tokio::task::JoinHandle<()>>);
 
 impl AbortOnDrop {
     pub fn new(
-        f: impl FnOnce(Arc<AtomicBool>) -> std::thread::JoinHandle<()>,
+        f: impl FnOnce(Arc<AtomicBool>) -> tokio::task::JoinHandle<()>,
     ) -> Self {
         let abort_signal = Arc::new(AtomicBool::new(false));
         Self(abort_signal.clone(), Some(f(abort_signal)))
@@ -70,10 +71,62 @@ impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.abort();
         if let Some(handle) = self.1.take() {
-            handle.join().unwrap();
+            block_on(handle).unwrap();
         }
     }
 }
+
+struct MappedSender<Output, Intermediate> {
+    sender: mpsc::Sender<Output>,
+    f: fn(Intermediate) -> Output,
+}
+
+impl<Output, Intermediate> MappedSender<Output, Intermediate> {
+    fn new(sender: mpsc::Sender<Output>, f: fn(Intermediate) -> Output) -> Self {
+        Self {
+            sender,
+            f,
+        }
+    }
+
+    fn send(&mut self, item: Intermediate) -> futures::sink::Send<'_, mpsc::Sender<Output>, Output> {
+        self.sender.send((self.f)(item))
+    }
+}
+
+// trait MapSender {
+//     type Item;
+
+//     fn map<F, O>(self, f: F) -> Map<Self, F, O>
+//     where
+//         Self: Sized,
+//         F: Fn(Self::Item) -> O + 'static;
+// }
+
+// struct Map<S, F, O> {
+//     sender: S,
+//     f: Box<dyn Fn(S::Item) -> O>,
+// }
+
+// impl<T> MapSender for mpsc::Sender<T> {
+//     type Item = T;
+
+//     fn map<F, O>(self, f: F) -> Map<Self, F, O>
+//     where
+//         F: Fn(Self::Item) -> O + 'static,
+//     {
+//         Map {
+//             sender: self,
+//             f: Box::new(f),
+//         }
+//     }
+// }
+
+// impl<S: MapSender, F, O> Map<S, F, O> {
+//     async fn send(&self, item: S::Item) -> Result<(), mpsc::SendError<O>> {
+//         self.sender.send((self.f)(item)).await
+//     }
+// }
 
 #[instrument(skip_all)]
 pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<Item = WorkerEvent> {
@@ -86,15 +139,21 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
 
         let (_, mut rx) = exporter.lock().await.subscribe();
 
-        let (metric_tx, mut metric_rx) = mpsc::channel(100);
+        let (mut recorded_tx, recorded_rx) = mpsc::channel(100);
+        // let (metric_tx, mut metric_rx) = mpsc::channel(100);
 
         let abort_signal = { // Need to spawn a real thread since the packet capture is blocking
             let exporter = exporter.clone();
+            let output = output.clone();
 
             AbortOnDrop::new(move |abort_signal| {
-                std::thread::spawn(move || {
-                    live_capture(abort_signal, exporter, sniffer, metric_tx)
-                })
+                tokio::spawn(live_capture(
+                    abort_signal, 
+                    exporter, 
+                    sniffer, 
+                    MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
+                    recorded_rx
+                ))
             })
         };
 
@@ -111,12 +170,18 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
                             let export = exporter.lock().await.export();
                             sender.send(export).ok();
                         }
+                        WorkerCommand::ProcessRecorded(pcap_path) => {
+                            let packets = capture_from_pcap(pcap_path);
+                            info!("processing {} packets", packets.len());
+                            recorded_tx.send_all(&mut futures::stream::iter(packets.into_iter().map(Ok))).await.ok();
+                            info!("processed packets");
+                        }
                     }
                 }
 
-                metric = metric_rx.select_next_some() => {
-                    output.send(WorkerEvent::Metric(metric)).await.ok();
-                }
+                // metric = metric_rx.select_next_some() => {
+                //     output.send(WorkerEvent::Metric(metric)).await.ok();
+                // }
 
                 event = rx.recv() => {
                     match event {
@@ -145,13 +210,35 @@ pub enum SnifferMetric {
 }
 
 #[instrument(skip_all)]
-fn live_capture<E: Exporter>(
+#[cfg(feature = "pcap")]
+fn capture_from_pcap(
+    pcap_path: std::path::PathBuf,
+) -> Vec<capture::Packet> {
+    use crate::capture::PCAP_FILTER;
+
+    info!("Capturing from pcap file: {}", pcap_path.display());
+    let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
+    capture.filter(PCAP_FILTER, false).unwrap();
+
+    let mut packets = Vec::new();
+    while let Ok(packet) = capture.next_packet() {
+        packets.push(capture::Packet {
+            data: packet.data.to_vec(),
+        });
+    }
+
+    packets
+}
+
+#[instrument(skip_all)]
+async fn live_capture<E: Exporter>(
     abort_signal: Arc<AtomicBool>, 
     exporter: Arc<Mutex<E>>, 
     mut sniffer: GameSniffer,
-    mut metric_tx: mpsc::Sender<SnifferMetric>,
+    mut metric_tx: MappedSender<WorkerEvent, SnifferMetric>,
+    mut recorded_rx: mpsc::Receiver<capture::Packet>,
 ) {
-    let rx = {
+    let live_rx = {
         #[cfg(feature = "pcap")] {
             capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
         }
@@ -161,7 +248,7 @@ fn live_capture<E: Exporter>(
         }
     };
 
-    let (rx, join_handles) = rx.expect("Failed to start packet capture");
+    let (mut live_rx, join_handles) = live_rx.expect("Failed to start packet capture");
 
     // #[cfg(feature = "stream")]
     // let streaming = args.stream;
@@ -175,69 +262,71 @@ fn live_capture<E: Exporter>(
     // }
 
     'recv: loop {
-        match rx.recv() {
-            Ok(packet) => {
-                block_on(metric_tx.send(SnifferMetric::NetworkPacketReceived)).ok();
+        let packet = select! {
+            data = live_rx.next() => match data {
+                Some(data) => data,
+                None => break 'recv,
+            },
 
-                match sniffer.receive_packet(packet.data) {
-                    Ok(packets) => {
-                        block_on(metric_tx.send(SnifferMetric::GameCommandsReceived(packets.len()))).ok();
+            data = recorded_rx.select_next_some() => data,
 
-                        for packet in packets {
-                            match packet {
-                                GamePacket::Connection(c) => {
-                                    match c {
-                                        ConnectionPacket::HandshakeEstablished => {
-                                            info!("detected connection established");
-                                            block_on(metric_tx.send(SnifferMetric::ConnectionEstablished)).ok();
+            complete => break 'recv,
+        };
 
-                                            if cfg!(all(feature = "pcap", windows)) {
-                                                info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
-                                            }
-                                        }
-                                        ConnectionPacket::Disconnected => {
-                                            info!("detected connection disconnected");
-                                            block_on(metric_tx.send(SnifferMetric::ConnectionDisconnected)).ok();
-                                        }
-                                        _ => {}
+        metric_tx.send(SnifferMetric::NetworkPacketReceived).await.ok();
+
+        match sniffer.receive_packet(packet.data) {
+            Ok(packets) => {
+                metric_tx.send(SnifferMetric::GameCommandsReceived(packets.len())).await.ok();
+
+                for packet in packets {
+                    match packet {
+                        GamePacket::Connection(c) => {
+                            match c {
+                                ConnectionPacket::HandshakeEstablished => {
+                                    info!("detected connection established");
+                                    metric_tx.send(SnifferMetric::ConnectionEstablished).await.ok();
+
+                                    if cfg!(all(feature = "pcap", windows)) {
+                                        info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
                                     }
                                 }
-                                GamePacket::Commands(command) => {
-                                    match command {
-                                        Ok(command) => {
-                                            if command.command_id == PlayerLoginScRsp {
-                                                info!("detected login start");
-                                            }
+                                ConnectionPacket::Disconnected => {
+                                    info!("detected connection disconnected");
+                                    metric_tx.send(SnifferMetric::ConnectionDisconnected).await.ok();
+                                }
+                                _ => {}
+                            }
+                        }
+                        GamePacket::Commands(command) => {
+                            match command {
+                                Ok(command) => {
+                                    if command.command_id == PlayerLoginScRsp {
+                                        info!("detected login start");
+                                    }
 
-                                            block_on(exporter.lock()).read_command(command);
-                                        }
-                                        Err(e) => {
-                                            warn!(%e);
-                                            if let GameCommandError::DecryptionKeyMissing = e {
-                                                block_on(metric_tx.send(SnifferMetric::DecryptionKeyMissing)).ok();
-                                            } else {
-                                                block_on(metric_tx.send(SnifferMetric::NetworkError)).ok();
-                                            }
-                                        }
+                                    exporter.lock().await.read_command(command);
+                                }
+                                Err(e) => {
+                                    warn!(%e);
+                                    if let GameCommandError::DecryptionKeyMissing = e {
+                                        metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
+                                    } else {
+                                        metric_tx.send(SnifferMetric::NetworkError).await.ok();
                                     }
                                 }
                             }
                         }
                     }
-                    Err(e) => {
-                        warn!(%e);
-                        if let NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) = e {
-                            block_on(metric_tx.send(SnifferMetric::DecryptionKeyMissing)).ok();
-                        } else {
-                            block_on(metric_tx.send(SnifferMetric::NetworkError)).ok();
-                        }
-                    }
                 }
             }
             Err(e) => {
-                // Channel was closed
                 warn!(%e);
-                break 'recv;
+                if let NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) = e {
+                    metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
+                } else {
+                    metric_tx.send(SnifferMetric::NetworkError).await.ok();
+                }
             }
         }
     }
@@ -252,6 +341,7 @@ fn live_capture<E: Exporter>(
     // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
     #[cfg(not(target_os = "linux"))] {
         for handle in join_handles {
+            // TODO: spawn_blocking?
             handle.join().expect("Failed to join capture thread");
         }
     }

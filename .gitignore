@@ -6,3 +6,4 @@ wpcap.lib
 /*.json
 /*.log
 npcap-sdk*.zip
+.DS_Store
