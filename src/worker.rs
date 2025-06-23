@@ -71,7 +71,7 @@ impl Drop for AbortOnDrop {
     fn drop(&mut self) {
         self.abort();
         if let Some(handle) = self.1.take() {
-            block_on(handle).unwrap();
+            block_on(handle).ok();
         }
     }
 }
