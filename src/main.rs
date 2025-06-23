@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use std::fs::File;
 use std::panic;
 use std::path::PathBuf;

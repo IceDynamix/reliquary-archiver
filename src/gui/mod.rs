@@ -14,34 +14,29 @@ use stylefns::{rounded_box_md, rounded_button_primary, rounded_button_secondary,
 use tracing::info;
 use widgets::spinner::spinner;
 
+mod components;
 mod fonts;
+mod screens;
 mod stylefns;
 mod widgets;
 
+use crate::gui::components::file_download::download_view;
+use crate::gui::components::{FileContainer, FileExtensions};
+use crate::gui::stylefns::{ghost_button, PAD_LG, PAD_MD, PAD_SM, SPACE_MD, SPACE_SM};
 use crate::websocket::start_websocket_server;
 use crate::worker::{self, archiver_worker};
 
 const LOGO: &[u8] = include_bytes!("../../assets/icon256.png");
 
-#[derive(Debug, Clone)]
-struct FileExtension {
-    description: String,
-    extensions: Vec<String>,
-}
-
-#[derive(Debug, Clone)]
-struct FileContainer {
-    name: String,
-    content: String,
-    ext: FileExtension,
+#[derive(Default)]
+pub struct Store {
+    json_export: Option<FileContainer>,
+    stats: StatsStore,
 }
 
 #[derive(Default)]
-pub struct RootState {
-    exporter: Arc<Mutex<OptimizerExporter>>,
+pub struct StatsStore {
     ws_status: WebSocketStatus,
-
-    worker_sender: Option<worker::WorkerHandle>,
 
     connected: bool,
     packets_received: usize,
@@ -50,10 +45,27 @@ pub struct RootState {
     network_errors: usize,
 
     last_command_time: Option<Instant>,
+}
 
-    json_export: Option<FileContainer>,
+#[derive(Default)]
+pub struct RootState {
+    exporter: Arc<Mutex<OptimizerExporter>>,
+    worker_sender: Option<worker::WorkerHandle>,
 
-    test: bool,
+    store: Store,
+
+    screen: Screen,
+}
+
+#[derive(Debug)]
+enum Screen {
+    Waiting(screens::waiting::WaitingScreen),
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Self::Waiting(screens::waiting::WaitingScreen::new())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -78,37 +90,7 @@ pub enum RootMessage {
 
     CheckConnection(Instant),
 
-    #[cfg(feature = "pcap")]
-    OpenPcapPicker,
-
-    #[cfg(feature = "pcap")]
-    OpenPcap(Option<rfd::FileHandle>),
-
-    DownloadFile(FileContainer),
-
-    Test,
-}
-
-fn ghost_button(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
-    let base = button::Style {
-        background: None,
-        text_color: palette.secondary.base.text,
-        border: border::rounded(8),
-        ..button::Style::default()
-    };
-
-    match status {
-        button::Status::Hovered => button::Style {
-            background: Some(Background::Color(palette.secondary.base.color)),
-            ..base
-        },
-        button::Status::Pressed => button::Style {
-            background: Some(Background::Color(palette.secondary.strong.color)),
-            ..base
-        },
-        button::Status::Active | button::Status::Disabled => base,
-    }
+    WaitingScreen(screens::waiting::Message),
 }
 
 fn branded_svg(brand_color: Color) -> impl Fn(&Theme, svg::Status) -> svg::Style {
@@ -126,7 +108,7 @@ fn branded_svg(brand_color: Color) -> impl Fn(&Theme, svg::Status) -> svg::Style
 
 fn social_button(icon: svg::Handle, brand_color: Color, link: String) -> Button<'static, RootMessage> {
     Button::new(svg(icon).width(48).height(48).style(branded_svg(brand_color)))
-        .padding(4)
+        .padding(PAD_SM)
         .style(ghost_button)
         .on_press(RootMessage::GoToLink(link))
         .into()
@@ -160,51 +142,6 @@ fn help_arrow() -> iced::widget::Svg<'static> {
     })
 }
 
-fn file_size(size: usize) -> String {
-    let size_f = size as f64;
-    if size < 1024 {
-        format!("{} B", size)
-    } else if size < 1024 * 1024 {
-        format!("{:.2} KB", size_f / 1024.0)
-    } else {
-        format!("{:.2} MB", size_f / 1024.0 / 1024.0)
-    }
-}
-
-fn download_view<'a>(file: Option<&FileContainer>) -> Element<'a, RootMessage> {
-    container(
-        row![
-            button(lucide::arrow_down_to_line(32))
-                .style(rounded_button_secondary)
-                .padding(8)
-                .on_press_maybe(file.map(|f| RootMessage::DownloadFile(f.clone()))),
-            // horizontal_space(),
-            if let Some(file) = file {
-                Element::from(
-                    column![
-                        text(file.name.clone()).size(14),
-                        text(file_size(file.content.len())).size(12).style(text_muted),
-                    ]
-                    .align_x(Alignment::Start)
-                    .spacing(4)
-                    .padding([4, 8]),
-                )
-            } else {
-                text("Export not ready")
-                    .size(14)
-                    .width(Length::Fill)
-                    .align_x(Alignment::Center)
-                    .into()
-            } // horizontal_space(),
-        ]
-        .align_y(Alignment::Center)
-        .spacing(4),
-    )
-    .style(rounded_box_md)
-    .width(400)
-    .into()
-}
-
 pub fn view(state: &RootState) -> Element<RootMessage> {
     let help_text = text("have questions or issues?")
         .size(16)
@@ -214,56 +151,27 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
         github_button(),
         discord_button(),
         help_arrow(),
-        // spinner().completed(state.test),
-        // button(text("test")).on_press(RootMessage::Test)
     ]
     .align_y(Vertical::Bottom)
-    .spacing(4);
+    .spacing(SPACE_SM);
 
     let github_box = column![icon_row, help_text,];
 
-    let ws_status = match &state.ws_status {
+    let ws_status = match &state.store.stats.ws_status {
         WebSocketStatus::Pending => text("starting server..."),
         WebSocketStatus::Running { port } => text(format!("ws://localhost:{}", port)),
         WebSocketStatus::Failed { error } => text(format!("failed to start server: {}", error)).style(text::danger),
     }
     .size(12);
-    
-    let mut content = vec![
-        text("Waiting for login...").size(24).into(),
-        text("Please log into the game. If you are already in-game, you must log out and log back in.").into(),
-    ];
 
-    content.push(horizontal_rule(40).into());
+    let content = match &state.screen {
+        Screen::Waiting(screen) => screen.view(&state.store).map(RootMessage::WaitingScreen),
+    };
 
-    content.push(
-        container(text("Alternatively, if you have a packet capture file, you can upload it."))
-            .padding(Padding::ZERO.bottom(10))
-            .into(),
-    );
-
-    content.push(
-        row![
-            button(text("Upload .pcap").align_y(Alignment::Center).height(Length::Fill))
-                .on_press(RootMessage::OpenPcapPicker)
-                .style(rounded_button_primary)
-                .padding([8, 16])
-                .height(Length::Fill),
-            download_view(state.json_export.as_ref()),
-        ]
-        .height(Length::Shrink)
-        .spacing(10)
-        .into(),
-    );
-
-    // content.push();
-
-    let content = column(content).align_x(Alignment::Center);
-
-    let connection_status = if state.connected {
+    let connection_status = if state.store.stats.connected {
         text(format!(
             "connected, {}/{} pkts/cmds received",
-            state.packets_received, state.commands_received
+            state.store.stats.packets_received, state.store.stats.commands_received
         ))
     } else {
         text("disconnected").style(text::danger)
@@ -272,80 +180,66 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
 
     let footer = row![ws_status, widget::horizontal_space(), connection_status,]
         .align_y(Vertical::Bottom)
-        .spacing(4);
+        .spacing(SPACE_SM);
 
     Into::<Element<RootMessage>>::into(
-        column![github_box, widget::center(content).padding(20), footer,]
-            .padding(10)
-            .spacing(10),
+        column![github_box, widget::center(content), footer,]
+            .padding(PAD_MD)
+            .spacing(SPACE_MD),
     )
     // .explain(Color::from_rgb8(0xFF, 0, 0))
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> {
-    // info!("update: {:?}", message);
-
     match message {
         RootMessage::GoToLink(link) => {
             open::that(link).unwrap();
+
+            Task::none()
         }
 
         RootMessage::WorkerEvent(event) => handle_worker_event(state, event),
 
         RootMessage::CheckConnection(now) => {
-            if let Some(last_command_time) = state.last_command_time {
+            if let Some(last_command_time) = state.store.stats.last_command_time {
                 if now.duration_since(last_command_time) > Duration::from_secs(60) {
                     // Assume the connection is lost
-                    state.connected = false;
+                    state.store.stats.connected = false;
                 }
             }
+
+            Task::none()
         }
 
         RootMessage::WSStatus(status) => {
-            state.ws_status = status;
+            state.store.stats.ws_status = status;
+
+            Task::none()
         }
 
-        #[cfg(feature = "pcap")]
-        RootMessage::OpenPcapPicker => {
-            return Task::perform(
-                rfd::AsyncFileDialog::new()
-                    .set_title("Select a packet capture file")
-                    .add_filter("Packet Captures", &["pcap", "pcapng"])
-                    .pick_file(),
-                RootMessage::OpenPcap,
-            );
-        }
-
-        #[cfg(feature = "pcap")]
-        RootMessage::OpenPcap(file) => {
-            if let Some(file) = file {
-                let mut sender = state.worker_sender.as_ref().unwrap().clone();
-                return Task::future(async move { sender.send(worker::WorkerCommand::ProcessRecorded(file.path().to_path_buf())).await })
-                    .discard();
-            }
-        }
-
-        RootMessage::DownloadFile(file) => {
-            if let Some(path) = rfd::FileDialog::new()
-                .set_file_name(&file.name)
-                .add_filter(&file.ext.description, &file.ext.extensions)
-                .save_file()
-            {
-                if let Err(e) = std::fs::write(&path, file.content) {
-                    eprintln!("Failed to save file: {}", e);
+        RootMessage::WaitingScreen(message) => {
+            if let Screen::Waiting(screen) = &mut state.screen {
+                match screen.update(message) {
+                    screens::waiting::Action::None => Task::none(),
+                    screens::waiting::Action::Run(task) => task.map(RootMessage::WaitingScreen),
+                    screens::waiting::Action::ProcessCapture(path) => {
+                        if let Some(sender) = state.worker_sender.as_ref() {
+                            let mut sender = sender.clone();
+                            Task::future(async move { sender.send(worker::WorkerCommand::ProcessRecorded(path)).await })
+                                .discard()
+                        } else {
+                            Task::none()
+                        }
+                    }
                 }
+            } else {
+                Task::none()
             }
-        }
-
-        RootMessage::Test => {
-            state.test = !state.test;
         }
     }
-
-    Task::none()
 }
 
-fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) {
+fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) -> Task<RootMessage> {
     match event {
         worker::WorkerEvent::Ready(sender) => {
             state.worker_sender = Some(sender);
@@ -356,48 +250,49 @@ fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) {
         worker::WorkerEvent::ExportEvent(event) => {
             match event {
                 OptimizerEvent::InitialScan(scan) => {
-                    state.json_export = Some(FileContainer {
+                    state.store.json_export = Some(FileContainer {
                         name: Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string(),
                         content: serde_json::to_string_pretty(&scan).unwrap(),
-                        ext: FileExtension {
-                            description: "JSON files".to_string(),
-                            extensions: vec!["json".to_string()],
-                        },
+                        ext: FileExtensions::of("JSON files", &["json"]),
                     });
                 }
                 _ => {} // TODO: handle other events
             }
         }
     }
+
+    Task::none()
 }
 
 fn handle_sniffer_metric(state: &mut RootState, metric: worker::SnifferMetric) {
+    let stats = &mut state.store.stats;
+
     match metric {
         worker::SnifferMetric::ConnectionEstablished => {
-            state.connected = true;
+            stats.connected = true;
         }
         worker::SnifferMetric::ConnectionDisconnected => {
-            state.connected = false;
+            stats.connected = false;
         }
         worker::SnifferMetric::NetworkPacketReceived => {
-            state.packets_received += 1;
+            stats.packets_received += 1;
         }
         worker::SnifferMetric::GameCommandsReceived(commands) => {
-            state.connected = true; // Must be connected to receive commands
-            state.commands_received += commands;
-            state.last_command_time = Some(Instant::now());
+            stats.connected = true; // Must be connected to receive commands
+            stats.commands_received += commands;
+            stats.last_command_time = Some(Instant::now());
         }
         worker::SnifferMetric::DecryptionKeyMissing => {
-            state.decryption_key_missing += 1;
+            stats.decryption_key_missing += 1;
         }
         worker::SnifferMetric::NetworkError => {
-            state.network_errors += 1;
+            stats.network_errors += 1;
         }
     }
 }
 
 pub fn subscription(state: &RootState) -> Subscription<RootMessage> {
-    if state.connected {
+    if state.store.stats.connected {
         iced::time::every(Duration::from_secs(60)).map(|now| RootMessage::CheckConnection(now))
     } else {
         Subscription::none()
