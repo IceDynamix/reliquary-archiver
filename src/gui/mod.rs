@@ -1,19 +1,25 @@
-use std::{sync::{Arc, LazyLock}, time::{Duration, Instant}};
+use std::sync::{Arc, LazyLock};
+use std::time::{Duration, Instant};
 
 use chrono::Local;
-use futures::{lock::Mutex, SinkExt};
-use iced::{alignment::Vertical, border, font, widget::{self, button, column, container, container::rounded_box, grid, horizontal_space, row, svg, text, Button}, window::icon, Alignment, Background, Color, Element, Font, Length, Subscription, Task, Theme};
+use fonts::{FontSettings, inter, lucide};
+use futures::SinkExt;
+use futures::lock::Mutex;
+use iced::alignment::Vertical;
+use iced::widget::{self, Button, button, column, container, grid, horizontal_rule, horizontal_space, row, rule, svg, text};
+use iced::window::icon;
+use iced::{Alignment, Background, Color, Element, Font, Length, Padding, Subscription, Task, Theme, border, font};
 use reliquary_archiver::export::fribbels::{OptimizerEvent, OptimizerExporter};
 use stylefns::{rounded_box_md, rounded_button_primary, rounded_button_secondary, text_muted};
 use tracing::info;
 use widgets::spinner::spinner;
-use fonts::{inter, lucide, FontSettings};
 
-mod widgets;
 mod fonts;
 mod stylefns;
+mod widgets;
 
-use crate::{websocket::start_websocket_server, worker::{self, archiver_worker}};
+use crate::websocket::start_websocket_server;
+use crate::worker::{self, archiver_worker};
 
 const LOGO: &[u8] = include_bytes!("../../assets/icon256.png");
 
@@ -54,8 +60,12 @@ pub struct RootState {
 pub enum WebSocketStatus {
     #[default]
     Pending,
-    Running { port: u16 },
-    Failed { error: String },
+    Running {
+        port: u16,
+    },
+    Failed {
+        error: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -68,10 +78,10 @@ pub enum RootMessage {
 
     CheckConnection(Instant),
 
-    #[cfg(feature="pcap")]
+    #[cfg(feature = "pcap")]
     OpenPcapPicker,
 
-    #[cfg(feature="pcap")]
+    #[cfg(feature = "pcap")]
     OpenPcap(Option<rfd::FileHandle>),
 
     DownloadFile(FileContainer),
@@ -109,18 +119,13 @@ fn branded_svg(brand_color: Color) -> impl Fn(&Theme, svg::Status) -> svg::Style
                 Some(palette.background.base.text)
             } else {
                 Some(brand_color)
-            }
+            },
         }
     }
 }
 
 fn social_button(icon: svg::Handle, brand_color: Color, link: String) -> Button<'static, RootMessage> {
-    Button::new(
-        svg(icon)
-            .width(48)
-            .height(48)
-            .style(branded_svg(brand_color))
-    )
+    Button::new(svg(icon).width(48).height(48).style(branded_svg(brand_color)))
         .padding(4)
         .style(ghost_button)
         .on_press(RootMessage::GoToLink(link))
@@ -128,38 +133,31 @@ fn social_button(icon: svg::Handle, brand_color: Color, link: String) -> Button<
 }
 
 fn github_button() -> Button<'static, RootMessage> {
-    static GITHUB_LOGO: LazyLock<svg::Handle> = LazyLock::new(|| {
-        svg::Handle::from_memory(include_bytes!("../../assets/github.svg"))
-    });
+    static GITHUB_LOGO: LazyLock<svg::Handle> = LazyLock::new(|| svg::Handle::from_memory(include_bytes!("../../assets/github.svg")));
 
     social_button(
-        GITHUB_LOGO.clone(), 
+        GITHUB_LOGO.clone(),
         Color::from_rgb8(0x18, 0x17, 0x17),
-        "https://github.com/IceDynamix/reliquary-archiver".to_string()
+        "https://github.com/IceDynamix/reliquary-archiver".to_string(),
     )
 }
 
 fn discord_button() -> Button<'static, RootMessage> {
-    static DISCORD_LOGO: LazyLock<svg::Handle> = LazyLock::new(|| {
-        svg::Handle::from_memory(include_bytes!("../../assets/discord.svg"))
-    });    
-    
+    static DISCORD_LOGO: LazyLock<svg::Handle> = LazyLock::new(|| svg::Handle::from_memory(include_bytes!("../../assets/discord.svg")));
+
     social_button(
-        DISCORD_LOGO.clone(), 
+        DISCORD_LOGO.clone(),
         Color::from_rgb8(0x58, 0x65, 0xF2),
-        "https://discord.gg/EbZXfRDQpu".to_string()
+        "https://discord.gg/EbZXfRDQpu".to_string(),
     )
 }
 
 fn help_arrow() -> iced::widget::Svg<'static> {
-    static HELP_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| {
-        svg::Handle::from_memory(include_bytes!("../../assets/arrow_up.svg"))
-    });
+    static HELP_ARROW: LazyLock<svg::Handle> = LazyLock::new(|| svg::Handle::from_memory(include_bytes!("../../assets/arrow_up.svg")));
 
-    svg(HELP_ARROW.clone())
-        .width(44)
-        .height(44)
-        .style(|theme: &Theme, _| svg::Style { color: Some(theme.extended_palette().background.base.text) })
+    svg(HELP_ARROW.clone()).width(44).height(44).style(|theme: &Theme, _| svg::Style {
+        color: Some(theme.extended_palette().background.base.text),
+    })
 }
 
 fn file_size(size: usize) -> String {
@@ -180,17 +178,16 @@ fn download_view<'a>(file: Option<&FileContainer>) -> Element<'a, RootMessage> {
                 .style(rounded_button_secondary)
                 .padding(8)
                 .on_press_maybe(file.map(|f| RootMessage::DownloadFile(f.clone()))),
-
             // horizontal_space(),
-
             if let Some(file) = file {
-                Element::from(column![
-                    text(file.name.clone()).size(14),
-                    text(file_size(file.content.len())).size(12).style(text_muted),
-                ]
+                Element::from(
+                    column![
+                        text(file.name.clone()).size(14),
+                        text(file_size(file.content.len())).size(12).style(text_muted),
+                    ]
                     .align_x(Alignment::Start)
                     .spacing(4)
-                    .padding([4, 8])
+                    .padding([4, 8]),
                 )
             } else {
                 text("Export not ready")
@@ -198,20 +195,20 @@ fn download_view<'a>(file: Option<&FileContainer>) -> Element<'a, RootMessage> {
                     .width(Length::Fill)
                     .align_x(Alignment::Center)
                     .into()
-            }
-
-            // horizontal_space(),
+            } // horizontal_space(),
         ]
-            .align_y(Alignment::Center)
-            .spacing(4)
+        .align_y(Alignment::Center)
+        .spacing(4),
     )
-        .style(rounded_box_md)
-        .width(400)
-        .into()
+    .style(rounded_box_md)
+    .width(400)
+    .into()
 }
 
 pub fn view(state: &RootState) -> Element<RootMessage> {
-    let help_text = text("have questions or issues?").size(16).font(inter().styled(font::Style::Italic).weight(font::Weight::Semibold));
+    let help_text = text("have questions or issues?")
+        .size(16)
+        .font(inter().styled(font::Style::Italic).weight(font::Weight::Semibold));
 
     let icon_row = row![
         github_button(),
@@ -220,39 +217,43 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
         // spinner().completed(state.test),
         // button(text("test")).on_press(RootMessage::Test)
     ]
-        .align_y(Vertical::Bottom)
-        .spacing(4);
+    .align_y(Vertical::Bottom)
+    .spacing(4);
 
-    let github_box = column![
-        icon_row,
-        help_text,
-    ];
+    let github_box = column![icon_row, help_text,];
 
     let ws_status = match &state.ws_status {
         WebSocketStatus::Pending => text("starting server..."),
         WebSocketStatus::Running { port } => text(format!("ws://localhost:{}", port)),
         WebSocketStatus::Failed { error } => text(format!("failed to start server: {}", error)).style(text::danger),
     }
-        .size(12);
+    .size(12);
     
     let mut content = vec![
         text("Waiting for login...").size(24).into(),
         text("Please log into the game. If you are already in-game, you must log out and log back in.").into(),
     ];
 
-    content.push(row![
-        button(
-            text("Upload .pcap").align_y(Alignment::Center).height(Length::Fill)
-        )
-            .on_press(RootMessage::OpenPcapPicker)
-            .style(rounded_button_primary)
-            .padding([8, 16])
-            .height(Length::Fill),
-        download_view(state.json_export.as_ref()),
-    ]
+    content.push(horizontal_rule(40).into());
+
+    content.push(
+        container(text("Alternatively, if you have a packet capture file, you can upload it."))
+            .padding(Padding::ZERO.bottom(10))
+            .into(),
+    );
+
+    content.push(
+        row![
+            button(text("Upload .pcap").align_y(Alignment::Center).height(Length::Fill))
+                .on_press(RootMessage::OpenPcapPicker)
+                .style(rounded_button_primary)
+                .padding([8, 16])
+                .height(Length::Fill),
+            download_view(state.json_export.as_ref()),
+        ]
         .height(Length::Shrink)
         .spacing(10)
-        .into()
+        .into(),
     );
 
     // content.push();
@@ -260,27 +261,25 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
     let content = column(content).align_x(Alignment::Center);
 
     let connection_status = if state.connected {
-        text(format!("connected, {}/{} pkts/cmds received", state.packets_received, state.commands_received))
+        text(format!(
+            "connected, {}/{} pkts/cmds received",
+            state.packets_received, state.commands_received
+        ))
     } else {
         text("disconnected").style(text::danger)
-    }.size(12);
+    }
+    .size(12);
 
-    let footer = row![
-        ws_status,
-        widget::horizontal_space(),
-        connection_status,
-    ]
+    let footer = row![ws_status, widget::horizontal_space(), connection_status,]
         .align_y(Vertical::Bottom)
         .spacing(4);
 
-    Into::<Element<RootMessage>>::into(column![
-        github_box,
-        widget::center(content).padding(20),
-        footer,
-    ]
-        .padding(10)
-        .spacing(10))
-        // .explain(Color::from_rgb8(0xFF, 0, 0))
+    Into::<Element<RootMessage>>::into(
+        column![github_box, widget::center(content).padding(20), footer,]
+            .padding(10)
+            .spacing(10),
+    )
+    // .explain(Color::from_rgb8(0xFF, 0, 0))
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> {
@@ -306,28 +305,27 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> 
             state.ws_status = status;
         }
 
-        #[cfg(feature="pcap")]
+        #[cfg(feature = "pcap")]
         RootMessage::OpenPcapPicker => {
             return Task::perform(
                 rfd::AsyncFileDialog::new()
                     .set_title("Select a packet capture file")
                     .add_filter("Packet Captures", &["pcap", "pcapng"])
-                    .pick_file(), 
-                RootMessage::OpenPcap
+                    .pick_file(),
+                RootMessage::OpenPcap,
             );
         }
 
-        #[cfg(feature="pcap")]
+        #[cfg(feature = "pcap")]
         RootMessage::OpenPcap(file) => {
             if let Some(file) = file {
                 let mut sender = state.worker_sender.as_ref().unwrap().clone();
-                return Task::future(async move {
-                    sender.send(worker::WorkerCommand::ProcessRecorded(file.path().to_path_buf())).await
-                }).discard();
+                return Task::future(async move { sender.send(worker::WorkerCommand::ProcessRecorded(file.path().to_path_buf())).await })
+                    .discard();
             }
         }
 
-        RootMessage::DownloadFile(file) => {            
+        RootMessage::DownloadFile(file) => {
             if let Some(path) = rfd::FileDialog::new()
                 .set_file_name(&file.name)
                 .add_filter(&file.ext.description, &file.ext.extensions)
@@ -358,16 +356,14 @@ fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) {
         worker::WorkerEvent::ExportEvent(event) => {
             match event {
                 OptimizerEvent::InitialScan(scan) => {
-                    state.json_export = Some(
-                        FileContainer {
-                            name: Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string(),
-                            content: serde_json::to_string_pretty(&scan).unwrap(),
-                            ext: FileExtension {
-                                description: "JSON files".to_string(),
-                                extensions: vec!["json".to_string()],
-                            }
-                        }
-                    );
+                    state.json_export = Some(FileContainer {
+                        name: Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string(),
+                        content: serde_json::to_string_pretty(&scan).unwrap(),
+                        ext: FileExtension {
+                            description: "JSON files".to_string(),
+                            extensions: vec!["json".to_string()],
+                        },
+                    });
                 }
                 _ => {} // TODO: handle other events
             }
@@ -409,42 +405,41 @@ pub fn subscription(state: &RootState) -> Subscription<RootMessage> {
 }
 
 pub fn run() -> iced::Result {
-    iced::application(|| {
+    iced::application(
+        || {
             let state = RootState::default();
             let exporter = state.exporter.clone();
 
             (
-                state, 
+                state,
                 Task::batch(vec![
                     Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
-                    Task::future(start_websocket_server(53313, exporter.clone())).map(|e| {
-                        match e {
-                            Ok(port) => RootMessage::WSStatus(WebSocketStatus::Running { port }),
-                            Err(e) => RootMessage::WSStatus(WebSocketStatus::Failed { error: e })
-                        }
+                    Task::future(start_websocket_server(53313, exporter.clone())).map(|e| match e {
+                        Ok(port) => RootMessage::WSStatus(WebSocketStatus::Running { port }),
+                        Err(e) => RootMessage::WSStatus(WebSocketStatus::Failed { error: e }),
                     }),
-                ])
+                ]),
             )
-        }, 
+        },
         update,
         view,
     )
-        .title("Reliquary Archiver")
-        .window(iced::window::Settings { 
-            icon: Some(icon::from_file_data(LOGO, None).expect("Failed to load icon")),
-            ..Default::default()
-        })
-        .subscription(subscription)
-        .font(include_bytes!("../../assets/fonts/lucide.ttf"))
-        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-400-Regular.ttf"))
-        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-400-Italic.ttf"))
-        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-500-Medium.ttf"))
-        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-500-MediumItalic.ttf"))
-        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-600-SemiBold.ttf"))
-        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-600-SemiBoldItalic.ttf"))
-        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-Bold.ttf"))
-        .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-BoldItalic.ttf"))
-        .default_font(Font::with_name("Inter 18pt"))
-        .theme(|_state| Theme::Oxocarbon)
-        .run()
+    .title("Reliquary Archiver")
+    .window(iced::window::Settings {
+        icon: Some(icon::from_file_data(LOGO, None).expect("Failed to load icon")),
+        ..Default::default()
+    })
+    .subscription(subscription)
+    .font(include_bytes!("../../assets/fonts/lucide.ttf"))
+    .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-400-Regular.ttf"))
+    .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-400-Italic.ttf"))
+    .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-500-Medium.ttf"))
+    .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-500-MediumItalic.ttf"))
+    .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-600-SemiBold.ttf"))
+    .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-600-SemiBoldItalic.ttf"))
+    .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-Bold.ttf"))
+    .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-BoldItalic.ttf"))
+    .default_font(Font::with_name("Inter 18pt"))
+    .theme(|_state| Theme::Oxocarbon)
+    .run()
 }
