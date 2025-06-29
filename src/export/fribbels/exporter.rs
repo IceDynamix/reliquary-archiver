@@ -23,17 +23,17 @@ pub struct OptimizerExporter {
     pub(super) database: &'static Database,
     
     // State fields
-    pub(super) initialized: bool,
-    pub(super) uid: Option<u32>,
-    pub(super) trailblazer: Option<&'static str>,
-    pub(super) banners: HashMap<u32, BannerInfo>,
-    pub(super) gacha: GachaFunds,
-    pub(super) materials: BTreeMap<u32, Material>,
-    pub(super) light_cones: BTreeMap<u32, LightCone>,
-    pub(super) relics: BTreeMap<u32, Relic>,
-    pub(super) characters: BTreeMap<u32, Character>,
-    pub(super) multipath_characters: BTreeMap<u32, Character>,
-    pub(super) multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    pub initialized: bool,
+    pub uid: Option<u32>,
+    pub trailblazer: Option<&'static str>,
+    pub banners: HashMap<u32, BannerInfo>,
+    pub gacha: GachaFunds,
+    pub materials: BTreeMap<u32, Material>,
+    pub light_cones: BTreeMap<u32, LightCone>,
+    pub relics: BTreeMap<u32, Relic>,
+    pub characters: BTreeMap<u32, Character>,
+    pub multipath_characters: BTreeMap<u32, Character>,
+    pub multipath_base_avatars: HashMap<u32, ProtoCharacter>,
     pub(super) unresolved_multipath_characters: HashSet<u32>,
 
     #[cfg(feature = "stream")]

@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 
-use iced::{widget::{button, column, container, row, text}, Alignment, Element, Length, Task};
+use iced::widget::{button, column, container, row, text, tooltip};
+use iced::{Alignment, Element, Length, Task};
 
-use crate::gui::{components::FileContainer, fonts::lucide, stylefns::{rounded_box_md, rounded_button_secondary, text_muted, PAD_MD, PAD_SM, SPACE_SM}};
+use crate::gui::components::FileContainer;
+use crate::gui::fonts::lucide;
+use crate::gui::stylefns::{PAD_MD, PAD_SM, SPACE_SM, rounded_box_md, rounded_button_secondary, text_muted};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -26,14 +29,32 @@ fn file_size(size: usize) -> String {
     }
 }
 
-pub fn download_view<PMsg: Clone + 'static>(file: Option<&FileContainer>, message: impl Fn(Message) -> PMsg) -> Element<PMsg> {
+pub fn download_view<PMsg: Clone + 'static>(
+    file: Option<&FileContainer>,
+    message: impl Fn(Message) -> PMsg,
+    out_of_date: bool,
+) -> Element<PMsg> {
+    let dl_button = button(lucide::arrow_down_to_line(32))
+        .style(rounded_button_secondary)
+        .padding(PAD_MD);
+
+    let dl_button: Element<PMsg> = if out_of_date {
+        tooltip(
+            dl_button,
+            container(text("Export is out of date. Please refresh.").size(12))
+                .padding(PAD_SM)
+                .style(rounded_box_md),
+            tooltip::Position::Bottom,
+        ).into()
+    } else {
+        dl_button.on_press_maybe(
+            file.map(|f| message(Message::PickPathForFile(f.clone()))),
+        ).into()
+    };
+
     container(
         row![
-            button(lucide::arrow_down_to_line(32))
-                .style(rounded_button_secondary)
-                .padding(PAD_MD)
-                .on_press_maybe(file.map(|f| message(Message::PickPathForFile(f.clone())))),
-
+            dl_button,
             if let Some(file) = file {
                 Element::from(
                     column![
@@ -62,16 +83,15 @@ pub fn download_view<PMsg: Clone + 'static>(file: Option<&FileContainer>, messag
 
 pub fn update(message: Message) -> Action {
     match message {
-        Message::PickPathForFile(export) => {
-            Action::Run(Task::future(
+        Message::PickPathForFile(export) => Action::Run(
+            Task::future(
                 rfd::AsyncFileDialog::new()
                     .set_file_name(&export.name)
                     .add_filter(&export.ext.description, &export.ext.extensions)
-                    .save_file()
-            ).and_then(move |file| Task::done(
-                Message::SaveFile(export.clone(), file.path().to_path_buf())
-            )))
-        }
+                    .save_file(),
+            )
+            .and_then(move |file| Task::done(Message::SaveFile(export.clone(), file.path().to_path_buf()))),
+        ),
         Message::SaveFile(export, path) => {
             if let Err(e) = std::fs::write(&path, export.content) {
                 eprintln!("Failed to save file: {}", e);

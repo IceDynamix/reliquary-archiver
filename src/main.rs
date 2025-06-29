@@ -1,4 +1,5 @@
 #![allow(unused)]
+#![feature(macro_metavar_expr_concat)]
 
 use std::fs::File;
 use std::panic;
@@ -32,6 +33,7 @@ use reliquary_archiver::export::Exporter;
 mod capture;
 mod gui;
 mod worker;
+mod scopefns;
 
 #[derive(Parser, Debug, Clone)]
 struct Args {

@@ -7,7 +7,7 @@ use iced::{Alignment, Element, Length, Padding, Task};
 use crate::gui::components::file_download::{self, download_view};
 use crate::gui::components::{file_picker, FileContainer, FileExtensions};
 use crate::gui::stylefns::{rounded_box_md, rounded_button_primary, PAD_LG, PAD_MD, SPACE_LG, SPACE_MD};
-use crate::gui::{RootState, Store};
+use crate::gui::{RootState, ScreenAction, Store};
 use crate::worker;
 
 #[derive(Debug)]
@@ -19,61 +19,48 @@ pub enum Message {
     DownloadExport(file_download::Message),
 }
 
-pub enum Action {
-    None,
-    Run(Task<Message>),
-    ProcessCapture(PathBuf),
-}
+
 
 impl WaitingScreen {
     pub fn new() -> Self {
         Self
     }
 
-    pub fn update(&mut self, message: Message) -> Action {
+    pub fn update(&mut self, message: Message) -> ScreenAction<Message> {
         match message {
             Message::UploadPcap(message) => match file_picker::update(message) {
-                file_picker::Action::Run(task) => Action::Run(task.map(Message::UploadPcap)),
-                file_picker::Action::FilePicked(None) => Action::None,
-                file_picker::Action::FilePicked(Some(file)) => Action::ProcessCapture(file.path().to_path_buf()),
+                file_picker::Action::Run(task) => ScreenAction::Run(task.map(Message::UploadPcap)),
+                file_picker::Action::FilePicked(None) => ScreenAction::None,
+                file_picker::Action::FilePicked(Some(file)) => ScreenAction::ProcessCapture(file.path().to_path_buf()),
             },
             
             Message::DownloadExport(message) => match file_download::update(message) {
-                file_download::Action::None => Action::None,
-                file_download::Action::Run(task) => Action::Run(task.map(Message::DownloadExport)),
+                file_download::Action::None => ScreenAction::None,
+                file_download::Action::Run(task) => ScreenAction::Run(task.map(Message::DownloadExport)),
             },
         }
     }
 
     pub fn view<'a>(&'a self, store: &'a Store) -> Element<'a, Message> {
-        let mut content = vec![
-            text("Waiting for login...").size(24).into(),
-            text("Please log into the game. If you are already in-game, you must log out and log back in.").into(),
-        ];
-
-        content.push(horizontal_rule(SPACE_LG * 2).into());
-
-        content.push(
+        let mut content = column![
+            text("Waiting for login...").size(24),
+            text("Please log into the game. If you are already in-game, you must log out and log back in."),
+            horizontal_rule(SPACE_LG * 2),
             container(text("Alternatively, if you have a packet capture file, you can upload it."))
-                .padding(Padding::ZERO.bottom(SPACE_MD))
-                .into(),
-        );
-
-        content.push(
+                .padding(Padding::ZERO.bottom(SPACE_MD)),
             row![
                 file_picker::view(
                     "Upload .pcap", 
                     FileExtensions::of("PCAP files", &["pcap", "pcapng"]),
                     Message::UploadPcap
                 ).height(Length::Fill),
-                download_view(store.json_export.as_ref(), Message::DownloadExport),
+                download_view(store.json_export.as_ref(), Message::DownloadExport, store.export_out_of_date),
             ]
-            .height(Length::Shrink)
-            .spacing(SPACE_MD)
-            .into(),
-        );
+                .height(Length::Shrink)
+                .spacing(SPACE_MD)
+        ].width(Length::Shrink);
 
-        widget::center(column(content).align_x(Alignment::Center))
+        widget::center(content.align_x(Alignment::Center))
             .padding(PAD_LG)
             .into()
     }
