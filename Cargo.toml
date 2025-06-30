@@ -15,7 +15,7 @@ base64 = "0.22.1"
 clap = { version = "4.5.31", features = ["derive"] }
 chrono = "0.4.40"
 color-eyre = "0.6.3"
-pcap = { version = "2.2.0", optional = true }
+pcap = { version = "2.2.0", optional = true, features = ["capture-stream"] }
 protobuf = "=3.7.1" # match the protobuf version used in reliquary-codegen
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
@@ -25,13 +25,15 @@ ureq = { version = "2.12.1" }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v11.0.2", features = ["proto-rqa"] }
 ctrlc = "3.4.5"
 axum = { version = "0.8.3", optional = true, features = ["ws", "tracing"]}
-tokio = { version = "1.44.2", optional = true, features = ["full"] }
-futures = { version = "0.3.31", optional = true }
+tokio = { version = "1.44.2", features = ["full"] }
+tokio-stream = "0.1.17"
+futures = { version = "0.3.31" }
 serde_with = "3.12.0"
 iced = { git = "https://github.com/iced-rs/iced", rev = "9ef2c468831ae3dd86ce7afc0f675070ca68dd4a", features = ["image", "canvas", "crisp", "tokio", "svg", "advanced", "hot", "debug"] }
 open = "5.3.2"
 lyon_algorithms = "1.0.5"
 rfd = "0.15.3"
+async-trait = "0.1.88"
 
 [package.metadata.patch]
 crates = ["winit"]
@@ -41,7 +43,7 @@ winit = { path="./target/patch/11414b6" }
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
-pktmon = { version = "0.4.0", optional = true }
+pktmon = { version = "0.5.0", features = ["tokio"], optional = true }
 windows = { version = "0.61", features = [
     "Win32_UI_Shell", 
     "Win32_UI_WindowsAndMessaging", 
@@ -70,7 +72,7 @@ lto = true
 overflow-checks = false # see comment above
 
 [features]
-default = ["stream", "pcap"]
+default = ["stream", "pktmon"]
 pktmon = ["dep:pktmon"]
 pcap = ["dep:pcap"]
-stream = ["dep:axum", "dep:tokio", "dep:futures"]
+stream = ["dep:axum"]

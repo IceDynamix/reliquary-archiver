@@ -13,10 +13,14 @@ use std::time::Duration;
 
 use chrono::Local;
 use clap::Parser;
+use futures::{future, select, FutureExt, StreamExt};
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
+use tokio::pin;
 use tracing::{debug, info, instrument, warn, error};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
+
+use crate::capture::CaptureError;
 
 #[cfg(windows)] use {
     std::env,
@@ -372,7 +376,7 @@ where
     exporter.export()
 }
 
-fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
+async fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -380,8 +384,6 @@ where
 
     #[cfg(feature = "stream")] {
         if args.stream {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let _guard = rt.enter();
 
             let port = args.websocket_port;
             // let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
@@ -393,35 +395,43 @@ where
 
             // ws_server.abort();
 
-            result
+            result.await
         } else {
-            live_capture(args, exporter, sniffer)
+            live_capture(args, exporter, sniffer).await
         }
     }
 
     #[cfg(not(feature = "stream"))] {
-        live_capture(args, exporter, sniffer)
+        live_capture(args, exporter, sniffer).await
+    }
+}
+
+async fn maybe_timeout(timeout: Option<Duration>) -> () {
+    if let Some(timeout) = timeout {
+        tokio::time::sleep(timeout).await;
+    } else {
+        future::pending::<()>().await;
     }
 }
 
 #[instrument(skip_all)]
-fn live_capture<E>(args: &Args, exporter: Arc<Mutex<E>>, mut sniffer: GameSniffer) -> Option<E::Export>
+async fn live_capture<E>(args: &Args, exporter: Arc<Mutex<E>>, mut sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
 {
-    let abort_signal = Arc::new(AtomicBool::new(false));
-
     let rx = {
         #[cfg(feature = "pcap")] {
-            capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
+            capture::listen_on_all(capture::pcap::PcapBackend)
         }
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
-            capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
+            capture::listen_on_all(capture::pktmon::PktmonBackend)
         }
     };
 
-    let (rx, join_handles) = rx.expect("Failed to start packet capture");
+    let packet_stream = rx.expect("Failed to start packet capture");
+
+    let mut packet_stream = packet_stream.fuse();
 
     #[cfg(feature = "stream")]
     let streaming = args.stream;
@@ -430,18 +440,37 @@ where
     let streaming = false;
 
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
-    if !streaming {
-        info!("listening with a timeout of {} seconds...", args.timeout);
-    }
+
+    pin!(
+        let timeout_future = maybe_timeout(
+            if !streaming {
+                info!("listening with a timeout of {} seconds...", args.timeout);
+                Some(Duration::from_secs(args.timeout))
+            } else {
+                None
+            }
+        ).fuse();
+    );
 
     'recv: loop {
-        let received: Result<capture::Packet, RecvTimeoutError> = if streaming {
-            // If streaming, we don't want to timeout during inactivity
-        //     rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
-            todo!()
-        } else {
-        //     rx.recv_timeout(Duration::from_secs(args.timeout))
-            todo!()
+        // let received: Result<capture::Packet, CaptureError> = if streaming {
+        //     // If streaming, we don't want to timeout during inactivity
+        // //     rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
+        //     todo!()
+        // } else {
+        // //     rx.recv_timeout(Duration::from_secs(args.timeout))
+        //     packet_stream.selec
+        // };
+
+        let received = select! {
+            packet = packet_stream.next() => match packet {
+                Some(packet) => packet,
+                None => break 'recv,
+            },
+
+            _ = timeout_future => {
+                break 'recv;
+            }
         };
 
         match received {
@@ -506,19 +535,23 @@ where
         }
     }
 
-    abort_signal.store(true, Ordering::Relaxed);
+    // abort_signal.store(true, Ordering::Relaxed);
 
-    #[cfg(target_os = "linux")] {
-        // Detach join handles on linux since pcap timeout will not fire if no packets are received on some interface
-        drop(join_handles);
-    }
+    // #[cfg(target_os = "linux")] {
+    //     // Detach join handles on linux since pcap timeout will not fire if no packets are received on some interface
+    //     drop(join_handles);
+    // }
 
     // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
-    #[cfg(not(target_os = "linux"))] {
-        for handle in join_handles {
-            handle.join().expect("Failed to join capture thread");
-        }
-    }
+    // #[cfg(not(target_os = "linux"))] {
+    //     for handle in join_handles {
+    //         handle.join().expect("Failed to join capture thread");
+    //     }
+    // }
+
+    // for handle in join_handles {
+    //     handle.abort();
+    // }
 
     exporter.lock().unwrap().export()
 }

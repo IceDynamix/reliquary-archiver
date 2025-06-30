@@ -1,9 +1,11 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures::executor::block_on;
 use futures::lock::Mutex;
+use futures::FutureExt;
 use iced::futures::channel::{mpsc, oneshot};
 use iced::futures::sink::SinkExt;
 use iced::stream;
@@ -26,6 +28,7 @@ use reliquary_archiver::export::fribbels::Export;
 use reliquary_archiver::export::fribbels::OptimizerEvent;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
+use tokio::pin;
 use tracing::info;
 use tracing::instrument;
 use tracing::warn;
@@ -43,6 +46,8 @@ pub enum WorkerEvent {
 pub enum WorkerCommand {
     Abort,
     MakeExport(oneshot::Sender<Option<Export>>),
+
+    #[cfg(feature = "pcap")]
     ProcessRecorded(std::path::PathBuf),
 }
 
@@ -146,14 +151,23 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
             let exporter = exporter.clone();
             let output = output.clone();
 
-            AbortOnDrop::new(move |abort_signal| {
-                tokio::spawn(live_capture(
-                    abort_signal, 
+            // let lc = Box::pin(live_capture(
+            //     exporter, 
+            //     sniffer, 
+            //     MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
+            //     recorded_rx
+            // ));
+
+            tokio::spawn(async {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+
+                live_capture(
                     exporter, 
                     sniffer, 
                     MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
                     recorded_rx
-                ))
+                ).await;
+
             })
         };
 
@@ -170,6 +184,8 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
                             let export = exporter.lock().await.export();
                             sender.send(export).ok();
                         }
+
+                        #[cfg(feature = "pcap")]
                         WorkerCommand::ProcessRecorded(pcap_path) => {
                             let packets = capture_from_pcap(pcap_path);
                             info!("processing {} packets", packets.len());
@@ -232,7 +248,6 @@ fn capture_from_pcap(
 
 #[instrument(skip_all)]
 async fn live_capture<E: Exporter>(
-    abort_signal: Arc<AtomicBool>, 
     exporter: Arc<Mutex<E>>, 
     mut sniffer: GameSniffer,
     mut metric_tx: MappedSender<WorkerEvent, SnifferMetric>,
@@ -240,15 +255,16 @@ async fn live_capture<E: Exporter>(
 ) {
     let live_rx = {
         #[cfg(feature = "pcap")] {
-            capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
+            capture::listen_on_all(capture::pcap::PcapBackend)
         }
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
-            capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
+            capture::listen_on_all(capture::pktmon::PktmonBackend)
         }
     };
 
-    let (mut live_rx, join_handles) = live_rx.expect("Failed to start packet capture");
+    let live_rx = live_rx.expect("Failed to start packet capture");
+    let mut live_rx = live_rx.fuse();
 
     // #[cfg(feature = "stream")]
     // let streaming = args.stream;
@@ -262,15 +278,23 @@ async fn live_capture<E: Exporter>(
     // }
 
     'recv: loop {
-        let packet = select! {
-            data = live_rx.next() => match data {
-                Some(data) => data,
-                None => break 'recv,
-            },
+        // We have to drop the Err before we cross an await point since StdErr is not Send
+        let packet = {
+            let packet = select! {
+                data = live_rx.select_next_some() => data,
 
-            data = recorded_rx.select_next_some() => data,
+                data = recorded_rx.select_next_some() => Ok(data),
 
-            complete => break 'recv,
+                complete => break 'recv,
+            };
+
+            match packet {
+                Ok(packet) => packet,
+                Err(e) => {
+                    warn!(%e);
+                    continue;
+                }
+            }
         };
 
         metric_tx.send(SnifferMetric::NetworkPacketReceived).await.ok();
@@ -331,18 +355,7 @@ async fn live_capture<E: Exporter>(
         }
     }
 
-    abort_signal.store(true, Ordering::Relaxed);
-
-    #[cfg(target_os = "linux")] {
-        // Detach join handles on linux since pcap timeout will not fire if no packets are received on some interface
-        drop(join_handles);
-    }
-
-    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
-    #[cfg(not(target_os = "linux"))] {
-        for handle in join_handles {
-            // TODO: spawn_blocking?
-            handle.join().expect("Failed to join capture thread");
-        }
-    }
+    // for handle in join_handles {
+    //     handle.abort();
+    // }
 }

@@ -1,7 +1,8 @@
 use std::sync::atomic::Ordering;
 
 use super::*;
-use futures::{executor::block_on, SinkExt};
+use futures::{executor::block_on, SinkExt, StreamExt, TryStreamExt};
+use pcap::PacketCodec;
 use ::pcap::{self, Active, Device as PcapDevice, Capture};
 use tracing::{debug, instrument};
 
@@ -28,6 +29,10 @@ impl CaptureBackend for PcapBackend {
 
 impl CaptureDevice for PcapDevice {
     type Capture = PcapCapture;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
     
     fn create_capture(&self) -> Result<Self::Capture> {
         let mut capture = Capture::from_device(self.clone())
@@ -38,6 +43,10 @@ impl CaptureDevice for PcapDevice {
             .open()
             .map_err(|e| CaptureError::CaptureError { has_captured: false, error: Box::new(e) })?;
 
+        let mut capture = capture
+            .setnonblock()
+            .map_err(|e| CaptureError::CaptureError { has_captured: false, error: Box::new(e) })?;
+
         capture.filter(PCAP_FILTER, true)
             .map_err(|e| CaptureError::FilterError(Box::new(e)))?;
             
@@ -45,33 +54,54 @@ impl CaptureDevice for PcapDevice {
     }
 }
 
+pub struct Codec;
+
+impl PacketCodec for Codec {
+    type Item = Packet;
+
+    fn decode(&mut self, pkt: pcap::Packet) -> Self::Item {
+        Packet {
+            data: pkt.data.to_vec(),
+        }
+    }
+}
+
 impl PacketCapture for PcapCapture {
     #[instrument(skip_all, fields(device = self.device.desc))]
-    fn capture_packets(&mut self, mut tx: mpsc::Sender<Packet>, abort_signal: Arc<AtomicBool>) -> Result<()> {
+    fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>>> {
         let mut has_captured = false;
-
-        while !abort_signal.load(Ordering::Relaxed) {
-            match self.capture.next_packet() {
-                Ok(packet) => {
-                    let packet = Packet {
-                        data: packet.data.to_vec(),
-                    };
-
-                    block_on(tx.send(packet)).map_err(|_| CaptureError::ChannelClosed)?;
-                    has_captured = true;
-                }
-                Err(e) => {
-                    if matches!(e, pcap::Error::TimeoutExpired) {
-                        debug!(?e);
-                        continue;
+        return match self.capture.stream(Codec) {
+            Ok(stream) => Ok(stream
+                .map(move |r| match r {
+                    Ok(p) => {
+                        has_captured = true;
+                        Ok(p)
                     }
-
-                    return Err(CaptureError::CaptureError { has_captured, error: Box::new(e) });
-                }
-            }
+                    Err(e) => return Err(CaptureError::CaptureError { has_captured, error: Box::new(e) }),
+                })),
+            Err(e) => Err(CaptureError::CaptureError { has_captured: false, error: Box::new(e) }),
         }
 
-        Ok(())
+        //     match self.capture.next_packet() {
+        //         Ok(packet) => {
+        //             let packet = Packet {
+        //                 data: packet.data.to_vec(),
+        //             };
+
+        //             block_on(tx.send(packet)).map_err(|_| CaptureError::ChannelClosed)?;
+        //             has_captured = true;
+        //         }
+        //         Err(e) => {
+        //             if matches!(e, pcap::Error::TimeoutExpired) {
+        //                 debug!(?e);
+        //                 continue;
+        //             }
+
+        //             return Err(CaptureError::CaptureError { has_captured, error: Box::new(e) });
+        //         }
+        //     }
+
+        // Ok(())
     }
 } 
 

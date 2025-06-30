@@ -20,6 +20,7 @@ mod components;
 mod fonts;
 mod screens;
 mod stylefns;
+mod utils;
 mod widgets;
 
 use crate::gui::components::file_download::download_view;
@@ -243,8 +244,10 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
 pub enum ScreenAction<Message> {
     None,
     Run(Task<Message>),
-    ProcessCapture(PathBuf),
     RefreshExport,
+
+    #[cfg(feature = "pcap")]
+    ProcessCapture(PathBuf),
 }
 
 impl<Message: Send + 'static> ScreenAction<Message> {
@@ -252,15 +255,6 @@ impl<Message: Send + 'static> ScreenAction<Message> {
         match self {
             Self::None => Task::none(),
             Self::Run(task) => task.map(wrapper),
-            Self::ProcessCapture(path) => {
-                if let Some(sender) = state.worker_sender.as_ref() {
-                    let mut sender = sender.clone();
-                    Task::future(async move { sender.send(worker::WorkerCommand::ProcessRecorded(path)).await })
-                        .discard()
-                } else {
-                    Task::none()
-                }
-            }
             Self::RefreshExport => {
                 if let Some(sender) = state.worker_sender.as_ref() {
                     let mut sender = sender.clone();
@@ -269,6 +263,17 @@ impl<Message: Send + 'static> ScreenAction<Message> {
                         sender.send(worker::WorkerCommand::MakeExport(tx)).await;
                         rx.await.unwrap()
                     }).and_then(|e| Task::done(RootMessage::NewExport(e)))
+                } else {
+                    Task::none()
+                }
+            }
+            
+            #[cfg(feature = "pcap")]
+            Self::ProcessCapture(path) => {
+                if let Some(sender) = state.worker_sender.as_ref() {
+                    let mut sender = sender.clone();
+                    Task::future(async move { sender.send(worker::WorkerCommand::ProcessRecorded(path)).await })
+                        .discard()
                 } else {
                     Task::none()
                 }
