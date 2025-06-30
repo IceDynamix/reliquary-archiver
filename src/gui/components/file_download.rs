@@ -5,7 +5,7 @@ use iced::{Alignment, Element, Length, Task};
 
 use crate::gui::components::FileContainer;
 use crate::gui::fonts::lucide;
-use crate::gui::stylefns::{PAD_MD, PAD_SM, SPACE_SM, rounded_box_md, rounded_button_secondary, text_muted};
+use crate::gui::stylefns::{rounded_box_md, rounded_button_primary, text_muted, PAD_MD, PAD_SM, SPACE_SM};
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -35,7 +35,10 @@ pub fn download_view<PMsg: Clone + 'static>(
     out_of_date: bool,
 ) -> Element<PMsg> {
     let dl_button = button(lucide::arrow_down_to_line(32))
-        .style(rounded_button_secondary)
+        .on_press_maybe(
+            file.map(|f| message(Message::PickPathForFile(f.clone()))),
+        )
+        .style(rounded_button_primary)
         .padding(PAD_MD);
 
     let dl_button: Element<PMsg> = if out_of_date {
@@ -47,9 +50,7 @@ pub fn download_view<PMsg: Clone + 'static>(
             tooltip::Position::Bottom,
         ).into()
     } else {
-        dl_button.on_press_maybe(
-            file.map(|f| message(Message::PickPathForFile(f.clone()))),
-        ).into()
+        dl_button.into()
     };
 
     container(

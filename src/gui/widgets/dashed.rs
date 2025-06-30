@@ -279,7 +279,7 @@ impl Catalog for Theme {
 }
 
 pub const DASH_MD: LineDash<'static> = LineDash {
-    segments: &[10.0, 10.0],
+    segments: &[5.0, 5.0],
     offset: 0,
 };
 

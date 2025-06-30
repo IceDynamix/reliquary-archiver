@@ -203,7 +203,7 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
 
     let ws_status = match &state.store.connection_stats.ws_status {
         WebSocketStatus::Pending => text("starting server..."),
-        WebSocketStatus::Running { port } => text(format!("ws://localhost:{}", port)),
+        WebSocketStatus::Running { port } => text(format!("ws://localhost:{}/ws", port)),
         WebSocketStatus::Failed { error } => text(format!("failed to start server: {}", error)).style(text::danger),
     }
     .size(12);
@@ -477,6 +477,10 @@ pub fn run() -> iced::Result {
     .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-Bold.ttf"))
     .font(include_bytes!("../../assets/fonts/inter/Inter_18pt-700-BoldItalic.ttf"))
     .default_font(Font::with_name("Inter 18pt"))
-    .theme(|_state| Theme::Oxocarbon)
+    .theme(|_state| match Theme::default() {
+        Theme::Light => Theme::CatppuccinLatte,
+        Theme::Dark => Theme::CatppuccinMocha,
+        _ => unreachable!(),
+    })
     .run()
 }

@@ -8,7 +8,7 @@ use crate::gui::components::file_download::{self, download_view};
 use crate::gui::components::{FileContainer, FileExtensions, file_picker};
 use crate::gui::fonts::lucide::refresh_cw;
 use crate::gui::stylefns::{
-    PAD_LG, PAD_MD, PAD_SM, SPACE_LG, SPACE_MD, SPACE_SM, rounded_box_md, rounded_button_primary, rounded_button_secondary,
+    PAD_LG, PAD_MD, PAD_SM, SPACE_LG, SPACE_MD, SPACE_SM, rounded_box_md, rounded_button_primary,
 };
 use crate::gui::widgets::dashed::DashedRule;
 use crate::gui::widgets::spinner::spinner;
@@ -73,9 +73,9 @@ impl ActiveScreen {
             .push(
                 row![
                     button(refresh_cw(32))
-                        .on_press(Message::RefreshExport)
+                        .on_press_maybe(store.json_export.as_ref().map(|_| Message::RefreshExport))
                         .padding(PAD_MD)
-                        .style(rounded_button_secondary),
+                        .style(rounded_button_primary),
                     download_view(store.json_export.as_ref(), Message::DownloadExport, store.export_out_of_date)
                 ]
                 .spacing(SPACE_MD),
