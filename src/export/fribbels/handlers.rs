@@ -4,12 +4,12 @@ use crate::export::fribbels::models::*;
 use protobuf::Enum;
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
 use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
-use reliquary::network::command::proto::MultiPathAvatarTypeInfo::MultiPathAvatarTypeInfo;
+use reliquary::network::command::proto::MultiPathAvatarInfo::MultiPathAvatarInfo;
 use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
-use reliquary::network::command::proto::GetMultiPathAvatarInfoScRsp::GetMultiPathAvatarInfoScRsp;
+use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
 use reliquary::network::command::proto::MultiPathAvatarType::MultiPathAvatarType;
 use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
@@ -83,7 +83,7 @@ impl OptimizerExporter {
         }
     }
     
-    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarTypeInfo) -> Option<Character> {
+    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarInfo) -> Option<Character> {
         let character = export_proto_multipath_character(&self.database, proto_multipath_character).unwrap();
         self.multipath_characters.insert(character.id, character.clone());
     
@@ -111,9 +111,7 @@ impl OptimizerExporter {
         for character in characters.avatar_list {
             self.ingest_character(&character);
         }
-    }
-    
-    pub fn handle_multipath_characters(&mut self, characters: GetMultiPathAvatarInfoScRsp) {
+        
         info!(num = characters.multi_path_avatar_type_info_list.len(), "found multipath characters");
         for multipath_avatar_info in characters.multi_path_avatar_type_info_list {
             self.ingest_multipath_character(&multipath_avatar_info);
@@ -246,6 +244,17 @@ impl OptimizerExporter {
         }
     
         events
+    }
+
+    pub fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> OptimizerEvent {
+        let character = self.characters.get_mut(&set_avatar_enhanced.target_avatar_id).unwrap();
+        character.ability_version = if set_avatar_enhanced.skilltree_version != 0 { 
+            Some(set_avatar_enhanced.skilltree_version) 
+        } else { 
+            None 
+        };
+
+        OptimizerEvent::UpdateCharacters(vec![character.clone()])
     }
     
     fn is_lightcone(&self, item_id: u32) -> bool {
