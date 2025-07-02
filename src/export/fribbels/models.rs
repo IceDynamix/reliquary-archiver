@@ -162,6 +162,8 @@ pub struct Character {
     pub traces: Traces,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memosprite: Option<Memosprite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ability_version: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
