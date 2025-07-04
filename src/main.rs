@@ -131,16 +131,48 @@ fn main() {
         };
 
         if let Some(export) = export {
-            let output_file = match args.output {
+            let file_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
+            let mut output_file = match args.output {
                 Some(out) => out,
-                _ => PathBuf::from(Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string()),
+                _ => PathBuf::from(file_name.clone()),
             };
-            let file = File::create(&output_file).unwrap();
-            serde_json::to_writer_pretty(&file, &export).unwrap();
-            info!(
-                "wrote output to {}",
-                output_file.canonicalize().unwrap().display()
-            );
+
+            macro_rules! pick_file {
+                () => {
+                    if let Some(new_path) = rfd::FileDialog::new()
+                        .set_title("Select output file location")
+                        .set_file_name(&file_name)
+                        .add_filter("JSON files", &["json"])
+                        .save_file()
+                    {
+                        output_file = new_path;
+                        continue;
+                    } else {
+                        error!("No alternative path selected, aborting write");
+                        break;
+                    }
+                };
+            }
+            
+            loop {
+                match File::create(&output_file) {
+                    Ok(file) => {
+                        if let Err(e) = serde_json::to_writer_pretty(&file, &export) {
+                            error!("Failed to write to {}: {}", output_file.display(), e);
+                            pick_file!();
+                        }
+                        info!(
+                            "wrote output to {}",
+                            output_file.canonicalize().unwrap().display()
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        error!("Failed to create file at {}: {}", output_file.display(), e);
+                        pick_file!();
+                    }
+                }
+            }
         } else {
             warn!("skipped writing output");
         }
