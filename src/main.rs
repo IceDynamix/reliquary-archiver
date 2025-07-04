@@ -11,7 +11,7 @@ use std::time::Duration;
 use chrono::Local;
 use clap::Parser;
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
-use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
+use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
 use tracing::{debug, info, instrument, warn, error};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
@@ -523,7 +523,16 @@ where
                     }
                     Err(e) => {
                         warn!(%e);
-                        break 'recv;
+
+                        match e {
+                            NetworkError::ConnectionPacket(_) => {
+                                // Connection errors are not fatal as all network interfaces are funneled through the same stream
+                                // In the future, we should create a new sniffer for each interface, and quit only if all interfaces are poisoned/exited
+                                // For now, we just continue listening
+                                continue;
+                            }
+                            _ => break 'recv
+                        }
                     }
                 }
             }
