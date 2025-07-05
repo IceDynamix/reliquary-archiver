@@ -5,7 +5,7 @@ use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::AvatarSkillTree::AvatarSkillTree as ProtoSkillTree;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::command::proto::Material::Material as ProtoMaterial;
-use reliquary::network::command::proto::MultiPathAvatarTypeInfo::MultiPathAvatarTypeInfo;
+use reliquary::network::command::proto::MultiPathAvatarInfo::MultiPathAvatarInfo;
 use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use tracing::{debug, info_span, instrument, trace, warn};
@@ -157,6 +157,7 @@ pub fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<C
     debug!(character = name, level, eidolon, "detected");
 
     let (skills, traces, memosprite) = export_skill_tree(db, &proto.avatar_skilltree_list);
+    let ability_version = if proto.skilltree_version != 0 { Some(proto.skilltree_version) } else { None };
 
     Some(Character {
         id,
@@ -168,13 +169,14 @@ pub fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<C
         skills,
         traces,
         memosprite,
+        ability_version,
     })
 }
 
 /// Converts a proto multipath character to an export character
 pub fn export_proto_multipath_character(
     db: &Database,
-    proto: &MultiPathAvatarTypeInfo,
+    proto: &MultiPathAvatarInfo,
 ) -> Option<Character> {
     let id = proto.avatar_id.value() as u32;
     let name = db.lookup_avatar_name(id)?;
@@ -186,6 +188,7 @@ pub fn export_proto_multipath_character(
     trace!(character = name, path, "detected");
 
     let (skills, traces, memosprite) = export_skill_tree(db, &proto.multipath_skilltree_list);
+    let ability_version = if proto.skilltree_version != 0 { Some(proto.skilltree_version) } else { None };
 
     Some(Character {
         id,
@@ -200,6 +203,7 @@ pub fn export_proto_multipath_character(
         skills,
         traces,
         memosprite,
+        ability_version,
     })
 }
 
@@ -247,7 +251,7 @@ pub fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Tr
             continue;
         };
 
-        match skill_tree_config.Anchor.as_str() {
+        match skill_tree_config.AnchorType.as_str() {
             "Point01" => {
                 trace!(level, "detected basic atk trace");
                 skills.basic = level;
@@ -333,7 +337,7 @@ pub fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Tr
             }
 
             _ => {
-                warn!(anchor = skill_tree_config.Anchor, "unknown point anchor");
+                warn!(anchor = skill_tree_config.AnchorType, "unknown point anchor");
                 continue;
             }
         }

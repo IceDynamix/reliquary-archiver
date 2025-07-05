@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::{hash::{DefaultHasher, Hash, Hasher}, sync::atomic::Ordering};
 
 use super::*;
 use futures::{executor::block_on, SinkExt, StreamExt, TryStreamExt};
@@ -11,6 +11,7 @@ pub struct PcapBackend;
 pub struct PcapCapture {
     capture: Capture<Active>,
     device: PcapDevice,
+    id: u64,
 }
 
 impl CaptureBackend for PcapBackend {
@@ -49,18 +50,25 @@ impl CaptureDevice for PcapDevice {
 
         capture.filter(PCAP_FILTER, true)
             .map_err(|e| CaptureError::FilterError(Box::new(e)))?;
+
+        let mut hasher = DefaultHasher::new();
+        self.name.hash(&mut hasher);
+        let id = hasher.finish();
             
-        Ok(PcapCapture { capture, device: self.clone() })
+        Ok(PcapCapture { capture, device: self.clone(), id })
     }
 }
 
-pub struct Codec;
+pub struct Codec {
+    source_id: u64,
+}
 
 impl PacketCodec for Codec {
     type Item = Packet;
 
     fn decode(&mut self, pkt: pcap::Packet) -> Self::Item {
         Packet {
+            source_id: self.source_id,
             data: pkt.data.to_vec(),
         }
     }
@@ -70,7 +78,7 @@ impl PacketCapture for PcapCapture {
     #[instrument(skip_all, fields(device = self.device.desc))]
     fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>>> {
         let mut has_captured = false;
-        return match self.capture.stream(Codec) {
+        return match self.capture.stream(Codec { source_id: self.id }) {
             Ok(stream) => Ok(stream
                 .map(move |r| match r {
                     Ok(p) => {
@@ -81,27 +89,6 @@ impl PacketCapture for PcapCapture {
                 })),
             Err(e) => Err(CaptureError::CaptureError { has_captured: false, error: Box::new(e) }),
         }
-
-        //     match self.capture.next_packet() {
-        //         Ok(packet) => {
-        //             let packet = Packet {
-        //                 data: packet.data.to_vec(),
-        //             };
-
-        //             block_on(tx.send(packet)).map_err(|_| CaptureError::ChannelClosed)?;
-        //             has_captured = true;
-        //         }
-        //         Err(e) => {
-        //             if matches!(e, pcap::Error::TimeoutExpired) {
-        //                 debug!(?e);
-        //                 continue;
-        //             }
-
-        //             return Err(CaptureError::CaptureError { has_captured, error: Box::new(e) });
-        //         }
-        //     }
-
-        // Ok(())
     }
 } 
 

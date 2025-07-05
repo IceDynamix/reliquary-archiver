@@ -1,6 +1,7 @@
 #![allow(unused)]
 #![feature(macro_metavar_expr_concat)]
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::panic;
 use std::path::PathBuf;
@@ -15,7 +16,7 @@ use chrono::Local;
 use clap::Parser;
 use futures::{future, select, FutureExt, StreamExt};
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
-use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer};
+use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
 use tokio::pin;
 use tracing::{debug, info, instrument, warn, error};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
@@ -58,11 +59,11 @@ struct Args {
     /// Host a websocket server to stream relic/lc updates in real-time.
     /// This also disables the timeout
     #[cfg(feature = "stream")]
-    #[arg(long)]
+    #[arg(short, long)]
     stream: bool,
     /// Port to listen on for the websocket server, defaults to 53313
     #[cfg(feature = "stream")]
-    #[arg(long, default_value_t = 53313)] // Seele :)
+    #[arg(short = 'p', long, default_value_t = 53313)] // Seele :)
     websocket_port: u16,
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -182,16 +183,48 @@ fn main() {
         // };
 
         // if let Some(export) = export {
-        //     let output_file = match args.output {
+        //     let file_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
+        //     let mut output_file = match args.output {
         //         Some(out) => out,
-        //         _ => PathBuf::from(Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string()),
+        //         _ => PathBuf::from(file_name.clone()),
         //     };
-        //     let file = File::create(&output_file).unwrap();
-        //     serde_json::to_writer_pretty(&file, &export).unwrap();
-        //     info!(
-        //         "wrote output to {}",
-        //         output_file.canonicalize().unwrap().display()
-        //     );
+
+        //     macro_rules! pick_file {
+        //         () => {
+        //             if let Some(new_path) = rfd::FileDialog::new()
+        //                 .set_title("Select output file location")
+        //                 .set_file_name(&file_name)
+        //                 .add_filter("JSON files", &["json"])
+        //                 .save_file()
+        //             {
+        //                 output_file = new_path;
+        //                 continue;
+        //             } else {
+        //                 error!("No alternative path selected, aborting write");
+        //                 break;
+        //             }
+        //         };
+        //     }
+            
+        //     loop {
+        //         match File::create(&output_file) {
+        //             Ok(file) => {
+        //                 if let Err(e) = serde_json::to_writer_pretty(&file, &export) {
+        //                     error!("Failed to write to {}: {}", output_file.display(), e);
+        //                     pick_file!();
+        //                 }
+        //                 info!(
+        //                     "wrote output to {}",
+        //                     output_file.canonicalize().unwrap().display()
+        //                 );
+        //                 break;
+        //             }
+        //             Err(e) => {
+        //                 error!("Failed to create file at {}: {}", output_file.display(), e);
+        //                 pick_file!();
+        //             }
+        //         }
+        //     }
         // } else {
         //     warn!("skipped writing output");
         // }
@@ -366,9 +399,14 @@ where
     capture.start().expect("could not start etl capture");
 
     while let Ok(packet) = capture.next_packet() {
-        match file_process_packet(&mut exporter, &mut sniffer, packet.payload.to_vec()) {
-            ProcessResult::Continue => {},
-            ProcessResult::Stop => break,
+        match packet.payload {
+            pktmon::PacketPayload::Ethernet(payload) => {
+                match file_process_packet(&mut exporter, &mut sniffer, payload) {
+                    ProcessResult::Continue => {},
+                    ProcessResult::Stop => break,
+                }
+            }
+            _ => {}
         }
     }
 
@@ -452,6 +490,8 @@ where
         ).fuse();
     );
 
+    let mut poisoned_sources = HashSet::new();
+
     'recv: loop {
         // let received: Result<capture::Packet, CaptureError> = if streaming {
         //     // If streaming, we don't want to timeout during inactivity
@@ -475,6 +515,11 @@ where
 
         match received {
             Ok(packet) => {
+                if poisoned_sources.contains(&packet.source_id) {
+                    // We already know that this source is poisoned, so we can skip it
+                    continue;
+                }
+
                 match sniffer.receive_packet(packet.data) {
                     Ok(packets) => {
                         for packet in packets {
@@ -524,7 +569,16 @@ where
                     }
                     Err(e) => {
                         warn!(%e);
-                        break 'recv;
+
+                        match e {
+                            NetworkError::ConnectionPacket(_) => {
+                                // Connection errors are not fatal as all network interfaces are funneled through the same stream
+                                // Just mark this source as poisoned and continue listening on other sources
+                                poisoned_sources.insert(packet.source_id);
+                                continue;
+                            }
+                            _ => break 'recv
+                        }
                     }
                 }
             }

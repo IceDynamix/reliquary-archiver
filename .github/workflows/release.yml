@@ -34,11 +34,11 @@ jobs:
       - name: Build pcap Windows exe
         run: cargo build --release --no-default-features --features pcap,stream
       - name: Move pcap exe
-        run: mv target/release/reliquary-archiver.exe target/release/reliquary-archiver-pcap-x64.exe
+        run: mv -Force target/release/reliquary-archiver.exe target/release/reliquary-archiver-pcap-x64.exe
       - name: Build pktmon Windows exe
         run: cargo build --release --no-default-features --features pktmon,stream
       - name: Move pktmon exe
-        run: mv target/release/reliquary-archiver.exe target/release/reliquary-archiver-pktmon-x64.exe
+        run: mv -Force target/release/reliquary-archiver.exe target/release/reliquary-archiver-pktmon-x64.exe
       - name: Push updated version
         run: |
           git config user.name "reliquary-archiver bot"

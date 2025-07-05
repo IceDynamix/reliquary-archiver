@@ -2,7 +2,7 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 use super::*;
 use futures::{executor::block_on, SinkExt};
-use ::pktmon::{Capture, filter::{PktMonFilter, TransportProtocol}};
+use ::pktmon::{filter::{PktMonFilter, TransportProtocol}, Capture, PacketPayload};
 
 pub struct PktmonBackend;
 
@@ -59,37 +59,21 @@ impl CaptureDevice for PktmonCaptureDevice {
 
 impl PacketCapture for PktmonCapture {
     #[instrument(skip_all)]
-    fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>>> {
-        let mut has_captured = false;
-
+    fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
         self.capture.start()
-            .map_err(|e| CaptureError::CaptureError { has_captured, error: Box::new(e) })?;
+            .map_err(|e| CaptureError::CaptureError { has_captured: false, error: Box::new(e) })?;
 
         return match self.capture.stream() {
-            Ok(stream) => Ok(stream.map(|p| Ok(Packet { data: p.payload.to_vec() }))),
+            Ok(stream) => Ok(stream.filter_map(|packet| Box::pin(async move {
+                match packet.payload {
+                    PacketPayload::Ethernet(payload) => Some(Ok(Packet { 
+                        source_id: packet.component_id as u64,
+                        data: payload,
+                    })),
+                    _ => None,
+                }
+            }))),
             Err(e) => Err(CaptureError::CaptureError { has_captured: false, error: Box::new(e) }),
         }
-
-        // while !abort_signal.load(Ordering::Relaxed) {
-        //     match self.capture.next_packet_timeout(Duration::from_secs(1)) {
-        //         Ok(packet) => {
-        //             let packet = Packet {
-        //                 data: packet.payload.to_vec(),
-        //             };
-            
-        //             block_on(tx.send(packet)).map_err(|_| CaptureError::ChannelClosed)?;
-        //             has_captured = true;
-        //         }
-        //         Err(e) => {
-        //             if matches!(e, RecvTimeoutError::Timeout) {
-        //                 continue;
-        //             }
-
-        //             return Err(CaptureError::CaptureError { has_captured, error: Box::new(e) });
-        //         }
-        //     }
-        // }
-
-        // Ok(())
     }
 }

@@ -230,15 +230,22 @@ pub enum SnifferMetric {
 fn capture_from_pcap(
     pcap_path: std::path::PathBuf,
 ) -> Vec<capture::Packet> {
+    use std::hash::{DefaultHasher, Hasher};
+
     use crate::capture::PCAP_FILTER;
 
     info!("Capturing from pcap file: {}", pcap_path.display());
     let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
     capture.filter(PCAP_FILTER, false).unwrap();
 
+    let mut hasher = DefaultHasher::new();
+    hasher.write(pcap_path.display().to_string().as_bytes());
+    let source_id = hasher.finish();
+
     let mut packets = Vec::new();
     while let Ok(packet) = capture.next_packet() {
         packets.push(capture::Packet {
+            source_id,
             data: packet.data.to_vec(),
         });
     }

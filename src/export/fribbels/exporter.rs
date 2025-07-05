@@ -4,6 +4,7 @@ use crate::export::database::{get_database, Database};
 use crate::export::fribbels::models::*;
 use crate::export::{Exporter};
 
+use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
 use reliquary::network::command::{command_id, GameCommand};
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
 use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
@@ -11,7 +12,6 @@ use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
-use reliquary::network::command::proto::GetMultiPathAvatarInfoScRsp::GetMultiPathAvatarInfoScRsp;
 use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
 use tracing::{debug, info, instrument, trace, warn};
@@ -172,13 +172,16 @@ impl Exporter for OptimizerExporter {
                     }
                 }
             }
-            command_id::GetMultiPathAvatarInfoScRsp => {
-                debug!("detected multipath packet (trailblazer/march 7th)");
-                let cmd = command.parse_proto::<GetMultiPathAvatarInfoScRsp>();
+            command_id::SetAvatarEnhancedIdScRsp => {
+                debug!("detected set avatar enhanced packet");
+                let cmd = command.parse_proto::<SetAvatarEnhancedIdScRsp>();
                 match cmd {
-                    Ok(cmd) => self.handle_multipath_characters(cmd),
+                    Ok(cmd) => {
+                        let event = self.handle_set_avatar_enhanced(cmd);
+                        self.emit_event(event);
+                    },
                     Err(error) => {
-                        warn!(%error, "could not parse multipath data command");
+                        warn!(%error, "could not parse set avatar enhanced data command");
                     }
                 }
             }

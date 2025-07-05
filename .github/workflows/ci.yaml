@@ -23,8 +23,20 @@ jobs:
           unzip -p npcap-sdk.zip Lib/x64/wpcap.lib > wpcap.lib
       - name: Build pcap Windows exe
         run: cargo build --verbose --no-default-features --features pcap,stream
+      - name: Move pcap exe
+        run: mv -Force target/debug/reliquary-archiver.exe target/debug/reliquary-archiver-pcap-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reliquary-archiver-pcap-x64
+          path: target/debug/reliquary-archiver-pcap-x64.exe
       - name: Build pktmon Windows exe
         run: cargo build --verbose --no-default-features --features pktmon,stream
+      - name: Move pktmon exe
+        run: mv -Force target/debug/reliquary-archiver.exe target/debug/reliquary-archiver-pktmon-x64.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reliquary-archiver-pktmon-x64
+          path: target/debug/reliquary-archiver-pktmon-x64.exe
 
   build-linux:
     runs-on: ubuntu-latest
@@ -35,3 +47,7 @@ jobs:
       run: sudo apt install -y libpcap-dev
     - name: Build
       run: cargo build --verbose --no-default-features --features pcap,stream
+    - uses: actions/upload-artifact@v4
+      with:
+        name: reliquary-archiver-linux-pcap-x64
+        path: target/debug/reliquary-archiver

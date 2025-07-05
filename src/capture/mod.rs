@@ -1,14 +1,11 @@
 use std::error::Error;
+use std::fmt::{Debug, Display};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc};
-use std::fmt::{Debug, Display};
 
-use async_trait::async_trait;
 use tokio::pin;
 use tokio::sync::mpsc;
 use futures::{Stream, StreamExt};
-use tokio::task::JoinHandle;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamMap;
 use tracing::instrument;
 
@@ -35,7 +32,10 @@ pub enum CaptureError {
     DeviceError(Box<dyn Error>),
 
     FilterError(Box<dyn Error>),
-    CaptureError { has_captured: bool, error: Box<dyn Error> },
+    CaptureError {
+        has_captured: bool,
+        error: Box<dyn Error>,
+    },
 }
 
 impl Display for CaptureError {
@@ -62,6 +62,7 @@ pub type Result<T> = std::result::Result<T, CaptureError>;
 /// Represents a captured network packet
 #[derive(Debug, Clone)]
 pub struct Packet {
+    pub source_id: u64,
     pub data: Vec<u8>,
 }
 
@@ -77,7 +78,7 @@ pub trait CaptureDevice: Send + Debug {
 
     /// Get the name of the device
     fn name(&self) -> &str;
-    
+
     /// Create a new capture instance from this device
     fn create_capture(&self) -> Result<Self::Capture>;
 }
@@ -85,7 +86,7 @@ pub trait CaptureDevice: Send + Debug {
 /// Get all available capture devices for a specific backend
 pub trait CaptureBackend {
     type Device: CaptureDevice;
-    
+
     /// List all available capture devices
     fn list_devices(&self) -> Result<Vec<Self::Device>>;
 }
@@ -95,37 +96,20 @@ pub trait CaptureBackend {
 pub fn listen_on_all<B: CaptureBackend + 'static>(
     backend: B,
 ) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
-    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
-    // TODO: add ctrl-c handler
-    // #[cfg(not(target_os = "linux"))] {
-    //     use std::sync::atomic::Ordering;
-    //     use tracing::error;
-
-    //     let abort_signal = abort_signal.clone();
-    //     if let Err(e) = ctrlc::set_handler(move || {
-    //         abort_signal.store(true, Ordering::Relaxed);
-    //     }) {
-    //         error!("Failed to set Ctrl-C handler: {}", e);
-    //     }
-    // }
-
-    // let (tx, rx) = mpsc::channel(128);
-    
     let devices = backend.list_devices()?;
-    
     let mut merged_stream = StreamMap::new();
 
+    if devices.is_empty() {
+        tracing::warn!("Could not find any network devices");
+    }
+    
     for device in devices {
-        // let tx = tx.clone();
-        // let abort_signal = abort_signal.clone();
-
-        // join_handles.push(tokio::spawn(async move {
-        // tracing::debug!("Starting capture thread for device: {:?}", device);
+        tracing::debug!("Creating capture for device: {}", device.name());
 
         let mut capture = match device.create_capture() {
             Ok(c) => c,
             Err(e) => {
-                tracing::debug!("Failed to create capture: {:#?}", e);
+                tracing::warn!("Failed to create capture: {:#?}", e);
                 return Err(e);
             }
         };
@@ -153,7 +137,7 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
                 // not receive any relevant packets, error is less useful to the user,
                 // so we lower the logging level
                 if !has_captured {
-                    tracing::debug!("Capture error: {:#?}", error);
+                    tracing::info!("Capture error: {:#?}", error);
                 } else {
                     tracing::warn!("Capture error: {:#?}", error);
                 }
