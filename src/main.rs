@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::File;
 use std::panic;
 use std::path::PathBuf;
@@ -349,9 +350,14 @@ where
     capture.start().expect("could not start etl capture");
 
     while let Ok(packet) = capture.next_packet() {
-        match file_process_packet(&mut exporter, &mut sniffer, packet.payload.to_vec()) {
-            ProcessResult::Continue => {},
-            ProcessResult::Stop => break,
+        match packet.payload {
+            pktmon::PacketPayload::Ethernet(payload) => {
+                match file_process_packet(&mut exporter, &mut sniffer, payload) {
+                    ProcessResult::Continue => {},
+                    ProcessResult::Stop => break,
+                }
+            }
+            _ => {}
         }
     }
 
@@ -464,6 +470,8 @@ where
         info!("listening with a timeout of {} seconds...", args.timeout);
     }
 
+    let mut poisoned_sources = HashSet::new();
+
     'recv: loop {
         let received = if streaming {
             // If streaming, we don't want to timeout during inactivity
@@ -474,6 +482,11 @@ where
 
         match received {
             Ok(packet) => {
+                if poisoned_sources.contains(&packet.source_id) {
+                    // We already know that this source is poisoned, so we can skip it
+                    continue;
+                }
+
                 match sniffer.receive_packet(packet.data) {
                     Ok(packets) => {
                         for packet in packets {
@@ -527,8 +540,8 @@ where
                         match e {
                             NetworkError::ConnectionPacket(_) => {
                                 // Connection errors are not fatal as all network interfaces are funneled through the same stream
-                                // In the future, we should create a new sniffer for each interface, and quit only if all interfaces are poisoned/exited
-                                // For now, we just continue listening
+                                // Just mark this source as poisoned and continue listening on other sources
+                                poisoned_sources.insert(packet.source_id);
                                 continue;
                             }
                             _ => break 'recv

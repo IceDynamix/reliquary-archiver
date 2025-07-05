@@ -62,6 +62,7 @@ pub type Result<T> = std::result::Result<T, CaptureError>;
 /// Represents a captured network packet
 #[derive(Debug, Clone)]
 pub struct Packet {
+    pub source_id: u64,
     pub data: Vec<u8>,
 }
 
