@@ -1,4 +1,4 @@
-use std::sync::atomic::Ordering;
+use std::{hash::{DefaultHasher, Hash, Hasher}, sync::atomic::Ordering};
 
 use super::*;
 use ::pcap::{self, Active, Device as PcapDevice, Capture};
@@ -9,6 +9,7 @@ pub struct PcapBackend;
 pub struct PcapCapture {
     capture: Capture<Active>,
     device: PcapDevice,
+    id: u64,
 }
 
 impl CaptureBackend for PcapBackend {
@@ -39,8 +40,12 @@ impl CaptureDevice for PcapDevice {
 
         capture.filter(PCAP_FILTER, true)
             .map_err(|e| CaptureError::FilterError(Box::new(e)))?;
+
+        let mut hasher = DefaultHasher::new();
+        self.name.hash(&mut hasher);
+        let id = hasher.finish();
             
-        Ok(PcapCapture { capture, device: self.clone() })
+        Ok(PcapCapture { capture, device: self.clone(), id })
     }
 }
 
@@ -53,6 +58,7 @@ impl PacketCapture for PcapCapture {
             match self.capture.next_packet() {
                 Ok(packet) => {
                     let packet = Packet {
+                        source_id: self.id,
                         data: packet.data.to_vec(),
                     };
 

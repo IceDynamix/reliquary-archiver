@@ -2,7 +2,7 @@ use std::{sync::atomic::Ordering, time::Duration};
 
 use super::*;
 use mpsc::RecvTimeoutError;
-use ::pktmon::{Capture, filter::{PktMonFilter, TransportProtocol}};
+use ::pktmon::{filter::{PktMonFilter, TransportProtocol}, Capture, PacketPayload};
 
 pub struct PktmonBackend;
 
@@ -65,7 +65,11 @@ impl PacketCapture for PktmonCapture {
             match self.capture.next_packet_timeout(Duration::from_secs(1)) {
                 Ok(packet) => {
                     let packet = Packet {
-                        data: packet.payload.to_vec(),
+                        source_id: packet.component_id as u64,
+                        data: match packet.payload {
+                            PacketPayload::Ethernet(payload) => payload,
+                            _ => continue,
+                        },
                     };
             
                     tx.send(packet).map_err(|_| CaptureError::ChannelClosed)?;
