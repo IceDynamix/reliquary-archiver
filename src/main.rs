@@ -1,5 +1,4 @@
 #![allow(unused)]
-#![feature(macro_metavar_expr_concat)]
 
 use std::collections::HashSet;
 use std::fs::File;

@@ -55,7 +55,6 @@ windows = { version = "0.61", features = [
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v12.0.0", features = ["proto-rqa"] }
-patch-crate = "0.1.13"
 
 [target.'cfg(windows)'.build-dependencies]
 winres = "0.1.12"

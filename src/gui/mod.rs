@@ -284,9 +284,9 @@ impl<Message: Send + 'static> ScreenAction<Message> {
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> {
     macro_rules! handle_screen {
-        ($screen:ident, $message:ident) => {
+        ($screen:ident, $screen_message:ident, $message:ident) => {
             if let Screen::$screen(screen) = &mut state.screen {
-                screen.update($message).run(state, RootMessage::${concat($screen, Screen)})
+                screen.update($message).run(state, RootMessage::$screen_message)
             } else {
                 Task::none()
             }
@@ -348,8 +348,8 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> 
             Task::none()
         }
 
-        RootMessage::WaitingScreen(message) => handle_screen!(Waiting, message),
-        RootMessage::ActiveScreen(message) => handle_screen!(Active, message),
+        RootMessage::WaitingScreen(message) => handle_screen!(Waiting, WaitingScreen, message),
+        RootMessage::ActiveScreen(message) => handle_screen!(Active, ActiveScreen, message),
     }.also(|_| {
         // Handle connection transitions
         let is_connected = state.store.connection_stats.connection_active;

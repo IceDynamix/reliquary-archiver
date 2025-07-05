@@ -55,8 +55,6 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=Cargo.lock");
 
-    patch_crate::run().expect("Failed while patching");
-
     // the text map is really, REALLY large (>25MB), so we're optimizing by only
     // keeping the entries used from relevant config files where the strings are required
     // for the export

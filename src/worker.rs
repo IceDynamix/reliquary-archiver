@@ -158,17 +158,14 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
             //     recorded_rx
             // ));
 
-            tokio::spawn(async {
-                tokio::time::sleep(Duration::from_secs(10)).await;
-
+            tokio::spawn(
                 live_capture(
                     exporter, 
                     sniffer, 
                     MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
                     recorded_rx
-                ).await;
-
-            })
+                )
+            )
         };
 
         output.send(WorkerEvent::Ready(sender)).await.expect("Worker Stream was closed before ready state?");
