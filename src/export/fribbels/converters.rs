@@ -157,7 +157,7 @@ pub fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<C
     debug!(character = name, level, eidolon, "detected");
 
     let (skills, traces, memosprite) = export_skill_tree(db, &proto.avatar_skilltree_list);
-    let ability_version = if proto.skilltree_version != 0 { Some(proto.skilltree_version) } else { None };
+    let ability_version = proto.skilltree_version;
 
     Some(Character {
         id,
@@ -188,7 +188,7 @@ pub fn export_proto_multipath_character(
     trace!(character = name, path, "detected");
 
     let (skills, traces, memosprite) = export_skill_tree(db, &proto.multipath_skilltree_list);
-    let ability_version = if proto.skilltree_version != 0 { Some(proto.skilltree_version) } else { None };
+    let ability_version = proto.skilltree_version;
 
     Some(Character {
         id,

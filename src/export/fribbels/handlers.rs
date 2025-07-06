@@ -248,11 +248,7 @@ impl OptimizerExporter {
 
     pub fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> OptimizerEvent {
         let character = self.characters.get_mut(&set_avatar_enhanced.target_avatar_id).unwrap();
-        character.ability_version = if set_avatar_enhanced.skilltree_version != 0 { 
-            Some(set_avatar_enhanced.skilltree_version) 
-        } else { 
-            None 
-        };
+        character.ability_version = set_avatar_enhanced.skilltree_version;
 
         OptimizerEvent::UpdateCharacters(vec![character.clone()])
     }
