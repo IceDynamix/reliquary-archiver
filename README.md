@@ -30,6 +30,8 @@ Arguments:
 
 Options:
       --timeout <TIMEOUT>        How long to wait in seconds until timeout is triggered for live captures [default: 120]
+  -s, --stream                   Host a websocket server to stream relic/lc updates in real-time. This will disables the timeout
+  -p, --websocket-port <PORT>    Port to listen on for the websocket server, [default: 53313]
   -v, --verbose...               How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
   -l, --log-path <LOG_PATH>      Path to output log to
       --no-update                Don't check for updates, only applicable on Windows
