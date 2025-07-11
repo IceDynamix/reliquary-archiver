@@ -63,7 +63,11 @@ impl OptimizerExporter {
     }
     
     pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) -> Option<Character> {
-        let character = export_proto_character(&self.database, proto_character).unwrap();
+        let Some(character) = export_proto_character(&self.database, proto_character) else {
+            warn!(uid = &proto_character.base_avatar_id, "character config not found, skipping");
+            return None;
+        };
+
         self.characters.insert(character.id, character.clone());
     
         if MultiPathAvatarType::from_i32(proto_character.base_avatar_id as i32).is_some() {
@@ -84,7 +88,11 @@ impl OptimizerExporter {
     }
     
     pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarInfo) -> Option<Character> {
-        let character = export_proto_multipath_character(&self.database, proto_multipath_character).unwrap();
+        let Some(character) = export_proto_multipath_character(&self.database, proto_multipath_character) else {
+            warn!(uid = &proto_multipath_character.avatar_id.value(), "multipath character config not found, skipping");
+            return None;
+        };
+
         self.multipath_characters.insert(character.id, character.clone());
     
         // If it's the trailblazer, determine the gender
@@ -128,7 +136,11 @@ impl OptimizerExporter {
     
     pub fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
         let base_avatar_id = self.get_multipath_base_id(character_id);
-        let character = self.multipath_characters.get_mut(&character_id).unwrap();
+        let Some(character) = self.multipath_characters.get_mut(&character_id) else {
+            warn!(uid = &character_id, "multipath character not found");
+            return None;
+        };
+
         if let Some(base_avatar) = self.multipath_base_avatars.get(&base_avatar_id) {
             character.level = base_avatar.level;
             character.ascension = base_avatar.promotion;
@@ -247,7 +259,11 @@ impl OptimizerExporter {
     }
 
     pub fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> OptimizerEvent {
-        let character = self.characters.get_mut(&set_avatar_enhanced.target_avatar_id).unwrap();
+        let Some(character) = self.characters.get_mut(&set_avatar_enhanced.target_avatar_id) else {
+            warn!(uid = &set_avatar_enhanced.target_avatar_id, "character not found when setting enhanced id, skipping");
+            return OptimizerEvent::UpdateCharacters(vec![]);
+        };
+
         character.ability_version = set_avatar_enhanced.skilltree_version;
 
         OptimizerEvent::UpdateCharacters(vec![character.clone()])
