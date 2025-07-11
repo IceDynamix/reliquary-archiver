@@ -29,10 +29,11 @@ tokio = { version = "1.44.2", optional = true, features = ["full"] }
 futures = { version = "0.3.31", optional = true }
 serde_with = "3.12.0"
 rfd = "0.15.3"
+tracing-log = "0.2.0"
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
-pktmon = { version = "0.6.0", optional = true }
+pktmon = { version = "0.6.1", optional = true }
 windows = { version = "0.61", features = [
     "Win32_UI_Shell", 
     "Win32_UI_WindowsAndMessaging", 

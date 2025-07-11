@@ -1837,9 +1837,9 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "pktmon"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3fde50ec3699393066e9f28d2d6b60339bfeb04d658d098c1f4f10c071b2fbf"
+checksum = "766883761ccb8a755778b4227b8b50460fc037061b4d8bbd3f5d5b3fa875052f"
 dependencies = [
  "async-stream",
  "cidr",
@@ -2172,6 +2172,7 @@ dependencies = [
  "serde_with",
  "tokio",
  "tracing",
+ "tracing-log",
  "tracing-subscriber",
  "ureq",
  "windows 0.61.3",

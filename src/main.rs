@@ -237,6 +237,8 @@ fn update(auth_token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn tracing_init(args: &Args) {
+    tracing_log::LogTracer::init().unwrap();
+
     let env_filter = EnvFilter::builder()
         .with_default_directive(
             match args.verbose {
