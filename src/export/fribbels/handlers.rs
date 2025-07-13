@@ -67,8 +67,6 @@ impl OptimizerExporter {
             warn!(uid = &proto_character.base_avatar_id, "character config not found, skipping");
             return None;
         };
-
-        self.characters.insert(character.id, character.clone());
     
         if MultiPathAvatarType::from_i32(proto_character.base_avatar_id as i32).is_some() {
             self.multipath_base_avatars.insert(proto_character.base_avatar_id, proto_character.clone());
@@ -80,9 +78,12 @@ impl OptimizerExporter {
     
             return None;
         } else {
-            // If the character is a multipath character, we need to wait for the 
-            // multipath packet to get the rest of the data, so only emit character
-            // here if it's not multipath.
+            // Only emit character data here if it's not a multipath character.
+            // For multipath characters, we need to wait for the multipath packet
+            // to get the rest of the data, so we'll do that in [ingest_multipath_character].
+
+            self.characters.insert(character.id, character.clone());
+
             return Some(character);
         }
     }
