@@ -41,6 +41,7 @@ impl CaptureDevice for PcapDevice {
             .immediate_mode(true)
             .promisc(true)
             .timeout(1000)
+            .buffer_size(1024 * 1024 * 16) // 16MB
             .open()
             .map_err(|e| CaptureError::CaptureError { has_captured: false, error: Box::new(e) })?;
 

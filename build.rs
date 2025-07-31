@@ -16,37 +16,58 @@ const BASE_RESOURCE_URL: &str = "https://gitlab.com/Dimbreath/turnbasedgamedata/
 const KEY_URL: &str =
     "https://raw.githubusercontent.com/tamilpp25/Iridium-SR/refs/heads/main/data/Keys.json";
 
-macro_rules! download_config_and_store_text_hashes {
-    ($t:ty, $field:ident, $hashes:ident) => {
+macro_rules! download_config {
+    ($t:ty, $ex:expr, [$($url:expr),+ $(,)?]) => {
         write_to_out(
             {
-                let url = resource_url::<$t>();
-                let value = download_as_json::<$t>(&url);
-                for cfg in value.0.iter() {
-                    $hashes.insert(cfg.$field);
-                }
-                value
+                let mut merged = <$t>::new_empty();
+                $(
+                    let value = download_as_json::<$t>($url);
+                    $ex(&value);
+                    merged.0.extend(value.0);
+                )+
+                merged
             },
             <$t>::get_json_name(),
         )
+    };
+
+    ($t:ty, [$($url:expr),+ $(,)?]) => {
+        download_config!($t, |_| {}, [$($url),+]);
+    };
+
+    ($t:ty, $ex:expr) => {
+        download_config!($t, $ex, [&resource_url::<$t>()]);
+    };
+
+    ($t:ty) => {
+        download_config!($t, |_| {}, [&resource_url::<$t>()]);
+    };
+}
+
+macro_rules! download_config_and_store_text_hashes {
+    ($t:ty, $field:ident, $hashes:ident, $urls:tt) => {
+        download_config!($t, |value: &$t| {
+            for cfg in value.0.iter() {
+                $hashes.insert(cfg.$field);
+            }
+        }, $urls);
+    };
+
+    ($t:ty, $field:ident, $hashes:ident) => {
+        download_config_and_store_text_hashes!($t, $field, $hashes, [&resource_url::<$t>()]);
     };
 }
 
 macro_rules! download_config_and_store_partial_text_hashes {
     ($t:ty, $field:ident, $hashes:ident) => {
-        write_to_out(
-            {
-                let url = resource_url::<$t>();
-                let value = download_as_json::<$t>(&url);
-                for cfg in value.0.iter() {
-                    if let Some(hash) = cfg.$field {
-                        $hashes.insert(hash);
-                    }
+        download_config!($t, |value: &$t| {
+            for cfg in value.0.iter() {
+                if let Some(hash) = cfg.$field {
+                    $hashes.insert(hash);
                 }
-                value
-            },
-            <$t>::get_json_name(),
-        )
+            }
+        });
     };    
 }
 
@@ -60,16 +81,30 @@ fn main() {
     // for the export
     let mut text_hashes: HashSet<TextMapEntry> = HashSet::new();
 
-    download_config_and_store_text_hashes!(AvatarConfigMap, AvatarName, text_hashes);
+    download_config_and_store_text_hashes!(
+        AvatarConfigMap, 
+        AvatarName,
+        text_hashes,
+        [
+            &resource_url::<AvatarConfigMap>(),
+            &resource_url_of("AvatarConfigLD.json"),
+        ]
+    );
     download_config_and_store_text_hashes!(EquipmentConfigMap, EquipmentName, text_hashes);
     download_config_and_store_text_hashes!(RelicSetConfigMap, SetName, text_hashes);
     download_config_and_store_partial_text_hashes!(ItemConfigMap, ItemName, text_hashes);
 
-    download_config::<AvatarSkillTreeConfigMap>();
-    download_config::<MultiplePathAvatarConfigMap>();
-    download_config::<RelicConfigMap>();
-    download_config::<RelicMainAffixConfigMap>();
-    download_config::<RelicSubAffixConfigMap>();
+    download_config!(
+        AvatarSkillTreeConfigMap,
+        [
+            &resource_url::<AvatarSkillTreeConfigMap>(),
+            &resource_url_of("AvatarSkillTreeConfigLD.json"),
+        ]
+    );
+    download_config!(MultiplePathAvatarConfigMap);
+    download_config!(RelicConfigMap);
+    download_config!(RelicMainAffixConfigMap);
+    download_config!(RelicSubAffixConfigMap);
 
     save_text_map(&text_hashes, "EN");
 
@@ -98,15 +133,12 @@ fn save_text_map(hashes: &HashSet<TextMapEntry>, language: &str) {
     write_to_out(text_map, &file_name);
 }
 
-fn download_config<T: ResourceMap + DeserializeOwned + Serialize>() {
-    write_to_out(
-        download_as_json::<T>(resource_url::<T>().as_str()),
-        T::get_json_name(),
-    );
+fn resource_url<T: ResourceMap>() -> String {
+    resource_url_of(T::get_json_name())
 }
 
-fn resource_url<T: ResourceMap>() -> String {
-    format!("{BASE_RESOURCE_URL}/ExcelOutput/{}", T::get_json_name())
+fn resource_url_of(name: &str) -> String {
+    format!("{BASE_RESOURCE_URL}/ExcelOutput/{name}")
 }
 
 fn download_as_json<T: DeserializeOwned>(url: &str) -> T {

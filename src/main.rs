@@ -73,6 +73,9 @@ struct Args {
     /// Don't check for updates, only applicable on Windows
     #[arg(long)]
     no_update: bool,
+    /// Update without asking for confirmation, only applicable on Windows
+    #[arg(long)]
+    always_update: bool,
     /// Github Auth token to use when checking for updates, only applicable on Windows
     #[arg(long)]
     auth_token: Option<String>,
@@ -121,7 +124,7 @@ fn main() {
         // Only self update on Windows, since that's the only platform we ship releases for
         #[cfg(windows)] {
             if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
-                if let Err(e) = update(args.auth_token.as_deref()) {
+                if let Err(e) = update(args.auth_token.as_deref(), args.always_update) {
                     error!("Failed to update: {}", e);
                 }
             }
@@ -240,7 +243,7 @@ fn main() {
 }
 
 #[cfg(windows)]
-fn update(auth_token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
+fn update(auth_token: Option<&str>, no_confirm: bool) -> Result<(), Box<dyn std::error::Error>> {
     info!("checking for updates");
 
     let mut update_builder = self_update::backends::github::Update::configure();
@@ -252,6 +255,7 @@ fn update(auth_token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
         .target("x64")
         .show_download_progress(true)
         .show_output(false)
+        .no_confirm(no_confirm)
         .current_version(cargo_crate_version!());
 
     if let Some(token) = auth_token {
@@ -285,6 +289,8 @@ fn update(auth_token: Option<&str>) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn tracing_init(args: &Args) {
+    tracing_log::LogTracer::init().unwrap();
+
     let env_filter = EnvFilter::builder()
         .with_default_directive(
             match args.verbose {
