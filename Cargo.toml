@@ -28,7 +28,7 @@ reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v12.0.1", 
 ctrlc = "3.4.5"
 axum = { version = "0.8.3", optional = true, features = ["ws", "tracing"] }
 tokio = { version = "1.44.2", features = ["full"] }
-tokio-stream = "0.1.17"
+tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
 iced = { git = "https://github.com/iced-rs/iced", rev = "9ef2c468831ae3dd86ce7afc0f675070ca68dd4a", features = [

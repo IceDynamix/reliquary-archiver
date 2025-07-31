@@ -3,16 +3,17 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
-use fonts::{FontSettings, inter, lucide};
+use fonts::{inter, lucide, FontSettings};
 use futures::channel::oneshot;
-use futures::SinkExt;
 use futures::lock::Mutex;
+use futures::{SinkExt, Stream};
 use iced::alignment::Vertical;
 use iced::widget::{self, button, column, container, grid, horizontal_rule, horizontal_space, row, rule, svg, text, toggler, Button};
 use iced::window::icon;
 use iced::{border, font, Alignment, Background, Color, Element, Font, Length, Padding, Subscription, Task, Theme};
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use stylefns::{rounded_box_md, rounded_button_primary, rounded_button_secondary, text_muted};
+use tokio::sync::broadcast;
 use tracing::info;
 use widgets::spinner::spinner;
 
@@ -104,6 +105,7 @@ pub enum WebSocketStatus {
     Pending,
     Running {
         port: u16,
+        client_count: usize,
     },
     Failed {
         error: String,
@@ -183,28 +185,37 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
         .size(16)
         .font(inter().styled(font::Style::Italic).weight(font::Weight::Semibold));
 
-    let icon_row = row![
-        github_button(),
-        discord_button(),
-        help_arrow(),
-    ]
-    .align_y(Vertical::Bottom)
-    .spacing(SPACE_SM);
+    let icon_row = row![github_button(), discord_button(), help_arrow(),]
+        .align_y(Vertical::Bottom)
+        .spacing(SPACE_SM);
 
     let github_box = column![icon_row, help_text,];
 
     let header = row![
-        github_box, 
+        github_box,
         horizontal_space(),
         row![
             text("explain").size(12),
             toggler(state.explain).on_toggle(|value| RootMessage::ToggleExplain(value)),
-        ].align_y(Alignment::Center).spacing(SPACE_SM),
+        ]
+        .align_y(Alignment::Center)
+        .spacing(SPACE_SM),
     ];
 
     let ws_status = match &state.store.connection_stats.ws_status {
         WebSocketStatus::Pending => text("starting server..."),
-        WebSocketStatus::Running { port } => text(format!("ws://localhost:{}/ws", port)),
+        WebSocketStatus::Running { port, client_count } => {
+            if *client_count > 0 {
+                text(format!(
+                    "ws://localhost:{}/ws ({} client{})",
+                    port,
+                    client_count,
+                    if *client_count == 1 { "" } else { "s" }
+                ))
+            } else {
+                text(format!("ws://localhost:{}/ws (no clients)", port))
+            }
+        }
         WebSocketStatus::Failed { error } => text(format!("failed to start server: {}", error)).style(text::danger),
     }
     .size(12);
@@ -228,11 +239,7 @@ pub fn view(state: &RootState) -> Element<RootMessage> {
         .align_y(Vertical::Bottom)
         .spacing(SPACE_SM);
 
-    let el = Into::<Element<RootMessage>>::into(
-        column![header, widget::center(content), footer,]
-            .padding(PAD_MD)
-            .spacing(SPACE_MD),
-    );
+    let el = Into::<Element<RootMessage>>::into(column![header, widget::center(content), footer,].padding(PAD_MD).spacing(SPACE_MD));
 
     if state.explain {
         el.explain(Color::from_rgb8(0xFF, 0, 0))
@@ -262,18 +269,18 @@ impl<Message: Send + 'static> ScreenAction<Message> {
                         let (tx, rx) = oneshot::channel();
                         sender.send(worker::WorkerCommand::MakeExport(tx)).await;
                         rx.await.unwrap()
-                    }).and_then(|e| Task::done(RootMessage::NewExport(e)))
+                    })
+                    .and_then(|e| Task::done(RootMessage::NewExport(e)))
                 } else {
                     Task::none()
                 }
             }
-            
+
             #[cfg(feature = "pcap")]
             Self::ProcessCapture(path) => {
                 if let Some(sender) = state.worker_sender.as_ref() {
                     let mut sender = sender.clone();
-                    Task::future(async move { sender.send(worker::WorkerCommand::ProcessRecorded(path)).await })
-                        .discard()
+                    Task::future(async move { sender.send(worker::WorkerCommand::ProcessRecorded(path)).await }).discard()
                 } else {
                     Task::none()
                 }
@@ -344,13 +351,13 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Task<RootMessage> 
 
         RootMessage::WSStatus(status) => {
             state.store.connection_stats.ws_status = status;
-
             Task::none()
         }
 
         RootMessage::WaitingScreen(message) => handle_screen!(Waiting, WaitingScreen, message),
         RootMessage::ActiveScreen(message) => handle_screen!(Active, ActiveScreen, message),
-    }.also(|_| {
+    }
+    .also(|_| {
         // Handle connection transitions
         let is_connected = state.store.connection_stats.connection_active;
         let is_waiting = matches!(&state.screen, Screen::Waiting(_));
@@ -388,12 +395,15 @@ fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) -> Tas
             };
 
             let exporter = state.exporter.clone();
-            return Task::batch([task, Task::future(async move {
-                let mut exporter = exporter.lock().await;
-                let stats = ExportStats::new(&exporter);
+            return Task::batch([
+                task,
+                Task::future(async move {
+                    let mut exporter = exporter.lock().await;
+                    let stats = ExportStats::new(&exporter);
 
-                RootMessage::ExportStats(stats)
-            })]);
+                    RootMessage::ExportStats(stats)
+                }),
+            ]);
         }
     }
 
@@ -455,10 +465,14 @@ pub fn run() -> iced::Result {
                 state,
                 Task::batch(vec![
                     Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
-                    Task::future(start_websocket_server(53313, exporter.clone())).map(|e| match e {
-                        Ok(port) => RootMessage::WSStatus(WebSocketStatus::Running { port }),
-                        Err(e) => RootMessage::WSStatus(WebSocketStatus::Failed { error: e }),
-                    }),
+                    Task::future(start_websocket_server(53313, exporter.clone()))
+                        .then(|e| match e {
+                            Err(e) => Task::done(WebSocketStatus::Failed { error: e }),
+                            Ok((port, client_count_stream)) => Task::done(WebSocketStatus::Running { port, client_count: 0 }).chain(
+                                Task::stream(client_count_stream).map(move |client_count| WebSocketStatus::Running { port, client_count }),
+                            ),
+                        })
+                        .map(|e| RootMessage::WSStatus(e)),
                 ]),
             )
         },
