@@ -67,14 +67,16 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         .filter_map(|substat| export_substat(db, rarity, substat))
         .collect();
 
-    let reroll_substats = if proto.reroll_sub_affix_list.is_empty() {
+    let reroll_substats = if proto.reforge_sub_affix_list.is_empty() {
         None
     } else {
-        Some(proto
-            .reroll_sub_affix_list
-            .iter()
-            .filter_map(|substat| export_substat(db, rarity, substat))
-            .collect())
+        Some(
+            proto
+                .reforge_sub_affix_list
+                .iter()
+                .filter_map(|substat| export_substat(db, rarity, substat))
+                .collect(),
+        )
     };
 
     Some(Relic {
@@ -208,7 +210,10 @@ pub fn export_proto_multipath_character(
 }
 
 /// Extracts skills, traces, and memosprite from a skill tree
-pub fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces, Option<Memosprite>) {
+pub fn export_skill_tree(
+    db: &Database,
+    proto: &[ProtoSkillTree],
+) -> (Skills, Traces, Option<Memosprite>) {
     let mut skills = Skills {
         basic: 0,
         skill: 0,
@@ -337,11 +342,14 @@ pub fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Tr
             }
 
             _ => {
-                warn!(anchor = skill_tree_config.AnchorType, "unknown point anchor");
+                warn!(
+                    anchor = skill_tree_config.AnchorType,
+                    "unknown point anchor"
+                );
                 continue;
             }
         }
     }
 
     (skills, traces, memosprite.if_present())
-} 
+}
