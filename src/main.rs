@@ -13,6 +13,7 @@ use capture::PCAP_FILTER;
 use chrono::Local;
 use clap::Parser;
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::GameCommandError;
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
 use tracing::{debug, error, info, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
@@ -309,6 +310,13 @@ where
                     }
                     Err(e) => {
                         warn!(%e);
+                        if matches!(e, GameCommandError::VersionMismatch { .. }) {
+                            // Client packet was misordered from server packet
+                            // This will be reprocessed after we receive the new session key
+                            return ProcessResult::Continue;
+                        }
+
+                        return ProcessResult::Stop;
                     }
                 },
                 _ => {}
@@ -540,7 +548,12 @@ where
                                     }
                                     Err(e) => {
                                         warn!(%e);
-                                        break 'recv;
+                                        if matches!(e, GameCommandError::VersionMismatch { .. }) {
+                                            // Client packet was misordered from server packet
+                                            // This will be reprocessed after we receive the new session key
+                                        } else {
+                                            break 'recv;
+                                        }
                                     }
                                 },
                             }
