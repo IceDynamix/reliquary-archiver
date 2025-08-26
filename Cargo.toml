@@ -35,7 +35,7 @@ tracing-log = "0.2.0"
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
-pktmon = { version = "0.6.1", optional = true }
+pktmon = { version = "0.6.2", optional = true }
 windows = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
