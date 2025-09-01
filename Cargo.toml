@@ -1,6 +1,6 @@
 [package]
 name = "reliquary-archiver"
-version = "0.6.5"
+version = "0.7.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/IceDynamix/reliquary-archiver"
@@ -22,7 +22,7 @@ serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = { version = "2.12.1" }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v12.0.1", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v13.1.0", features = [
     "proto-rqa",
 ] }
 ctrlc = "3.4.5"
@@ -55,7 +55,7 @@ winit = { path = "./target/patch/11414b6" }
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"
-pktmon = { version = "0.6.1", features = ["tokio"], optional = true }
+pktmon = { version = "0.6.2", features = ["tokio"], optional = true }
 windows = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
@@ -66,7 +66,7 @@ windows = { version = "0.61", features = [
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v12.0.1", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v13.1.0", features = [
     "proto-rqa",
 ] }
 

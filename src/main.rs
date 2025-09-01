@@ -9,26 +9,24 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-#[cfg(feature = "pcap")] use capture::PCAP_FILTER;
+#[cfg(feature = "pcap")]
+use capture::PCAP_FILTER;
 
 use chrono::Local;
 use clap::Parser;
 use futures::{future, select, FutureExt, StreamExt};
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::GameCommandError;
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
 use tokio::pin;
-use tracing::{debug, info, instrument, warn, error};
+use tracing::{debug, error, info, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
-use crate::capture::CaptureError;
+#[cfg(windows)]
+use {self_update::cargo_crate_version, std::env, std::process::Command};
 
-#[cfg(windows)] use {
-    std::env,
-    std::process::Command,
-    self_update::cargo_crate_version,
-};
-
-#[cfg(feature = "stream")] mod websocket;
+#[cfg(feature = "stream")]
+mod websocket;
 
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
@@ -36,8 +34,8 @@ use reliquary_archiver::export::Exporter;
 
 mod capture;
 mod gui;
-mod worker;
 mod scopefns;
+mod worker;
 
 #[derive(Parser, Debug, Clone)]
 struct Args {
@@ -122,7 +120,8 @@ fn main() {
 
     if let Err(_) = panic::catch_unwind(move || {
         // Only self update on Windows, since that's the only platform we ship releases for
-        #[cfg(windows)] {
+        #[cfg(windows)]
+        {
             if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
                 if let Err(e) = update(args.auth_token.as_deref(), args.always_update) {
                     error!("Failed to update: {}", e);
@@ -207,7 +206,7 @@ fn main() {
         //             }
         //         };
         //     }
-            
+
         //     loop {
         //         match File::create(&output_file) {
         //             Ok(file) => {
@@ -304,9 +303,7 @@ fn tracing_init(args: &Args) {
         )
         .from_env_lossy();
 
-    let stdout_log = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_filter(env_filter);
+    let stdout_log = tracing_subscriber::fmt::layer().with_ansi(false).with_filter(env_filter);
 
     let subscriber = Registry::default().with(stdout_log);
 
@@ -340,21 +337,26 @@ where
     if let Ok(packets) = sniffer.receive_packet(payload) {
         for packet in packets {
             match packet {
-                GamePacket::Commands(command) => {
-                    match command {
-                        Ok(command) => {
-                            exporter.read_command(command);
+                GamePacket::Commands(command) => match command {
+                    Ok(command) => {
+                        exporter.read_command(command);
 
-                            if exporter.is_initialized() {
-                                info!("finished capturing");
-                                return ProcessResult::Stop;
-                            }
-                        }
-                        Err(e) => {
-                            warn!(%e);
+                        if exporter.is_initialized() {
+                            info!("finished capturing");
+                            return ProcessResult::Stop;
                         }
                     }
-                }
+                    Err(e) => {
+                        warn!(%e);
+                        if matches!(e, GameCommandError::VersionMismatch { .. }) {
+                            // Client packet was misordered from server packet
+                            // This will be reprocessed after we receive the new session key
+                            return ProcessResult::Continue;
+                        }
+
+                        return ProcessResult::Stop;
+                    }
+                },
                 _ => {}
             }
         }
@@ -365,12 +367,7 @@ where
 
 #[instrument(skip_all)]
 #[cfg(feature = "pcap")]
-fn capture_from_pcap<E>(
-    _args: &Args,
-    mut exporter: E,
-    mut sniffer: GameSniffer,
-    pcap_path: PathBuf,
-) -> Option<E::Export>
+fn capture_from_pcap<E>(_args: &Args, mut exporter: E, mut sniffer: GameSniffer, pcap_path: PathBuf) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -380,7 +377,7 @@ where
 
     while let Ok(packet) = capture.next_packet() {
         match file_process_packet(&mut exporter, &mut sniffer, packet.data.to_vec()) {
-            ProcessResult::Continue => {},
+            ProcessResult::Continue => {}
             ProcessResult::Stop => break,
         }
     }
@@ -390,12 +387,7 @@ where
 
 #[instrument(skip_all)]
 #[cfg(feature = "pktmon")]
-fn capture_from_etl<E>(
-    _args: &Args,
-    mut exporter: E,
-    mut sniffer: GameSniffer,
-    etl_path: PathBuf,
-) -> Option<E::Export>
+fn capture_from_etl<E>(_args: &Args, mut exporter: E, mut sniffer: GameSniffer, etl_path: PathBuf) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -405,12 +397,10 @@ where
 
     while let Ok(packet) = capture.next_packet() {
         match packet.payload {
-            pktmon::PacketPayload::Ethernet(payload) => {
-                match file_process_packet(&mut exporter, &mut sniffer, payload) {
-                    ProcessResult::Continue => {},
-                    ProcessResult::Stop => break,
-                }
-            }
+            pktmon::PacketPayload::Ethernet(payload) => match file_process_packet(&mut exporter, &mut sniffer, payload) {
+                ProcessResult::Continue => {}
+                ProcessResult::Stop => break,
+            },
             _ => {}
         }
     }
@@ -425,9 +415,9 @@ where
 {
     let exporter = Arc::new(Mutex::new(exporter));
 
-    #[cfg(feature = "stream")] {
+    #[cfg(feature = "stream")]
+    {
         if args.stream {
-
             let port = args.websocket_port;
             // let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
 
@@ -444,7 +434,8 @@ where
         }
     }
 
-    #[cfg(not(feature = "stream"))] {
+    #[cfg(not(feature = "stream"))]
+    {
         live_capture(args, exporter, sniffer).await
     }
 }
@@ -463,11 +454,13 @@ where
     E: Exporter,
 {
     let rx = {
-        #[cfg(feature = "pcap")] {
+        #[cfg(feature = "pcap")]
+        {
             capture::listen_on_all(capture::pcap::PcapBackend)
         }
 
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
+        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+        {
             capture::listen_on_all(capture::pktmon::PktmonBackend)
         }
     };
@@ -529,41 +522,42 @@ where
                     Ok(packets) => {
                         for packet in packets {
                             match packet {
-                                GamePacket::Connection(c) => {
-                                    match c {
-                                        ConnectionPacket::HandshakeEstablished => {
-                                            info!("detected connection established");
+                                GamePacket::Connection(c) => match c {
+                                    ConnectionPacket::HandshakeEstablished => {
+                                        info!("detected connection established");
 
-                                            if cfg!(all(feature = "pcap", windows)) {
-                                                info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
-                                            }
+                                        if cfg!(all(feature = "pcap", windows)) {
+                                            info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
                                         }
-                                        ConnectionPacket::Disconnected => {
-                                            info!("detected connection disconnected");
-                                        }
-                                        _ => {}
                                     }
-                                }
-                                GamePacket::Commands(command) => {
-                                    match command {
-                                        Ok(command) => {
-                                            if command.command_id == PlayerLoginScRsp {
-                                                info!("detected login start");
-                                            }
-
-                                            if !streaming && command.command_id == PlayerLoginFinishScRsp {
-                                                info!("detected login end, assume initialization is finished");
-                                                break 'recv;
-                                            }
-
-                                            exporter.lock().unwrap().read_command(command);
+                                    ConnectionPacket::Disconnected => {
+                                        info!("detected connection disconnected");
+                                    }
+                                    _ => {}
+                                },
+                                GamePacket::Commands(command) => match command {
+                                    Ok(command) => {
+                                        if command.command_id == PlayerLoginScRsp {
+                                            info!("detected login start");
                                         }
-                                        Err(e) => {
-                                            warn!(%e);
+
+                                        if !streaming && command.command_id == PlayerLoginFinishScRsp {
+                                            info!("detected login end, assume initialization is finished");
+                                            break 'recv;
+                                        }
+
+                                        exporter.lock().unwrap().read_command(command);
+                                    }
+                                    Err(e) => {
+                                        warn!(%e);
+                                        if matches!(e, GameCommandError::VersionMismatch { .. }) {
+                                            // Client packet was misordered from server packet
+                                            // This will be reprocessed after we receive the new session key
+                                        } else {
                                             break 'recv;
                                         }
                                     }
-                                }
+                                },
                             }
                         }
 
@@ -582,7 +576,7 @@ where
                                 poisoned_sources.insert(packet.source_id);
                                 continue;
                             }
-                            _ => break 'recv
+                            _ => break 'recv,
                         }
                     }
                 }
@@ -617,12 +611,12 @@ where
 
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
 fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::w;
+    use windows::core::PCWSTR;
     use windows::Win32::System::Console::GetConsoleWindow;
     use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW};
     use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER, SW_SHOWNORMAL};
-    use windows::core::PCWSTR;
-    use windows::core::w;
-    use std::os::windows::ffi::OsStrExt;
 
     let args_str = env::args().skip(1).collect::<Vec<_>>().join(" ");
 

@@ -2,9 +2,9 @@ name: Rust CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
   workflow_dispatch:
 
 env:
@@ -42,13 +42,13 @@ jobs:
   build-linux:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - uses: moonrepo/setup-rust@v1
-    - name: Install libpcap
-      run: sudo apt install -y libpcap-dev
-    - name: Build
-      run: cargo build --verbose --no-default-features --features pcap,stream
-    - uses: actions/upload-artifact@v4
-      with:
-        name: reliquary-archiver-linux-pcap-x64
-        path: target/debug/reliquary-archiver
+      - uses: actions/checkout@v4
+      - uses: moonrepo/setup-rust@v1
+      - name: Install deps
+        run: sudo apt install -y libpcap-dev libwayland-dev
+      - name: Build
+        run: cargo build --verbose --no-default-features --features pcap,stream
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reliquary-archiver-linux-pcap-x64
+          path: target/debug/reliquary-archiver
