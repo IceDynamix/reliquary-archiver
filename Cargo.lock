@@ -4286,6 +4286,7 @@ dependencies = [
  "smol",
  "smol_str 0.3.2",
  "string-interner",
+ "tokio",
  "unicode-segmentation",
  "windows 0.61.3",
  "windows-core 0.61.2",
