@@ -46,6 +46,7 @@ lyon_algorithms = "1.0.5"
 rfd = "0.15.3"
 async-trait = "0.1.88"
 tracing-log = "0.2.0"
+raxis = { path = "../raxis" }
 
 [package.metadata.patch]
 crates = ["winit"]

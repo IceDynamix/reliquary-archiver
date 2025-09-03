@@ -34,6 +34,7 @@ use reliquary_archiver::export::Exporter;
 
 mod capture;
 mod gui;
+mod rgui;
 mod scopefns;
 mod worker;
 
@@ -168,7 +169,8 @@ fn main() {
             return;
         }
 
-        gui::run().unwrap();
+        // gui::run().unwrap();
+        rgui::run().unwrap();
 
         // let database = Database::new();
         // let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());

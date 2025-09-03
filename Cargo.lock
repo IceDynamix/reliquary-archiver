@@ -704,6 +704,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "borsh"
+version = "1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad8646f98db542e39fc66e68a20b2144f6a732636df7c2354e74645faaa433ce"
+dependencies = [
+ "cfg_aliases",
+]
+
+[[package]]
 name = "built"
 version = "0.7.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1005,6 +1014,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "const_format"
+version = "0.2.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "126f97965c8ad46d6d9163268ff28432e8f6a1196a55578867832e3049df63dd"
+dependencies = [
+ "const_format_proc_macros",
+]
+
+[[package]]
+name = "const_format_proc_macros"
+version = "0.2.34"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d57c2eccfb16dbac1f4e61e206105db5820c9d26c3c472bc17c774259ef7744"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-xid",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1091,7 +1120,7 @@ dependencies = [
  "rustc-hash 1.1.0",
  "rustybuzz",
  "self_cell",
- "smol_str",
+ "smol_str 0.2.2",
  "swash",
  "sys-locale",
  "ttf-parser 0.21.1",
@@ -2266,7 +2295,7 @@ dependencies = [
  "num-traits",
  "rustc-hash 2.1.1",
  "serde",
- "smol_str",
+ "smol_str 0.2.2",
  "thiserror 1.0.69",
  "web-time",
 ]
@@ -4245,6 +4274,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
+name = "raxis"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "const_format",
+ "futures",
+ "raxis-core",
+ "raxis-proc-macro",
+ "slotmap",
+ "smol",
+ "smol_str 0.3.2",
+ "string-interner",
+ "unicode-segmentation",
+ "windows 0.61.3",
+ "windows-core 0.61.2",
+ "windows-numerics",
+]
+
+[[package]]
+name = "raxis-core"
+version = "0.1.0"
+dependencies = [
+ "windows 0.61.3",
+ "windows-core 0.61.2",
+ "windows-numerics",
+]
+
+[[package]]
+name = "raxis-proc-macro"
+version = "0.1.0"
+dependencies = [
+ "quote",
+ "raxis-core",
+ "syn",
+]
+
+[[package]]
 name = "rayon"
 version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4377,6 +4443,7 @@ dependencies = [
  "pcap",
  "pktmon",
  "protobuf",
+ "raxis",
  "reliquary",
  "rfd",
  "self_update",
@@ -5005,11 +5072,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "smol"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a33bd3e260892199c3ccfc487c88b2da2265080acb316cd920da72fdfd7c599f"
+dependencies = [
+ "async-channel 2.5.0",
+ "async-executor",
+ "async-fs",
+ "async-io",
+ "async-lock",
+ "async-net",
+ "async-process",
+ "blocking",
+ "futures-lite",
+]
+
+[[package]]
 name = "smol_str"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd538fb6910ac1099850255cf94a94df6551fbdd602454387d0adb2d1ca6dead"
 dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "smol_str"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9676b89cd56310a87b93dec47b11af744f34d5fc9f367b829474eec0a891350d"
+dependencies = [
+ "borsh",
  "serde",
 ]
 
@@ -5083,6 +5177,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6637bab7722d379c8b41ba849228d680cc12d0a45ba1fa2b48f2a30577a06731"
 dependencies = [
  "float-cmp",
+]
+
+[[package]]
+name = "string-interner"
+version = "0.19.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23de088478b31c349c9ba67816fa55d9355232d63c3afea8bf513e31f0f1d2c0"
+dependencies = [
+ "hashbrown 0.15.5",
+ "serde",
 ]
 
 [[package]]
@@ -6924,7 +7028,7 @@ dependencies = [
  "rustix 0.38.44",
  "sctk-adwaita",
  "smithay-client-toolkit",
- "smol_str",
+ "smol_str 0.2.2",
  "tracing",
  "unicode-segmentation",
  "wasm-bindgen",
