@@ -131,16 +131,10 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
                 ..Default::default()
             }
             .with_id(w_id!())
-            .with_width(Sizing::fit())
-            .with_height(Sizing::fit())
             .with_background_color(Color::from(0xFFF3CDFF)) // Light yellow warning background
-            .with_padding(BoxAmount::all(PAD_SM))
-            .with_border_radius(BorderRadius::all(BORDER_RADIUS))
-            .with_border(Border {
-                width: 1.0,
-                color: Color::from(0xF0AD4EFF), // Warning border color
-                ..Default::default()
-            })
+            .with_padding(PAD_SM)
+            .with_border_radius(BORDER_RADIUS)
+            .with_border(Color::from(0xF0AD4EFF).into()) // Warning border color
             .with_floating(FloatingConfig {
                 offset: Some(Offset2D {
                     x: Some(0.0),
@@ -155,7 +149,6 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
                     x: Some(HorizontalAlignment::Center),
                     y: Some(VerticalAlignment::Bottom),
                 }),
-                ..Default::default()
             })
             .with_z_index(10),
         )
@@ -178,7 +171,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         .with_direction(Direction::TopToBottom)
         .with_width(Sizing::grow())
         .with_height(Sizing::fit())
-        .with_padding(BoxAmount::new(PAD_SM, PAD_MD, PAD_SM, PAD_MD))
+        .with_padding(PAD_SM)
         .with_child_gap(SPACE_SM)
         .with_vertical_alignment(VerticalAlignment::Center)
     } else {
@@ -191,14 +184,11 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
 
     Element {
         id: Some(w_id!()),
-        direction: Direction::LeftToRight,
         width: Sizing::fixed(400.0),
-        height: Sizing::fit(),
         background_color: Some(Color::from(BACKGROUND_LIGHT)),
         padding: BoxAmount::all(PAD_MD),
         border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
         border: Some(Border {
-            width: 1.0,
             color: BORDER_COLOR,
             ..Default::default()
         }),
