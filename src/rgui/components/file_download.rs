@@ -5,7 +5,7 @@ use raxis::{
         helpers::{row, ElementAlignmentExt, Rule},
         model::{
             Alignment2D, Border, BorderRadius, BoxAmount, Direction, Element, FloatingConfig, HorizontalAlignment, Offset2D, Sizing,
-            VerticalAlignment,
+            StrokeLineCap, StrokeLineJoin, VerticalAlignment,
         },
     },
     runtime::task::Task,
@@ -30,14 +30,15 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-pub enum FileDownloadMessage {
+pub enum Message {
     PickPathForFile(FileContainer),
     SaveFile(FileContainer, PathBuf),
 }
 
-pub enum FileDownloadAction {
+#[derive(Debug)]
+pub enum Action {
     None,
-    Run(Task<FileDownloadMessage>),
+    Run(Task<Message>),
 }
 
 fn format_file_size(size: usize) -> String {
@@ -54,18 +55,20 @@ fn format_file_size(size: usize) -> String {
 // Download arrow icon SVG path
 fn download_arrow_icon<M>() -> Element<M> {
     SvgPath::new(
-        svg_path!("M12 3v13m0 0-4-4m4 4 4-4M2 17l.621 2.485A2 2 0 0 0 4.561 21h14.878a2 2 0 0 0 1.94-1.515L22 17"),
+        svg_path!("M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5"),
         ViewBox::new(24.0, 24.0),
     )
-    .with_size(20.0, 20.0)
+    .with_size(32.0, 32.0)
     .with_stroke(Color::WHITE)
     .with_stroke_width(2.0)
+    .with_stroke_cap(StrokeLineCap::Round)
+    .with_stroke_join(StrokeLineJoin::Round)
     .as_element(w_id!())
+    .with_padding(PAD_MD)
 }
 
 pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     file: Option<&FileContainer>,
-    message_mapper: impl Fn(FileDownloadMessage) -> PMsg + Send + Clone + 'static,
     out_of_date: bool,
     hook: &mut HookManager<PMsg>,
 ) -> Element<PMsg> {
@@ -78,10 +81,24 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         .with_border_radius(BORDER_RADIUS)
         .with_click_handler({
             let file = file.map(|f| f.clone());
-            let message_mapper = message_mapper.clone();
             move |_, shell| {
                 if let Some(ref file) = file {
-                    shell.publish(message_mapper(FileDownloadMessage::PickPathForFile(file.clone())));
+                    shell.dispatch_task(
+                        Task::future(
+                            rfd::AsyncFileDialog::new()
+                                .set_file_name(&file.name)
+                                .add_filter(&file.ext.description, &file.ext.extensions)
+                                .save_file(),
+                        )
+                        .and_consume({
+                            let file = file.clone();
+                            move |picked_file| {
+                                if let Err(e) = std::fs::write(&picked_file.path().to_path_buf(), &file.content) {
+                                    eprintln!("Failed to save file: {}", e);
+                                }
+                            }
+                        }),
+                    );
                 }
             }
         })
@@ -195,34 +212,5 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
             children
         },
         ..Default::default()
-    }
-}
-
-pub fn update(message: FileDownloadMessage) -> FileDownloadAction {
-    match message {
-        FileDownloadMessage::PickPathForFile(export) => {
-            FileDownloadAction::Run(Task::future(async move {
-                let file_dialog = rfd::AsyncFileDialog::new()
-                    .set_file_name(&export.name)
-                    .add_filter(&export.ext.description, &export.ext.extensions)
-                    .save_file()
-                    .await;
-
-                if let Some(file) = file_dialog {
-                    FileDownloadMessage::SaveFile(export, file.path().to_path_buf())
-                } else {
-                    // User cancelled - we could add a separate message for this
-                    FileDownloadMessage::PickPathForFile(export) // Return same message to indicate no action
-                }
-            }))
-        }
-        FileDownloadMessage::SaveFile(export, path) => {
-            if let Err(e) = std::fs::write(&path, &export.content) {
-                tracing::error!("Failed to save file to {:?}: {}", path, e);
-            } else {
-                tracing::info!("Successfully saved file to {:?}", path);
-            }
-            FileDownloadAction::None
-        }
     }
 }

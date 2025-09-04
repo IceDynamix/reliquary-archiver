@@ -5,13 +5,14 @@ use std::time::Duration;
 
 use futures::executor::block_on;
 use futures::lock::Mutex;
+use futures::stream::FusedStream;
 use futures::FutureExt;
 use iced::futures::channel::{mpsc, oneshot};
+use iced::futures::select;
 use iced::futures::sink::SinkExt;
-use iced::stream;
 use iced::futures::Stream;
 use iced::futures::StreamExt;
-use iced::futures::select;
+use iced::stream;
 use iced::Subscription;
 use iced::Task;
 use reliquary::network::command::command_id::PlayerLoginFinishScRsp;
@@ -60,9 +61,7 @@ pub type WorkerHandle = mpsc::Sender<WorkerCommand>;
 struct AbortOnDrop(Arc<AtomicBool>, Option<tokio::task::JoinHandle<()>>);
 
 impl AbortOnDrop {
-    pub fn new(
-        f: impl FnOnce(Arc<AtomicBool>) -> tokio::task::JoinHandle<()>,
-    ) -> Self {
+    pub fn new(f: impl FnOnce(Arc<AtomicBool>) -> tokio::task::JoinHandle<()>) -> Self {
         let abort_signal = Arc::new(AtomicBool::new(false));
         Self(abort_signal.clone(), Some(f(abort_signal)))
     }
@@ -88,10 +87,7 @@ struct MappedSender<Output, Intermediate> {
 
 impl<Output, Intermediate> MappedSender<Output, Intermediate> {
     fn new(sender: mpsc::Sender<Output>, f: fn(Intermediate) -> Output) -> Self {
-        Self {
-            sender,
-            f,
-        }
+        Self { sender, f }
     }
 
     fn send(&mut self, item: Intermediate) -> futures::sink::Send<'_, mpsc::Sender<Output>, Output> {
@@ -147,28 +143,30 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
         let (mut recorded_tx, recorded_rx) = mpsc::channel(100);
         // let (metric_tx, mut metric_rx) = mpsc::channel(100);
 
-        let abort_signal = { // Need to spawn a real thread since the packet capture is blocking
+        let abort_signal = {
+            // Need to spawn a real thread since the packet capture is blocking
             let exporter = exporter.clone();
             let output = output.clone();
 
             // let lc = Box::pin(live_capture(
-            //     exporter, 
-            //     sniffer, 
+            //     exporter,
+            //     sniffer,
             //     MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
             //     recorded_rx
             // ));
 
-            tokio::spawn(
-                live_capture(
-                    exporter, 
-                    sniffer, 
-                    MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
-                    recorded_rx
-                )
-            )
+            tokio::spawn(live_capture(
+                exporter,
+                sniffer,
+                MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
+                recorded_rx,
+            ))
         };
 
-        output.send(WorkerEvent::Ready(sender)).await.expect("Worker Stream was closed before ready state?");
+        output
+            .send(WorkerEvent::Ready(sender.clone()))
+            .await
+            .expect("Worker Stream was closed before ready state?");
 
         loop {
             tokio::select! {
@@ -224,9 +222,7 @@ pub enum SnifferMetric {
 
 #[instrument(skip_all)]
 #[cfg(feature = "pcap")]
-fn capture_from_pcap(
-    pcap_path: std::path::PathBuf,
-) -> Vec<capture::Packet> {
+fn capture_from_pcap(pcap_path: std::path::PathBuf) -> Vec<capture::Packet> {
     use std::hash::{DefaultHasher, Hasher};
 
     use crate::capture::PCAP_FILTER;
@@ -252,17 +248,19 @@ fn capture_from_pcap(
 
 #[instrument(skip_all)]
 async fn live_capture<E: Exporter>(
-    exporter: Arc<Mutex<E>>, 
+    exporter: Arc<Mutex<E>>,
     mut sniffer: GameSniffer,
     mut metric_tx: MappedSender<WorkerEvent, SnifferMetric>,
     mut recorded_rx: mpsc::Receiver<capture::Packet>,
 ) {
     let live_rx = {
-        #[cfg(feature = "pcap")] {
+        #[cfg(feature = "pcap")]
+        {
             capture::listen_on_all(capture::pcap::PcapBackend)
         }
 
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))] {
+        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+        {
             capture::listen_on_all(capture::pktmon::PktmonBackend)
         }
     };
@@ -309,42 +307,38 @@ async fn live_capture<E: Exporter>(
 
                 for packet in packets {
                     match packet {
-                        GamePacket::Connection(c) => {
-                            match c {
-                                ConnectionPacket::HandshakeEstablished => {
-                                    info!("detected connection established");
-                                    metric_tx.send(SnifferMetric::ConnectionEstablished).await.ok();
+                        GamePacket::Connection(c) => match c {
+                            ConnectionPacket::HandshakeEstablished => {
+                                info!("detected connection established");
+                                metric_tx.send(SnifferMetric::ConnectionEstablished).await.ok();
 
-                                    if cfg!(all(feature = "pcap", windows)) {
-                                        info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
-                                    }
-                                }
-                                ConnectionPacket::Disconnected => {
-                                    info!("detected connection disconnected");
-                                    metric_tx.send(SnifferMetric::ConnectionDisconnected).await.ok();
-                                }
-                                _ => {}
-                            }
-                        }
-                        GamePacket::Commands(command) => {
-                            match command {
-                                Ok(command) => {
-                                    if command.command_id == PlayerLoginScRsp {
-                                        info!("detected login start");
-                                    }
-
-                                    exporter.lock().await.read_command(command);
-                                }
-                                Err(e) => {
-                                    warn!(%e);
-                                    if let GameCommandError::DecryptionKeyMissing = e {
-                                        metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
-                                    } else {
-                                        metric_tx.send(SnifferMetric::NetworkError).await.ok();
-                                    }
+                                if cfg!(all(feature = "pcap", windows)) {
+                                    info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
                                 }
                             }
-                        }
+                            ConnectionPacket::Disconnected => {
+                                info!("detected connection disconnected");
+                                metric_tx.send(SnifferMetric::ConnectionDisconnected).await.ok();
+                            }
+                            _ => {}
+                        },
+                        GamePacket::Commands(command) => match command {
+                            Ok(command) => {
+                                if command.command_id == PlayerLoginScRsp {
+                                    info!("detected login start");
+                                }
+
+                                exporter.lock().await.read_command(command);
+                            }
+                            Err(e) => {
+                                warn!(%e);
+                                if let GameCommandError::DecryptionKeyMissing = e {
+                                    metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
+                                } else {
+                                    metric_tx.send(SnifferMetric::NetworkError).await.ok();
+                                }
+                            }
+                        },
                     }
                 }
             }

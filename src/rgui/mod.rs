@@ -28,12 +28,12 @@ use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExpo
 use tokio::sync::broadcast;
 use tracing::info;
 
+use crate::rgui::components::file_download::{self, download_view};
 use crate::scopefns::Also;
 use crate::websocket::start_websocket_server;
 use crate::worker::{self, archiver_worker};
 
 mod components;
-use components::{download_view, update_file_download, FileDownloadAction, FileDownloadMessage};
 
 // Constants
 pub const PAD_SM: f32 = 4.0;
@@ -280,7 +280,6 @@ impl ActiveScreen {
 
         let download_section = download_view(
             store.json_export.as_ref(),
-            RootMessage::FileDownload,
             // store.export_out_of_date,
             true,
             hook,
@@ -326,7 +325,6 @@ pub enum RootMessage {
     CheckConnection(Instant),
     ActiveScreen(ActiveMessage),
     WaitingScreen(WaitingMessage),
-    FileDownload(FileDownloadMessage),
     RefreshExport,
 }
 
@@ -543,14 +541,6 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::WaitingScreen(message) => handle_screen!(Waiting, WaitingScreen, message),
         RootMessage::ActiveScreen(message) => handle_screen!(Active, ActiveScreen, message),
-
-        RootMessage::FileDownload(message) => {
-            let action = update_file_download(message);
-            match action {
-                FileDownloadAction::None => None,
-                FileDownloadAction::Run(task) => Some(task.map(RootMessage::FileDownload)),
-            }
-        }
 
         RootMessage::RefreshExport => {
             if let Some(sender) = state.worker_sender.as_ref() {

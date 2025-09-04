@@ -98,7 +98,7 @@ border: Some(Border {
     color: Color { r: 0.85, g: 0.85, b: 0.85, a: 1.0 },
     placement: BorderPlacement::Center,
     dash_style: Some(StrokeDashStyle::Dash),
-    dash_cap: StrokeCap::Round,
+    dash_cap: StrokeLineCap::Round,
     ..Default::default()
 }),
 ```
@@ -288,7 +288,7 @@ SvgPath::new(svg_path!("M20 6 9 17l-5-5"), ViewBox::new(24.0, 24.0))
     .with_size(16.0, 16.0)
     .with_stroke(Color::WHITE)
     .with_stroke_width(2.0)
-    .with_stroke_cap(StrokeCap::Round)
+    .with_stroke_cap(StrokeLineCap::Round)
     .with_stroke_join(StrokeLineJoin::Round)
     .as_element(w_id!())
 ```
