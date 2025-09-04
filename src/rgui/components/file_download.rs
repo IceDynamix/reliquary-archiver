@@ -139,7 +139,8 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
                     y: Some(VerticalAlignment::Bottom),
                 }),
                 ..Default::default()
-            }),
+            })
+            .with_z_index(10),
         )
     } else {
         None
