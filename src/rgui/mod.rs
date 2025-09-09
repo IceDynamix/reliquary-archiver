@@ -6,10 +6,15 @@ use chrono::Local;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
+use raxis::layout::model::{Color, DropShadow, StrokeLineCap, StrokeLineJoin};
+use raxis::svg_path;
+use raxis::util::unique::combine_id;
+use raxis::widgets::rule::{horizontal_rule, Rule};
+use raxis::widgets::svg::Svg;
 use raxis::{
     column,
     layout::{
-        helpers::{center, container, row, ElementAlignmentExt, Rule},
+        helpers::{center, container, row, ElementAlignmentExt},
         model::{Border, BorderRadius, BoxAmount, Direction, Element, HorizontalAlignment, Sizing, VerticalAlignment},
     },
     row,
@@ -20,7 +25,7 @@ use raxis::{
         svg::ViewBox,
         svg_path::SvgPath,
         text::{self, ParagraphAlignment, Text},
-        widget, Color,
+        widget,
     },
     HookManager,
 };
@@ -48,6 +53,7 @@ pub const BORDER_RADIUS: f32 = 8.0;
 
 // Color constants
 const BACKGROUND_LIGHT: u32 = 0xF5F5F5FF;
+const BACKGROUND_STRONG: u32 = 0xE5E5E5FF;
 const TEXT_MUTED: Color = Color {
     r: 0.6,
     g: 0.6,
@@ -55,10 +61,10 @@ const TEXT_MUTED: Color = Color {
     a: 1.0,
 };
 const BORDER_COLOR: Color = Color {
-    r: 0.85,
-    g: 0.85,
-    b: 0.85,
-    a: 1.0,
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
+    a: 0.3,
 };
 const DANGER_COLOR: Color = Color {
     r: 0.9,
@@ -77,6 +83,20 @@ const PRIMARY_COLOR: Color = Color {
     g: 0.6,
     b: 1.0,
     a: 1.0,
+};
+
+const SHADOW_XS: DropShadow = DropShadow {
+    offset_y: 1.0,
+    blur_radius: 2.0,
+    color: Color::from_hex(0x0000000D),
+    ..DropShadow::default()
+};
+
+const SHADOW_SM: DropShadow = DropShadow {
+    offset_y: 1.0,
+    blur_radius: 3.0,
+    color: Color::from_hex(0x0000001A),
+    ..DropShadow::default()
 };
 
 #[derive(Debug, Clone)]
@@ -173,7 +193,7 @@ impl WaitingScreen {
     }
 
     pub fn view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
-        self.waiting_view(store)
+        self.waiting_view(store, hook)
     }
 
     pub fn update(&mut self, message: WaitingMessage) -> ScreenAction<WaitingMessage> {
@@ -197,7 +217,7 @@ impl WaitingScreen {
         }
     }
 
-    fn waiting_view(&self, _store: &Store) -> Element<RootMessage> {
+    fn waiting_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         let upload_button = Button::new()
             .with_bg_color(PRIMARY_COLOR)
             .with_border_radius(BORDER_RADIUS)
@@ -213,11 +233,24 @@ impl WaitingScreen {
                     RootMessage::WaitingScreen(WaitingMessage::PcapFileSelected(file.map(|f| f.path().to_path_buf())))
                 }));
             })
-            .as_element(w_id!(), Text::new("Upload .pcap").with_font_size(16.0));
+            .as_element(
+                w_id!(),
+                Text::new("Upload .pcap")
+                    .with_font_size(16.0)
+                    .with_paragraph_alignment(ParagraphAlignment::Center)
+                    .with_color(Color::WHITE)
+                    .as_element()
+                    .with_padding(BoxAmount::new(PAD_MD, PAD_LG, PAD_MD, PAD_LG))
+                    .with_height(Sizing::grow()),
+            )
+            .with_height(Sizing::grow());
 
-        let upload_bar = row![upload_button]
+        let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook);
+
+        let upload_bar = row![upload_button, download_section]
             .with_child_gap(SPACE_MD)
-            .with_horizontal_alignment(HorizontalAlignment::Center);
+            .with_horizontal_alignment(HorizontalAlignment::Center)
+            .with_padding(BoxAmount::all(PAD_MD));
 
         column![
             Text::new("Waiting for login...")
@@ -226,23 +259,63 @@ impl WaitingScreen {
             Text::new("Please log into the game. If you are already in-game, you must log out and log back in.")
                 .with_font_size(16.0)
                 .with_color(TEXT_MUTED)
-                .with_paragraph_alignment(ParagraphAlignment::Center),
-            Rule::horizontal().with_color(BORDER_COLOR),
+                .with_paragraph_alignment(ParagraphAlignment::Center)
+                .as_element()
+                .with_padding(BoxAmount::horizontal(PAD_LG)),
+            Rule::horizontal()
+                .with_color(BORDER_COLOR)
+                .as_element(w_id!())
+                .with_padding(BoxAmount::vertical(PAD_LG)),
             Text::new("Alternatively, if you have a packet capture file, you can upload it.")
                 .with_font_size(16.0)
                 .with_color(TEXT_MUTED)
-                .with_paragraph_alignment(ParagraphAlignment::Center),
+                .with_paragraph_alignment(ParagraphAlignment::Center)
+                .as_element()
+                .with_padding(BoxAmount::horizontal(PAD_LG)),
             upload_bar,
         ]
-        .with_child_gap(SPACE_LG)
+        .with_child_gap(SPACE_SM)
         .with_horizontal_alignment(HorizontalAlignment::Center)
         .with_vertical_alignment(VerticalAlignment::Center)
+        .with_padding(BoxAmount::all(PAD_LG * 2.0))
+        .with_border_radius(BorderRadius::all(BORDER_RADIUS))
+        .align_x(HorizontalAlignment::Center)
     }
 }
 
 #[derive(Default, Debug)]
 pub struct ActiveScreen {
     // Active screen specific state
+}
+
+fn stat_line(label: &'static str, value: usize) -> Element<RootMessage> {
+    row![
+        Text::new(label).with_font_size(16.0),
+        Rule::horizontal()
+            .with_custom_dashes(vec![5.0, 5.0], 0.0)
+            .with_color(BORDER_COLOR)
+            .as_element(combine_id(w_id!(), label)),
+        Text::new(value.to_string()).with_font_size(16.0)
+    ]
+    .with_child_gap(SPACE_MD)
+    .with_width(Sizing::grow())
+    .align_y(VerticalAlignment::Center)
+}
+
+fn refresh_icon<M>() -> Element<M> {
+    SvgPath::new(
+        svg_path!(
+            "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5"
+        ),
+        ViewBox::new(24.0, 24.0),
+    )
+    .with_size(32.0, 32.0)
+    .with_stroke(Color::WHITE)
+    .with_stroke_width(2.0)
+    .with_stroke_cap(StrokeLineCap::Round)
+    .with_stroke_join(StrokeLineJoin::Round)
+    .as_element(w_id!())
+    .with_padding(PAD_MD)
 }
 
 impl ActiveScreen {
@@ -260,44 +333,53 @@ impl ActiveScreen {
 
     fn active_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         let stats_display = column![
-            Text::new(format!("Relics: {}", store.export_stats.relics)).with_font_size(16.0),
-            Text::new(format!("Characters: {}", store.export_stats.characters)).with_font_size(16.0),
-            Text::new(format!("Light Cones: {}", store.export_stats.light_cones)).with_font_size(16.0),
-            Text::new(format!("Materials: {}", store.export_stats.materials)).with_font_size(16.0),
+            stat_line("Relics", store.export_stats.relics),
+            stat_line("Characters", store.export_stats.characters),
+            stat_line("Light Cones", store.export_stats.light_cones),
+            stat_line("Materials", store.export_stats.materials),
         ]
-        .with_child_gap(SPACE_SM)
-        .with_padding(BoxAmount::all(PAD_MD))
-        .with_background_color(Color::from(BACKGROUND_LIGHT))
-        .with_border_radius(BorderRadius::all(BORDER_RADIUS));
+        .with_width(Sizing::grow())
+        .with_child_gap(SPACE_MD);
 
-        let export_button = Button::new()
+        let refresh_button = Button::new()
             .with_bg_color(SUCCESS_COLOR)
             .with_border_radius(BORDER_RADIUS)
             .with_click_handler(move |_, shell| {
                 shell.publish(RootMessage::RefreshExport);
             })
-            .as_element(w_id!(), Text::new("Refresh Export").with_font_size(16.0));
+            .as_element(
+                w_id!(),
+                // Text::new("Refresh Export")
+                //     .with_font_size(16.0)
+                //     .as_element()
+                //     .with_padding(BoxAmount::all(PAD_MD)),
+                refresh_icon(),
+            );
 
-        let download_section = download_view(
-            store.json_export.as_ref(),
-            // store.export_out_of_date,
-            true,
-            hook,
-        );
+        let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook);
+
+        let action_bar = row![refresh_button, download_section]
+            .with_child_gap(SPACE_LG)
+            .with_horizontal_alignment(HorizontalAlignment::Center)
+            .with_padding(BoxAmount::all(PAD_MD))
+            .align_y(VerticalAlignment::Center);
 
         column![
-            Text::new("Connection Active!")
+            Text::new("Connected!")
                 .with_font_size(24.0)
                 .with_color(SUCCESS_COLOR)
-                .with_paragraph_alignment(ParagraphAlignment::Center),
+                .with_paragraph_alignment(ParagraphAlignment::Center)
+                .as_element()
+                .with_padding(BoxAmount::all(PAD_MD)),
             stats_display,
-            row![export_button, download_section]
-                .with_child_gap(SPACE_MD)
-                .with_horizontal_alignment(HorizontalAlignment::Center),
+            action_bar,
         ]
         .with_child_gap(SPACE_LG)
         .with_horizontal_alignment(HorizontalAlignment::Center)
         .with_vertical_alignment(VerticalAlignment::Center)
+        .with_padding(BoxAmount::all(PAD_LG * 2.0))
+        .with_border_radius(BorderRadius::all(BORDER_RADIUS))
+        .align_x(HorizontalAlignment::Center)
     }
 }
 
@@ -387,7 +469,14 @@ fn github_button() -> Element<RootMessage> {
                 tracing::error!("Failed to open GitHub link: {}", e);
             }
         })
-        .as_element(w_id!(), Text::new("GitHub").with_font_size(14.0).with_color(Color::WHITE))
+        .as_element(
+            w_id!(),
+            Svg::new(include_str!("../../assets/github.svg"))
+                .with_size(32.0, 32.0)
+                .with_recolor(Color::WHITE)
+                .as_element(w_id!()), // Text::new("GitHub").with_font_size(14.0).with_color(Color::WHITE)
+        )
+        .with_padding(PAD_MD)
 }
 
 fn discord_button() -> Element<RootMessage> {
@@ -399,23 +488,36 @@ fn discord_button() -> Element<RootMessage> {
                 tracing::error!("Failed to open Discord link: {}", e);
             }
         })
-        .as_element(w_id!(), Text::new("Discord").with_font_size(14.0).with_color(Color::WHITE))
+        .as_element(
+            w_id!(),
+            Svg::new(include_str!("../../assets/discord.svg"))
+                .with_size(32.0, 32.0)
+                .with_recolor(Color::WHITE)
+                .as_element(w_id!()),
+        )
+        .with_padding(PAD_MD)
 }
 
 // Main view function
-pub fn view(state: &RootState, mut hook: HookManager<RootMessage>) -> Element<RootMessage> {
-    let help_text = Text::new("have questions or issues?").with_font_size(16.0).with_color(TEXT_MUTED);
+pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+    let help_text = Text::new("have questions or issues?")
+        .with_font_size(16.0)
+        .italic()
+        .with_color(TEXT_MUTED);
 
     let social_buttons = row![github_button(), discord_button()]
         .with_child_gap(SPACE_SM)
         .with_vertical_alignment(VerticalAlignment::Center);
 
     let header = row![
-        column![social_buttons, help_text].with_child_gap(SPACE_SM),
+        column![social_buttons, help_text]
+            .with_child_gap(SPACE_SM)
+            .with_padding(BoxAmount::all(PAD_SM)),
         Element::default().with_width(Sizing::grow()), // spacer
     ]
     .with_width(Sizing::grow())
-    .with_vertical_alignment(VerticalAlignment::Center);
+    .with_vertical_alignment(VerticalAlignment::Center)
+    .with_padding(BoxAmount::all(PAD_MD));
 
     let ws_status_text = match &state.store.connection_stats.ws_status {
         WebSocketStatus::Pending => "starting server...".to_string(),
@@ -444,8 +546,8 @@ pub fn view(state: &RootState, mut hook: HookManager<RootMessage>) -> Element<Ro
         .with_id(w_id!());
 
     let content = match &state.screen {
-        Screen::Waiting(screen) => screen.view(&state.store, &mut hook),
-        Screen::Active(screen) => screen.view(&state.store, &mut hook),
+        Screen::Waiting(screen) => screen.view(&state.store, hook),
+        Screen::Active(screen) => screen.view(&state.store, hook),
     };
 
     let connection_status_text = if state.store.connection_stats.connected {
@@ -471,12 +573,13 @@ pub fn view(state: &RootState, mut hook: HookManager<RootMessage>) -> Element<Ro
         connection_status,
     ]
     .with_width(Sizing::grow())
-    .with_vertical_alignment(VerticalAlignment::Bottom);
+    .with_vertical_alignment(VerticalAlignment::Bottom)
+    .with_padding(PAD_MD);
 
     column![header, center(content), footer]
         .with_width(Sizing::grow())
         .with_height(Sizing::grow())
-        .with_padding(BoxAmount::all(PAD_MD))
+        .with_padding(PAD_MD)
         .with_child_gap(SPACE_MD)
 }
 

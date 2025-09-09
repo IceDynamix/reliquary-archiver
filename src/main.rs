@@ -33,7 +33,7 @@ use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 
 mod capture;
-mod gui;
+// mod gui;
 mod rgui;
 mod scopefns;
 mod worker;

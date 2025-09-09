@@ -31,28 +31,28 @@ tokio = { version = "1.44.2", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
-iced = { git = "https://github.com/iced-rs/iced", rev = "9ef2c468831ae3dd86ce7afc0f675070ca68dd4a", features = [
-    "image",
-    "canvas",
-    "crisp",
-    "tokio",
-    "svg",
-    "advanced",
-    "hot",
-    "debug",
-] }
+# iced = { git = "https://github.com/iced-rs/iced", rev = "9ef2c468831ae3dd86ce7afc0f675070ca68dd4a", features = [
+#     "image",
+#     "canvas",
+#     "crisp",
+#     "tokio",
+#     "svg",
+#     "advanced",
+#     "hot",
+#     "debug",
+# ] }
 open = "5.3.2"
-lyon_algorithms = "1.0.5"
+# lyon_algorithms = "1.0.5"
 rfd = "0.15.3"
-async-trait = "0.1.88"
+# async-trait = "0.1.88"
 tracing-log = "0.2.0"
 raxis = { path = "../raxis", features = ["tokio"] }
 
-[package.metadata.patch]
-crates = ["winit"]
+# [package.metadata.patch]
+# crates = ["winit"]
 
-[patch."https://github.com/iced-rs/winit"]
-winit = { path = "./target/patch/11414b6" }
+# [patch."https://github.com/iced-rs/winit"]
+# winit = { path = "./target/patch/11414b6" }
 
 [target.'cfg(windows)'.dependencies]
 self_update = "0.42.0"

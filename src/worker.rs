@@ -3,18 +3,18 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::channel::{mpsc, oneshot};
 use futures::executor::block_on;
 use futures::lock::Mutex;
+use futures::select;
+use futures::sink::SinkExt;
+use futures::stream;
 use futures::stream::FusedStream;
 use futures::FutureExt;
-use iced::futures::channel::{mpsc, oneshot};
-use iced::futures::select;
-use iced::futures::sink::SinkExt;
-use iced::futures::Stream;
-use iced::futures::StreamExt;
-use iced::stream;
-use iced::Subscription;
-use iced::Task;
+use futures::Stream;
+use futures::StreamExt;
+// use iced::Subscription;
+// use iced::Task;
 use reliquary::network::command::command_id::PlayerLoginFinishScRsp;
 use reliquary::network::command::command_id::PlayerLoginScRsp;
 use reliquary::network::command::GameCommand;
@@ -129,9 +129,23 @@ impl<Output, Intermediate> MappedSender<Output, Intermediate> {
 //     }
 // }
 
+/// Creates a new [`Stream`] that produces the items sent from a [`Future`]
+/// to the [`mpsc::Sender`] provided to the closure.
+///
+/// This is a more ergonomic [`stream::unfold`], which allows you to go
+/// from the "world of futures" to the "world of streams" by simply looping
+/// and publishing to an async channel from inside a [`Future`].
+pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> impl Stream<Item = T> {
+    let (sender, receiver) = mpsc::channel(size);
+
+    let runner = stream::once(f(sender)).filter_map(|_| async { None });
+
+    stream::select(receiver, runner)
+}
+
 #[instrument(skip_all)]
 pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<Item = WorkerEvent> {
-    stream::channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
+    stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
         // Create channel
         let (sender, mut receiver) = mpsc::channel(100);
 

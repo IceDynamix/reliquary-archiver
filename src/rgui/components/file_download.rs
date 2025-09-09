@@ -2,9 +2,9 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 use raxis::{
     layout::{
-        helpers::{row, ElementAlignmentExt, Rule},
+        helpers::{center, row, ElementAlignmentExt},
         model::{
-            Alignment2D, Border, BorderRadius, BoxAmount, Direction, Element, FloatingConfig, HorizontalAlignment, Offset2D, Sizing,
+            Alignment2D, Border, BorderRadius, BoxAmount, Color, Direction, Element, FloatingConfig, HorizontalAlignment, Offset2D, Sizing,
             StrokeLineCap, StrokeLineJoin, VerticalAlignment,
         },
     },
@@ -15,16 +15,16 @@ use raxis::{
         mouse_area::{MouseArea, MouseAreaEvent},
         svg::ViewBox,
         svg_path::SvgPath,
-        text::{ParagraphAlignment, Text},
-        widget, Color,
+        text::{ParagraphAlignment, Text, TextAlignment},
+        widget,
     },
     HookManager,
 };
 
 use crate::{
     rgui::{
-        FileContainer, FileExtensions, BACKGROUND_LIGHT, BORDER_COLOR, BORDER_RADIUS, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_MD, SPACE_SM,
-        SUCCESS_COLOR, TEXT_MUTED,
+        FileContainer, FileExtensions, BACKGROUND_LIGHT, BACKGROUND_STRONG, BORDER_COLOR, BORDER_RADIUS, PAD_MD, PAD_SM, PRIMARY_COLOR,
+        SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_MUTED,
     },
     scopefns::Also,
 };
@@ -53,13 +53,13 @@ fn format_file_size(size: usize) -> String {
 }
 
 // Download arrow icon SVG path
-fn download_arrow_icon<M>() -> Element<M> {
+fn download_arrow_icon<M>(stroke: Color) -> Element<M> {
     SvgPath::new(
         svg_path!("M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5"),
         ViewBox::new(24.0, 24.0),
     )
     .with_size(32.0, 32.0)
-    .with_stroke(Color::WHITE)
+    .with_stroke(stroke)
     .with_stroke_width(2.0)
     .with_stroke_cap(StrokeLineCap::Round)
     .with_stroke_join(StrokeLineJoin::Round)
@@ -79,6 +79,9 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     let download_button = Button::new()
         .with_bg_color(PRIMARY_COLOR)
         .with_border_radius(BORDER_RADIUS)
+        .with_border(1.0, Color::from(0x00000033))
+        // .with_no_border()
+        .enabled(file.is_some())
         .with_click_handler({
             let file = file.map(|f| f.clone());
             move |_, shell| {
@@ -102,7 +105,10 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
                 }
             }
         })
-        .as_element(download_button_id, download_arrow_icon());
+        .as_element(
+            download_button_id,
+            download_arrow_icon(if file.is_some() { Color::WHITE } else { Color::from(0x0000003F) }),
+        );
 
     let button_with_hover = (MouseArea::new({
         let hover_state = hover_state.clone();
@@ -134,7 +140,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
             .with_background_color(Color::from(0xFFF3CDFF)) // Light yellow warning background
             .with_padding(PAD_SM)
             .with_border_radius(BORDER_RADIUS)
-            .with_border(Color::from(0xF0AD4EFF).into()) // Warning border color
+            .with_border(Color::from(0xF0AD4EFF)) // Warning border color
             .with_floating(FloatingConfig {
                 offset: Some(Offset2D {
                     x: Some(0.0),
@@ -178,16 +184,19 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         Text::new("Export not ready")
             .with_font_size(14.0)
             .with_color(TEXT_MUTED)
+            .with_text_alignment(TextAlignment::Center)
             .with_paragraph_alignment(ParagraphAlignment::Center)
-            .into()
+            .as_element()
+            .with_width(Sizing::grow())
+            .with_height(Sizing::grow())
     };
 
     Element {
         id: Some(w_id!()),
         width: Sizing::fixed(400.0),
         background_color: Some(Color::from(BACKGROUND_LIGHT)),
-        padding: BoxAmount::all(PAD_MD),
         border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
+        // padding: BoxAmount::all(PAD_SM),
         border: Some(Border {
             color: BORDER_COLOR,
             ..Default::default()
