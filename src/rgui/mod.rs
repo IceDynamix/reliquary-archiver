@@ -243,7 +243,8 @@ impl WaitingScreen {
                     .with_padding(BoxAmount::new(PAD_MD, PAD_LG, PAD_MD, PAD_LG))
                     .with_height(Sizing::grow()),
             )
-            .with_height(Sizing::grow());
+            .with_height(Sizing::grow())
+            .with_snap(true);
 
         let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook);
 
@@ -354,7 +355,8 @@ impl ActiveScreen {
                 //     .as_element()
                 //     .with_padding(BoxAmount::all(PAD_MD)),
                 refresh_icon(),
-            );
+            )
+            .with_snap(true);
 
         let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook);
 
@@ -517,6 +519,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     ]
     .with_width(Sizing::grow())
     .with_vertical_alignment(VerticalAlignment::Center)
+    .with_height(Sizing::fixed(100.0))
     .with_padding(BoxAmount::all(PAD_MD));
 
     let ws_status_text = match &state.store.connection_stats.ws_status {
@@ -573,7 +576,9 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         connection_status,
     ]
     .with_width(Sizing::grow())
+    .with_height(Sizing::fixed(100.0))
     .with_vertical_alignment(VerticalAlignment::Bottom)
+    .align_y(VerticalAlignment::Bottom)
     .with_padding(PAD_MD);
 
     column![header, center(content), footer]
@@ -581,6 +586,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         .with_height(Sizing::grow())
         .with_padding(PAD_MD)
         .with_child_gap(SPACE_MD)
+        .with_background_color(Color::from_hex(0xF1F5EDFF))
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {

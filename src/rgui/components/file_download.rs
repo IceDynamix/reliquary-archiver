@@ -210,6 +210,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
             }
             children
         },
+        snap: true,
         ..Default::default()
     }
 }
