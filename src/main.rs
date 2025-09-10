@@ -1,3 +1,4 @@
+// #![windows_subsystem = "windows"]
 #![allow(unused)]
 
 use std::collections::HashSet;
@@ -6,7 +7,7 @@ use std::panic;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 #[cfg(feature = "pcap")]
@@ -19,6 +20,7 @@ use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLogi
 use reliquary::network::command::GameCommandError;
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
 use tokio::pin;
+use tracing::instrument::WithSubscriber;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
 
@@ -180,9 +182,9 @@ fn main() {
         // let export = match capture_mode {
         //     CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
         //     #[cfg(feature = "pcap")]
-        //     CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
+        //     CaptureMode::Pcap(path) => capture_from_pcap(exporter, sniffer, path),
         //     #[cfg(feature = "pktmon")]
-        //     CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
+        //     CaptureMode::Etl(path) => capture_from_etl(exporter, sniffer, path),
         // };
 
         // if let Some(export) = export {
@@ -289,23 +291,46 @@ fn update(auth_token: Option<&str>, no_confirm: bool) -> Result<(), Box<dyn std:
     Ok(())
 }
 
+struct VecWriter;
+
+pub static LOG_BUFFER: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+impl std::io::Write for VecWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let str = String::from_utf8_lossy(buf);
+        let lines = str.lines().map(|s| s.to_string());
+        LOG_BUFFER.lock().unwrap().extend(lines);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 fn tracing_init(args: &Args) {
     tracing_log::LogTracer::init().unwrap();
 
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(
-            match args.verbose {
-                0 => "reliquary_archiver=info",
-                1 => "info",
-                2 => "debug",
-                _ => "trace",
-            }
-            .parse()
-            .unwrap(),
-        )
-        .from_env_lossy();
+    fn env_filter(args: &Args) -> EnvFilter {
+        EnvFilter::builder()
+            .with_default_directive(
+                match args.verbose {
+                    0 => "reliquary_archiver=info",
+                    1 => "info",
+                    2 => "debug",
+                    _ => "trace",
+                }
+                .parse()
+                .unwrap(),
+            )
+            .from_env_lossy()
+    }
 
-    let stdout_log = tracing_subscriber::fmt::layer().with_ansi(false).with_filter(env_filter);
+    let stdout_log = tracing_subscriber::fmt::layer().with_ansi(false).with_filter(env_filter(args));
+
+    let vec_layer = tracing_subscriber::fmt::layer()
+        .with_ansi(false)
+        .with_writer(|| VecWriter)
+        .with_filter(env_filter(args));
 
     let subscriber = Registry::default().with(stdout_log);
 
@@ -321,6 +346,7 @@ fn tracing_init(args: &Args) {
     };
 
     let subscriber = subscriber.with(file_log);
+    let subscriber = subscriber.with(vec_layer);
 
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
@@ -369,7 +395,7 @@ where
 
 #[instrument(skip_all)]
 #[cfg(feature = "pcap")]
-fn capture_from_pcap<E>(_args: &Args, mut exporter: E, mut sniffer: GameSniffer, pcap_path: PathBuf) -> Option<E::Export>
+pub fn capture_from_pcap<E>(mut exporter: E, mut sniffer: GameSniffer, pcap_path: PathBuf) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -389,7 +415,7 @@ where
 
 #[instrument(skip_all)]
 #[cfg(feature = "pktmon")]
-fn capture_from_etl<E>(_args: &Args, mut exporter: E, mut sniffer: GameSniffer, etl_path: PathBuf) -> Option<E::Export>
+fn capture_from_etl<E>(mut exporter: E, mut sniffer: GameSniffer, etl_path: PathBuf) -> Option<E::Export>
 where
     E: Exporter,
 {

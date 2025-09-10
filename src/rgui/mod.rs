@@ -1,4 +1,7 @@
+use std::cell::RefCell;
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
@@ -7,8 +10,11 @@ use futures::channel::oneshot;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use raxis::gfx::color::Oklch;
-use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, StrokeLineCap, StrokeLineJoin};
+use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, ScrollConfig, StrokeLineCap, StrokeLineJoin};
+use raxis::runtime::font_manager::FontIdentifier;
+use raxis::runtime::scroll::ScrollPosition;
 use raxis::svg_path;
+use raxis::util::str::StableString;
 use raxis::util::unique::combine_id;
 use raxis::widgets::rule::{horizontal_rule, Rule};
 use raxis::widgets::svg::Svg;
@@ -38,6 +44,7 @@ use crate::rgui::components::file_download::{self, download_view};
 use crate::scopefns::Also;
 use crate::websocket::start_websocket_server;
 use crate::worker::{self, archiver_worker};
+use crate::LOG_BUFFER;
 
 mod components;
 
@@ -54,6 +61,8 @@ pub const BORDER_RADIUS: f32 = 8.0;
 
 // Color constants
 const CARD_BACKGROUND: Color = Color::from_oklch(Oklch::deg(0.17, 0.006, 285.885, 0.6));
+const SCROLLBAR_THUMB_COLOR: Color = Color::from_oklch(Oklch::deg(0.47, 0.006, 285.885, 0.6));
+const SCROLLBAR_TRACK_COLOR: Color = Color::from_oklch(Oklch::deg(0.47, 0.006, 285.885, 0.2));
 
 const TEXT_MUTED: Color = Color {
     r: 1.0,
@@ -276,6 +285,7 @@ impl WaitingScreen {
                 .as_element()
                 .with_padding(BoxAmount::horizontal(PAD_LG)),
             upload_bar,
+            log_view(hook),
         ]
         .with_child_gap(SPACE_SM)
         .with_horizontal_alignment(HorizontalAlignment::Center)
@@ -452,14 +462,25 @@ impl<Message: Send + 'static> ScreenAction<Message> {
                 }
             }
             #[cfg(feature = "pcap")]
-            Self::ProcessCapture(path) => {
-                if let Some(sender) = state.worker_sender.as_ref() {
-                    let mut sender = sender.clone();
-                    Task::future(async move { sender.send(worker::WorkerCommand::ProcessRecorded(path)).await }).discard()
-                } else {
-                    Task::none()
-                }
-            }
+            Self::ProcessCapture(path) => Task::future(async move {
+                use reliquary::network::GameSniffer;
+                use reliquary_archiver::export::{
+                    database::{get_database, Database},
+                    Exporter,
+                };
+
+                use crate::capture_from_pcap;
+
+                tokio::task::spawn_blocking(move || {
+                    let sniffer = GameSniffer::new().set_initial_keys(get_database().keys.clone());
+                    let exporter = OptimizerExporter::new();
+
+                    capture_from_pcap(exporter, sniffer, path)
+                })
+                .await
+                .expect("Failed to process pcap")
+            })
+            .and_then(|e| Task::done(RootMessage::NewExport(e))),
         }
     }
 }
@@ -501,6 +522,159 @@ fn discord_button() -> Element<RootMessage> {
                 .as_element(w_id!()),
         )
         .with_padding(PAD_MD)
+}
+
+fn short_size(size: usize) -> String {
+    let size_f = size as f64;
+    if size < 1024 {
+        format!("{size} B")
+    } else if size < 1024 * 1024 {
+        format!("{:.2} KB", size_f / 1024.0)
+    } else {
+        format!("{:.2} MB", size_f / 1024.0 / 1024.0)
+    }
+}
+
+fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+    let container_id = w_id!();
+
+    let mut state = hook.instance(container_id);
+    let max_content_width = state.use_hook(|| Rc::new(RefCell::new(0.0f32))).clone();
+    let max_line_length = state.use_hook(|| Rc::new(RefCell::new(0usize))).clone();
+    let show_more = state.use_hook(|| Rc::new(RefCell::new(HashSet::<usize>::new()))).clone();
+
+    let lines = LOG_BUFFER.lock().unwrap();
+
+    let total_items = lines.len();
+    let line_height_no_gap = 10.0;
+    let gap = 2.0;
+    let padding = BoxAmount::new(8.0, 16.0, 16.0, 8.0);
+    let buffer_items_per_side = 2usize;
+
+    let truncate_threshold = 3000;
+
+    let line_height = line_height_no_gap + gap;
+
+    let container_dims = hook.scroll_state_manager.get_container_dimensions(container_id);
+
+    let content_dims = hook.scroll_state_manager.get_previous_content_dimensions(container_id);
+
+    let mut max_content_width = max_content_width.borrow_mut();
+    *max_content_width = max_content_width.max(content_dims.0);
+
+    let visible_items = (container_dims.1 / line_height).ceil() as usize + buffer_items_per_side * 2;
+    if container_dims.1 == 0.0 {
+        // Need to run layout to get container dimensions
+        hook.invalidate_layout();
+    }
+
+    let ScrollPosition { x: _scroll_x, y: scroll_y } = hook.scroll_state_manager.get_scroll_position(container_id);
+
+    let pre_scroll_items = (((scroll_y + gap - padding.top) / line_height).floor() as usize).saturating_sub(buffer_items_per_side);
+    let post_scroll_items = total_items.saturating_sub(pre_scroll_items).saturating_sub(visible_items).max(0);
+
+    Element {
+        id: Some(container_id),
+        direction: Direction::TopToBottom,
+        width: Sizing::grow(),
+        height: Sizing::Fit { min: 0.0, max: 300.0 },
+        scroll: Some(ScrollConfig {
+            horizontal: Some(true),
+            vertical: Some(true),
+            sticky_bottom: Some(true),
+            scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
+            scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
+            ..Default::default()
+        }),
+        background_color: Some(CARD_BACKGROUND),
+        border: Some(Border {
+            width: 1.0,
+            color: BORDER_COLOR, //Color::from(0x000000FF),
+            ..Default::default()
+        }),
+        child_gap: gap,
+        padding,
+        children: {
+            // DWrite runs into precision issues with really long text (it only uses f32)
+            // So we have to calculate the width manually with a f64
+            // Obviously won't work with special glyphs but what are you gonna do? /shrug
+            const MONO_CHAR_WIDTH: f64 = 6.02411;
+
+            let mut max_line_length = max_line_length.borrow_mut();
+
+            let mut text_children = (pre_scroll_items..(pre_scroll_items + visible_items).min(total_items))
+                .map(|i| {
+                    if lines[i].len() > truncate_threshold && !show_more.borrow().contains(&i) {
+                        *max_line_length = max_line_length.max(truncate_threshold);
+
+                        Element {
+                            id: Some(combine_id(w_id!(), i % visible_items)),
+                            height: Sizing::fixed(line_height_no_gap),
+                            children: vec![
+                                Text::new(lines[i][0..truncate_threshold].to_string())
+                                    .with_word_wrap(false)
+                                    .with_font_family(FontIdentifier::System("Lucida Console".to_string()))
+                                    .with_assisted_width((MONO_CHAR_WIDTH * truncate_threshold as f64) as f32)
+                                    .with_font_size(10.0)
+                                    .as_element()
+                                    .with_id(combine_id(w_id!(), i % visible_items))
+                                    .with_height(Sizing::fixed(line_height_no_gap)),
+                                Button::new()
+                                    .with_click_handler({
+                                        let show_more = show_more.clone();
+                                        move |_, _| {
+                                            show_more.borrow_mut().insert(i);
+                                        }
+                                    })
+                                    .as_element(
+                                        combine_id(w_id!(), i % visible_items),
+                                        Text::new(format!("Show more ({})", short_size(lines[i].len()))).with_font_size(8.0),
+                                    ),
+                            ],
+
+                            ..Default::default()
+                        }
+                    } else {
+                        *max_line_length = max_line_length.max(lines[i].len());
+
+                        Text::new(lines[i].to_string())
+                            .with_word_wrap(false)
+                            .with_font_family(FontIdentifier::System("Lucida Console".to_string()))
+                            .with_font_size(10.0)
+                            .with_assisted_width((MONO_CHAR_WIDTH * lines[i].len() as f64) as f32)
+                            .as_element()
+                            .with_id(combine_id(w_id!(), i % visible_items))
+                            .with_height(Sizing::fixed(line_height_no_gap))
+                    }
+                })
+                .collect();
+
+            let keep_width = ((*max_line_length as f64 * MONO_CHAR_WIDTH) as f32).max(*max_content_width - padding.left - padding.right);
+
+            let mut children = vec![];
+            if pre_scroll_items > 0 {
+                children.push(Element {
+                    id: Some(w_id!()),
+                    width: Sizing::fixed(keep_width),
+                    height: Sizing::fixed(line_height * pre_scroll_items as f32 - gap),
+                    ..Default::default()
+                });
+            }
+
+            children.append(&mut text_children);
+
+            if post_scroll_items > 0 {
+                children.push(Element {
+                    id: Some(w_id!()),
+                    width: Sizing::fixed(keep_width),
+                    height: Sizing::fixed(line_height * post_scroll_items as f32 - gap),
+                    ..Default::default()
+                });
+            }
+            children
+        },
+        ..Default::default()
+    }
 }
 
 // Main view function
