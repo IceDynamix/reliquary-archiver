@@ -31,24 +31,24 @@ impl TooltipTheme {
     fn colors(&self) -> (Color, Color, Option<Color>) {
         match self {
             TooltipTheme::Warning => (
-                Color::from(0xFFF3CDFF),       // Light yellow background
-                Color::from(0x856404FF),       // Dark yellow text
-                Some(Color::from(0xF0AD4EFF)), // Warning border
+                Color::from(0x856404FF),       // Dark yellow background
+                Color::from(0xFFF3CDFF),       // Light yellow text
+                Some(Color::from(0xF0AD4E8F)), // Warning border
             ),
             TooltipTheme::Info => (
-                Color::from(0xD1ECF1FF),       // Light blue background
-                Color::from(0x0C5460FF),       // Dark blue text
-                Some(Color::from(0x17A2B8FF)), // Info border
+                Color::from(0x0C5460FF),       // Dark blue background
+                Color::from(0xD1ECF1FF),       // Light blue text
+                Some(Color::from(0x17A2B88F)), // Info border
             ),
             TooltipTheme::Error => (
-                Color::from(0xF8D7DAFF),       // Light red background
-                Color::from(0x721C24FF),       // Dark red text
-                Some(Color::from(0xDC3545FF)), // Error border
+                Color::from(0x721C24FF),       // Dark red background
+                Color::from(0xF8D7DAFF),       // Light red text
+                Some(Color::from(0xDC35458F)), // Error border
             ),
             TooltipTheme::Success => (
-                Color::from(0xD4EDDDFF),       // Light green background
-                Color::from(0x155724FF),       // Dark green text
-                Some(Color::from(0x28A745FF)), // Success border
+                Color::from(0x155724FF),       // Dark green background
+                Color::from(0xD4EDDDFF),       // Light green text
+                Some(Color::from(0x28A7458F)), // Success border
             ),
             TooltipTheme::Custom {
                 background_color,

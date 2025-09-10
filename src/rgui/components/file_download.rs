@@ -106,7 +106,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     let download_button = warning_tooltip(
         download_button,
         "Export is out of date. Please refresh.".to_string(),
-        true, // out_of_date,
+        out_of_date,
         hook,
     );
 
