@@ -6,7 +6,8 @@ use chrono::Local;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
-use raxis::layout::model::{Color, DropShadow, StrokeLineCap, StrokeLineJoin};
+use raxis::gfx::color::Oklch;
+use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, StrokeLineCap, StrokeLineJoin};
 use raxis::svg_path;
 use raxis::util::unique::combine_id;
 use raxis::widgets::rule::{horizontal_rule, Rule};
@@ -52,38 +53,39 @@ pub const SPACE_LG: f32 = 16.0;
 pub const BORDER_RADIUS: f32 = 8.0;
 
 // Color constants
-const BACKGROUND_LIGHT: u32 = 0xF5F5F5FF;
-const BACKGROUND_STRONG: u32 = 0xE5E5E5FF;
+const CARD_BACKGROUND: Color = Color::from_oklch(Oklch::deg(0.17, 0.006, 285.885, 0.6));
+
 const TEXT_MUTED: Color = Color {
-    r: 0.6,
-    g: 0.6,
-    b: 0.6,
-    a: 1.0,
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 0.6,
+};
+const TEXT_COLOR: Color = Color {
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 0.9,
 };
 const BORDER_COLOR: Color = Color {
-    r: 0.0,
-    g: 0.0,
-    b: 0.0,
-    a: 0.3,
+    r: 1.0,
+    g: 1.0,
+    b: 1.0,
+    a: 0.1,
 };
 const DANGER_COLOR: Color = Color {
     r: 0.9,
     g: 0.2,
     b: 0.2,
-    a: 1.0,
+    a: 0.6,
 };
 const SUCCESS_COLOR: Color = Color {
     r: 0.2,
     g: 0.8,
     b: 0.2,
-    a: 1.0,
+    a: 0.6,
 };
-const PRIMARY_COLOR: Color = Color {
-    r: 0.2,
-    g: 0.6,
-    b: 1.0,
-    a: 1.0,
-};
+const PRIMARY_COLOR: Color = Color::from_oklch(Oklch::deg(0.541, 0.281, 293.009, 0.6));
 
 const SHADOW_XS: DropShadow = DropShadow {
     offset_y: 1.0,
@@ -293,7 +295,7 @@ fn stat_line(label: &'static str, value: usize) -> Element<RootMessage> {
     row![
         Text::new(label).with_font_size(16.0),
         Rule::horizontal()
-            .with_custom_dashes(vec![5.0, 5.0], 0.0)
+            .with_custom_dashes(&[5.0, 5.0], 0.0)
             .with_color(BORDER_COLOR)
             .as_element(combine_id(w_id!(), label)),
         Text::new(value.to_string()).with_font_size(16.0)
@@ -345,6 +347,7 @@ impl ActiveScreen {
         let refresh_button = Button::new()
             .with_bg_color(SUCCESS_COLOR)
             .with_border_radius(BORDER_RADIUS)
+            .with_drop_shadow(SHADOW_SM)
             .with_click_handler(move |_, shell| {
                 shell.publish(RootMessage::RefreshExport);
             })
@@ -358,7 +361,7 @@ impl ActiveScreen {
             )
             .with_snap(true);
 
-        let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook);
+        let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook).with_drop_shadow(SHADOW_SM);
 
         let action_bar = row![refresh_button, download_section]
             .with_child_gap(SPACE_LG)
@@ -581,12 +584,31 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     .align_y(VerticalAlignment::Bottom)
     .with_padding(PAD_MD);
 
-    column![header, center(content), footer]
+    let modal = Element {
+        // background_color: Some(Color::from(0x00000033)),
+        floating: Some(FloatingConfig {
+            anchor: Some(Alignment2D {
+                x: Some(HorizontalAlignment::Center),
+                y: Some(VerticalAlignment::Center),
+            }),
+            align: Some(Alignment2D {
+                x: Some(HorizontalAlignment::Center),
+                y: Some(VerticalAlignment::Center),
+            }),
+            ..Default::default()
+        }),
+        width: Sizing::percent(100.0),
+        height: Sizing::percent(100.0),
+        ..Default::default()
+    };
+
+    column![header, center(content), footer, modal]
+        .with_color(TEXT_COLOR)
         .with_width(Sizing::grow())
         .with_height(Sizing::grow())
         .with_padding(PAD_MD)
         .with_child_gap(SPACE_MD)
-        .with_background_color(Color::from_hex(0xF1F5EDFF))
+    // .with_background_color(Color::from_hex(0xF1F5EDFF))
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {

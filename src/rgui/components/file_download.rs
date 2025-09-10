@@ -20,8 +20,8 @@ use raxis::{
 use crate::{
     rgui::{
         components::tooltip::{error_tooltip, info_tooltip, success_tooltip, warning_tooltip},
-        FileContainer, FileExtensions, BACKGROUND_LIGHT, BACKGROUND_STRONG, BORDER_COLOR, BORDER_RADIUS, PAD_MD, PAD_SM, PRIMARY_COLOR,
-        SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_MUTED,
+        FileContainer, FileExtensions, BORDER_COLOR, BORDER_RADIUS, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_MD, SPACE_SM,
+        SUCCESS_COLOR, TEXT_MUTED,
     },
     scopefns::Also,
 };
@@ -142,7 +142,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     Element {
         id: Some(w_id!()),
         width: Sizing::fixed(400.0),
-        background_color: Some(Color::from(BACKGROUND_LIGHT)),
+        background_color: Some(Color::from(CARD_BACKGROUND)),
         border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
         border: Some(Border {
             color: BORDER_COLOR,
