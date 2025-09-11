@@ -47,6 +47,7 @@ rfd = "0.15.3"
 # async-trait = "0.1.88"
 tracing-log = "0.2.0"
 raxis = { path = "../raxis", features = ["tokio"] }
+async-stream = "0.3.6"
 
 # [package.metadata.patch]
 # crates = ["winit"]

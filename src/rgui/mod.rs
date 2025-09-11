@@ -1,10 +1,11 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
+use async_stream::stream;
 use chrono::Local;
 use futures::channel::oneshot;
 use futures::lock::Mutex;
@@ -13,11 +14,13 @@ use raxis::gfx::color::Oklch;
 use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, ScrollConfig, StrokeLineCap, StrokeLineJoin};
 use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
+use raxis::runtime::Backdrop;
 use raxis::svg_path;
 use raxis::util::str::StableString;
 use raxis::util::unique::combine_id;
 use raxis::widgets::rule::{horizontal_rule, Rule};
 use raxis::widgets::svg::Svg;
+use raxis::widgets::Widget;
 use raxis::{
     column,
     layout::{
@@ -44,7 +47,7 @@ use crate::rgui::components::file_download::{self, download_view};
 use crate::scopefns::Also;
 use crate::websocket::start_websocket_server;
 use crate::worker::{self, archiver_worker};
-use crate::LOG_BUFFER;
+use crate::{LOG_BUFFER, LOG_NOTIFY};
 
 mod components;
 
@@ -250,6 +253,7 @@ impl WaitingScreen {
                     .with_font_size(16.0)
                     .with_paragraph_alignment(ParagraphAlignment::Center)
                     .with_color(Color::WHITE)
+                    .with_word_wrap(false)
                     .as_element()
                     .with_padding(BoxAmount::new(PAD_MD, PAD_LG, PAD_MD, PAD_LG))
                     .with_height(Sizing::grow()),
@@ -285,7 +289,6 @@ impl WaitingScreen {
                 .as_element()
                 .with_padding(BoxAmount::horizontal(PAD_LG)),
             upload_bar,
-            log_view(hook),
         ]
         .with_child_gap(SPACE_SM)
         .with_horizontal_alignment(HorizontalAlignment::Center)
@@ -423,6 +426,7 @@ pub enum RootMessage {
     ActiveScreen(ActiveMessage),
     WaitingScreen(WaitingMessage),
     RefreshExport,
+    LogUpdate,
 }
 
 #[derive(Debug, Clone)]
@@ -500,7 +504,7 @@ fn github_button() -> Element<RootMessage> {
             Svg::new(include_str!("../../assets/github.svg"))
                 .with_size(32.0, 32.0)
                 .with_recolor(Color::WHITE)
-                .as_element(w_id!()), // Text::new("GitHub").with_font_size(14.0).with_color(Color::WHITE)
+                .as_element(w_id!()),
         )
         .with_padding(PAD_MD)
 }
@@ -535,17 +539,66 @@ fn short_size(size: usize) -> String {
     }
 }
 
+#[derive(Debug)]
+struct InvalidateOnBoundsChanged;
+struct InvalidateOnBoundsChangedState {
+    prev_bounds: raxis::widgets::Bounds,
+}
+impl<Message> Widget<Message> for InvalidateOnBoundsChanged {
+    fn state(&self, arenas: &raxis::layout::UIArenas, device_resources: &raxis::runtime::DeviceResources) -> raxis::widgets::State {
+        Some(Box::new(InvalidateOnBoundsChangedState {
+            prev_bounds: raxis::widgets::Bounds::default(),
+        }))
+    }
+
+    fn paint(
+        &mut self,
+        arenas: &raxis::layout::UIArenas,
+        instance: &mut raxis::widgets::Instance,
+        shell: &raxis::Shell<Message>,
+        recorder: &mut raxis::gfx::command_recorder::CommandRecorder,
+        style: raxis::layout::model::ElementStyle,
+        bounds: raxis::widgets::Bounds,
+        now: Instant,
+    ) {
+        // Nothing to do
+    }
+
+    fn update(
+        &mut self,
+        arenas: &mut raxis::layout::UIArenas,
+        instance: &mut raxis::widgets::Instance,
+        hwnd: windows::Win32::Foundation::HWND,
+        shell: &mut raxis::Shell<Message>,
+        event: &raxis::widgets::Event,
+        bounds: raxis::widgets::Bounds,
+    ) {
+        if matches!(event, raxis::widgets::Event::Redraw { .. }) {
+            let state = raxis::with_state!(mut instance as InvalidateOnBoundsChangedState);
+            if state.prev_bounds != bounds {
+                shell.request_redraw(hwnd, raxis::RedrawRequest::Immediate);
+                state.prev_bounds = bounds;
+            }
+        }
+    }
+}
+
 fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let container_id = w_id!();
 
     let mut state = hook.instance(container_id);
-    let max_content_width = state.use_hook(|| Rc::new(RefCell::new(0.0f32))).clone();
-    let max_line_length = state.use_hook(|| Rc::new(RefCell::new(0usize))).clone();
     let show_more = state.use_hook(|| Rc::new(RefCell::new(HashSet::<usize>::new()))).clone();
+    let max_content_width = state.use_hook(|| Rc::new(Cell::new(0.0f32))).clone();
+    let max_line_length = state.use_hook(|| Rc::new(Cell::new(0usize))).clone();
+    let prev_item_count = state.use_hook(|| Rc::new(Cell::new(0usize))).clone();
 
     let lines = LOG_BUFFER.lock().unwrap();
 
     let total_items = lines.len();
+    if total_items != prev_item_count.replace(total_items) {
+        hook.invalidate_layout();
+    }
+
     let line_height_no_gap = 10.0;
     let gap = 2.0;
     let padding = BoxAmount::new(8.0, 16.0, 16.0, 8.0);
@@ -559,14 +612,9 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
 
     let content_dims = hook.scroll_state_manager.get_previous_content_dimensions(container_id);
 
-    let mut max_content_width = max_content_width.borrow_mut();
-    *max_content_width = max_content_width.max(content_dims.0);
+    max_content_width.replace(max_content_width.get().max(content_dims.0));
 
     let visible_items = (container_dims.1 / line_height).ceil() as usize + buffer_items_per_side * 2;
-    if container_dims.1 == 0.0 {
-        // Need to run layout to get container dimensions
-        hook.invalidate_layout();
-    }
 
     let ScrollPosition { x: _scroll_x, y: scroll_y } = hook.scroll_state_manager.get_scroll_position(container_id);
 
@@ -577,13 +625,14 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         id: Some(container_id),
         direction: Direction::TopToBottom,
         width: Sizing::grow(),
-        height: Sizing::Fit { min: 0.0, max: 300.0 },
+        height: Sizing::fixed(150.0),
         scroll: Some(ScrollConfig {
             horizontal: Some(true),
             vertical: Some(true),
             sticky_bottom: Some(true),
             scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
             scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
+            scrollbar_size: Some(12.0),
             ..Default::default()
         }),
         background_color: Some(CARD_BACKGROUND),
@@ -594,18 +643,19 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         }),
         child_gap: gap,
         padding,
+        content: widget(InvalidateOnBoundsChanged),
         children: {
             // DWrite runs into precision issues with really long text (it only uses f32)
             // So we have to calculate the width manually with a f64
             // Obviously won't work with special glyphs but what are you gonna do? /shrug
             const MONO_CHAR_WIDTH: f64 = 6.02411;
 
-            let mut max_line_length = max_line_length.borrow_mut();
+            // let mut max_line_length = max_line_length.borrow_mut();
 
             let mut text_children = (pre_scroll_items..(pre_scroll_items + visible_items).min(total_items))
                 .map(|i| {
                     if lines[i].len() > truncate_threshold && !show_more.borrow().contains(&i) {
-                        *max_line_length = max_line_length.max(truncate_threshold);
+                        max_line_length.replace(max_line_length.get().max(truncate_threshold));
 
                         Element {
                             id: Some(combine_id(w_id!(), i % visible_items)),
@@ -635,7 +685,7 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                             ..Default::default()
                         }
                     } else {
-                        *max_line_length = max_line_length.max(lines[i].len());
+                        max_line_length.replace(max_line_length.get().max(lines[i].len()));
 
                         Text::new(lines[i].to_string())
                             .with_word_wrap(false)
@@ -649,7 +699,8 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                 })
                 .collect();
 
-            let keep_width = ((*max_line_length as f64 * MONO_CHAR_WIDTH) as f32).max(*max_content_width - padding.left - padding.right);
+            let keep_width =
+                ((max_line_length.get() as f64 * MONO_CHAR_WIDTH) as f32).max(max_content_width.get() - padding.left - padding.right);
 
             let mut children = vec![];
             if pre_scroll_items > 0 {
@@ -685,19 +736,13 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         .with_color(TEXT_MUTED);
 
     let social_buttons = row![github_button(), discord_button()]
-        .with_child_gap(SPACE_SM)
+        .with_child_gap(SPACE_MD)
         .with_vertical_alignment(VerticalAlignment::Center);
 
-    let header = row![
-        column![social_buttons, help_text]
-            .with_child_gap(SPACE_SM)
-            .with_padding(BoxAmount::all(PAD_SM)),
-        Element::default().with_width(Sizing::grow()), // spacer
-    ]
-    .with_width(Sizing::grow())
-    .with_vertical_alignment(VerticalAlignment::Center)
-    .with_height(Sizing::fixed(100.0))
-    .with_padding(BoxAmount::all(PAD_MD));
+    let header = column![social_buttons, help_text]
+        .with_child_gap(SPACE_SM)
+        .with_padding(BoxAmount::all(PAD_LG).apply(|p| p.bottom = PAD_SM))
+        .with_height(Sizing::Grow { min: 0.0, max: 182.0 }); // Size of footer + log view; this ensures the main content is as centered as possible
 
     let ws_status_text = match &state.store.connection_stats.ws_status {
         WebSocketStatus::Pending => "starting server...".to_string(),
@@ -747,16 +792,20 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
             DANGER_COLOR
         });
 
-    let footer = row![
-        ws_status,
-        Element::default().with_width(Sizing::grow()), // spacer
-        connection_status,
+    let footer = column![
+        log_view(hook),
+        row![
+            ws_status,
+            Element::default().with_width(Sizing::grow()), // spacer
+            connection_status,
+        ]
+        .with_width(Sizing::grow())
+        .with_vertical_alignment(VerticalAlignment::Bottom)
+        .align_y(VerticalAlignment::Bottom)
+        .with_padding(PAD_MD)
     ]
     .with_width(Sizing::grow())
-    .with_height(Sizing::fixed(100.0))
-    .with_vertical_alignment(VerticalAlignment::Bottom)
-    .align_y(VerticalAlignment::Bottom)
-    .with_padding(PAD_MD);
+    .with_height(Sizing::fit());
 
     let modal = Element {
         // background_color: Some(Color::from(0x00000033)),
@@ -777,11 +826,16 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     };
 
     column![header, center(content), footer, modal]
+        .with_id(w_id!())
         .with_color(TEXT_COLOR)
         .with_width(Sizing::grow())
         .with_height(Sizing::grow())
         .with_padding(PAD_MD)
         .with_child_gap(SPACE_MD)
+        .with_scroll(ScrollConfig {
+            vertical: Some(true),
+            ..Default::default()
+        })
     // .with_background_color(Color::from_hex(0xF1F5EDFF))
 }
 
@@ -797,6 +851,8 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
     }
 
     match message {
+        RootMessage::LogUpdate => None, // Just update the view
+
         RootMessage::NewExport(export) => {
             state.store.json_export = Some(FileContainer {
                 name: Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string(),
@@ -945,7 +1001,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let state = RootState::default();
     let exporter = state.exporter.clone();
 
-    raxis::runtime::run_event_loop(view, update, state, move |_state| {
+    raxis::Application::new(state, view, update, move |_state| {
         Some(Task::batch(vec![
             Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
             Task::future(start_websocket_server(53313, exporter.clone()))
@@ -955,8 +1011,19 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .chain(Task::stream(client_count_stream).map(move |client_count| WebSocketStatus::Running { port, client_count })),
                 })
                 .map(|e| RootMessage::WSStatus(e)),
+            Task::stream(stream! {
+                loop {
+                    LOG_NOTIFY.notified().await;
+                    yield RootMessage::LogUpdate;
+                }
+            }),
         ]))
-    })?;
+    })
+    .with_title("Reliquary Archiver")
+    .replace_titlebar()
+    .with_backdrop(Backdrop::MicaAlt)
+    .with_window_size(950, 750)
+    .run()?;
 
     Ok(())
 }

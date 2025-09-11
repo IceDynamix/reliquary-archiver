@@ -1,4 +1,4 @@
-// #![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 #![allow(unused)]
 
 use std::collections::HashSet;
@@ -294,11 +294,14 @@ fn update(auth_token: Option<&str>, no_confirm: bool) -> Result<(), Box<dyn std:
 struct VecWriter;
 
 pub static LOG_BUFFER: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+pub static LOG_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(|| tokio::sync::Notify::new());
+
 impl std::io::Write for VecWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let str = String::from_utf8_lossy(buf);
         let lines = str.lines().map(|s| s.to_string());
         LOG_BUFFER.lock().unwrap().extend(lines);
+        LOG_NOTIFY.notify_one();
         Ok(buf.len())
     }
 
