@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
+use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
@@ -18,6 +19,7 @@ use raxis::runtime::Backdrop;
 use raxis::svg_path;
 use raxis::util::str::StableString;
 use raxis::util::unique::combine_id;
+use raxis::widgets::mouse_area::{MouseArea, MouseAreaEvent};
 use raxis::widgets::rule::{horizontal_rule, Rule};
 use raxis::widgets::svg::Svg;
 use raxis::widgets::Widget;
@@ -98,6 +100,8 @@ const SUCCESS_COLOR: Color = Color {
     a: 0.6,
 };
 const PRIMARY_COLOR: Color = Color::from_oklch(Oklch::deg(0.541, 0.281, 293.009, 0.6));
+const SELECTION_COLOR: Color = Color::from_oklch(Oklch::deg(0.541, 0.281, 293.009, 0.3));
+const SELECTION_HOVER_COLOR: Color = Color::from_oklch(Oklch::deg(0.541, 0.281, 293.009, 0.4));
 
 const SHADOW_XS: DropShadow = DropShadow {
     offset_y: 1.0,
@@ -426,7 +430,7 @@ pub enum RootMessage {
     ActiveScreen(ActiveMessage),
     WaitingScreen(WaitingMessage),
     RefreshExport,
-    LogUpdate,
+    TriggerRender,
 }
 
 #[derive(Debug, Clone)]
@@ -592,6 +596,11 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let max_line_length = state.use_hook(|| Rc::new(Cell::new(0usize))).clone();
     let prev_item_count = state.use_hook(|| Rc::new(Cell::new(0usize))).clone();
 
+    // Selection state
+    let selection_state = state.use_hook(|| Rc::new(RefCell::new(Option::<Range<usize>>::None))).clone();
+    let drag_start = state.use_hook(|| Rc::new(Cell::new(Option::<usize>::None))).clone();
+    let is_dragging = state.use_hook(|| Rc::new(Cell::new(false))).clone();
+
     let lines = LOG_BUFFER.lock().unwrap();
 
     let total_items = lines.len();
@@ -599,8 +608,8 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         hook.invalidate_layout();
     }
 
-    let line_height_no_gap = 10.0;
-    let gap = 2.0;
+    let line_height_no_gap = 12.0;
+    let gap = 0.0;
     let padding = BoxAmount::new(8.0, 16.0, 16.0, 8.0);
     let buffer_items_per_side = 2usize;
 
@@ -654,21 +663,31 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
 
             let mut text_children = (pre_scroll_items..(pre_scroll_items + visible_items).min(total_items))
                 .map(|i| {
-                    if lines[i].len() > truncate_threshold && !show_more.borrow().contains(&i) {
+                    // Determine if this line is selected
+                    let is_selected = if let Some(selection_range) = selection_state.borrow().as_ref() {
+                        selection_range.contains(&i)
+                    } else {
+                        false
+                    };
+
+                    let line_element = if lines[i].len() > truncate_threshold && !show_more.borrow().contains(&i) {
                         max_line_length.replace(max_line_length.get().max(truncate_threshold));
 
                         Element {
                             id: Some(combine_id(w_id!(), i % visible_items)),
                             height: Sizing::fixed(line_height_no_gap),
+                            background_color: if is_selected { Some(SELECTION_COLOR) } else { None },
                             children: vec![
                                 Text::new(lines[i][0..truncate_threshold].to_string())
                                     .with_word_wrap(false)
                                     .with_font_family(FontIdentifier::System("Lucida Console".to_string()))
                                     .with_assisted_width((MONO_CHAR_WIDTH * truncate_threshold as f64) as f32)
                                     .with_font_size(10.0)
+                                    .with_paragraph_alignment(ParagraphAlignment::Center)
                                     .as_element()
                                     .with_id(combine_id(w_id!(), i % visible_items))
-                                    .with_height(Sizing::fixed(line_height_no_gap)),
+                                    .with_height(Sizing::fixed(line_height_no_gap))
+                                    .with_background_color(if is_selected { SELECTION_COLOR } else { Color::TRANSPARENT }),
                                 Button::new()
                                     .with_click_handler({
                                         let show_more = show_more.clone();
@@ -692,10 +711,80 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                             .with_font_family(FontIdentifier::System("Lucida Console".to_string()))
                             .with_font_size(10.0)
                             .with_assisted_width((MONO_CHAR_WIDTH * lines[i].len() as f64) as f32)
+                            .with_paragraph_alignment(ParagraphAlignment::Center)
                             .as_element()
                             .with_id(combine_id(w_id!(), i % visible_items))
                             .with_height(Sizing::fixed(line_height_no_gap))
-                    }
+                            .with_background_color(if is_selected { SELECTION_COLOR } else { Color::TRANSPARENT })
+                    };
+
+                    // Wrap the line with MouseArea for selection
+                    MouseArea::new({
+                        let selection_state = selection_state.clone();
+                        let drag_start = drag_start.clone();
+                        let is_dragging = is_dragging.clone();
+                        let line_index = i;
+
+                        move |event, shell| {
+                            match event {
+                                MouseAreaEvent::MouseButtonDown { modifiers, .. } => {
+                                    if modifiers.ctrl {
+                                        // Toggle selection for this line
+                                        let mut selection = selection_state.borrow_mut();
+                                        match selection.as_mut() {
+                                            Some(range) => {
+                                                if range.contains(&line_index) {
+                                                    // Remove from selection - this is complex with ranges
+                                                    // For now, just clear selection if clicking on selected line
+                                                    *selection = None;
+                                                } else {
+                                                    // Expand selection to include this line
+                                                    let new_start = range.start.min(line_index);
+                                                    let new_end = range.end.max(line_index + 1);
+                                                    *selection = Some(new_start..new_end);
+                                                }
+                                            }
+                                            None => {
+                                                *selection = Some(line_index..line_index + 1);
+                                            }
+                                        }
+                                    } else if modifiers.shift {
+                                        // Extend selection from existing start to this line
+                                        let mut selection = selection_state.borrow_mut();
+                                        if let Some(existing_range) = selection.as_ref() {
+                                            let start = existing_range.start.min(line_index);
+                                            let end = existing_range.end.max(line_index + 1);
+                                            *selection = Some(start..end);
+                                        } else {
+                                            *selection = Some(line_index..line_index + 1);
+                                        }
+                                    } else {
+                                        // Start new selection
+                                        *selection_state.borrow_mut() = Some(line_index..line_index + 1);
+                                        drag_start.set(Some(line_index));
+                                        is_dragging.set(true);
+                                    }
+                                }
+                                MouseAreaEvent::MouseMove { .. } => {
+                                    if is_dragging.get() {
+                                        if let Some(start_line) = drag_start.get() {
+                                            let start = start_line.min(line_index);
+                                            let end = start_line.max(line_index) + 1;
+                                            *selection_state.borrow_mut() = Some(start..end);
+                                        }
+                                    }
+                                }
+                                MouseAreaEvent::MouseButtonUp { .. } => {
+                                    is_dragging.set(false);
+                                    drag_start.set(None);
+                                }
+                                _ => {}
+                            };
+
+                            Some(RootMessage::TriggerRender)
+                        }
+                    })
+                    .as_element(combine_id(container_id, i % visible_items), line_element)
                 })
                 .collect();
 
@@ -841,7 +930,6 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
             scrollbar_size: Some(12.0),
             ..Default::default()
         })
-    // .with_background_color(Color::from_hex(0xF1F5EDFF))
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
@@ -856,7 +944,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
     }
 
     match message {
-        RootMessage::LogUpdate => None, // Just update the view
+        RootMessage::TriggerRender => None, // Just update the view
 
         RootMessage::NewExport(export) => {
             state.store.json_export = Some(FileContainer {
@@ -1019,7 +1107,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Task::stream(stream! {
                 loop {
                     LOG_NOTIFY.notified().await;
-                    yield RootMessage::LogUpdate;
+                    yield RootMessage::TriggerRender;
                 }
             }),
         ]))
