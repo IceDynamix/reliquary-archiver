@@ -834,6 +834,11 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         .with_child_gap(SPACE_MD)
         .with_scroll(ScrollConfig {
             vertical: Some(true),
+            // Safe area padding for the window controls
+            safe_area_padding: Some(BoxAmount::all(0.0).apply(|p| p.top = 30.0)),
+            scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
+            scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
+            scrollbar_size: Some(12.0),
             ..Default::default()
         })
     // .with_background_color(Color::from_hex(0xF1F5EDFF))
@@ -1022,7 +1027,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     .with_title("Reliquary Archiver")
     .replace_titlebar()
     .with_backdrop(Backdrop::MicaAlt)
-    .with_window_size(950, 750)
+    .with_window_size(960, 760)
     .run()?;
 
     Ok(())
