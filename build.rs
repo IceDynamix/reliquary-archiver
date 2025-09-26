@@ -4,8 +4,9 @@ use std::fs::File;
 use std::path::Path;
 
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap,
-    RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
+    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap,
+    MultiplePathAvatarConfigMap, RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap,
+    RelicSubAffixConfigMap,
 };
 use reliquary::resource::{ResourceMap, TextMapEntry};
 use ureq::serde::de::DeserializeOwned;
@@ -47,11 +48,15 @@ macro_rules! download_config {
 
 macro_rules! download_config_and_store_text_hashes {
     ($t:ty, $field:ident, $hashes:ident, $urls:tt) => {
-        download_config!($t, |value: &$t| {
-            for cfg in value.0.iter() {
-                $hashes.insert(cfg.$field);
-            }
-        }, $urls);
+        download_config!(
+            $t,
+            |value: &$t| {
+                for cfg in value.0.iter() {
+                    $hashes.insert(cfg.$field);
+                }
+            },
+            $urls
+        );
     };
 
     ($t:ty, $field:ident, $hashes:ident) => {
@@ -68,13 +73,11 @@ macro_rules! download_config_and_store_partial_text_hashes {
                 }
             }
         });
-    };    
+    };
 }
-
 
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
-    println!("cargo:rerun-if-changed=Cargo.lock");
 
     // the text map is really, REALLY large (>25MB), so we're optimizing by only
     // keeping the entries used from relevant config files where the strings are required
@@ -82,7 +85,7 @@ fn main() {
     let mut text_hashes: HashSet<TextMapEntry> = HashSet::new();
 
     download_config_and_store_text_hashes!(
-        AvatarConfigMap, 
+        AvatarConfigMap,
         AvatarName,
         text_hashes,
         [
@@ -142,7 +145,11 @@ fn resource_url_of(name: &str) -> String {
 }
 
 fn download_as_json<T: DeserializeOwned>(url: &str) -> T {
-    ureq::get(url).call().unwrap().into_json().expect(format!("Failed to read json from url: {}", url).as_str())
+    ureq::get(url)
+        .call()
+        .unwrap()
+        .into_json()
+        .expect(format!("Failed to read json from url: {}", url).as_str())
 }
 
 fn write_to_out<T: DeserializeOwned + Serialize>(value: T, file_name: &str) {
