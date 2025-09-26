@@ -210,7 +210,7 @@ fn main() {
         //             }
         //         };
         //     }
-
+        //     info!("exporting collected data");
         //     loop {
         //         match File::create(&output_file) {
         //             Ok(file) => {
