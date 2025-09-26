@@ -2,18 +2,18 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::export::database::Database;
 use crate::export::fribbels::models::*;
-use crate::export::{Exporter};
+use crate::export::Exporter;
 
-use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
-use reliquary::network::command::{command_id, GameCommand};
-use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
-use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
-use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
+use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
 use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
+use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
 use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
+use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
+use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
+use reliquary::network::command::{command_id, GameCommand};
 use tracing::{debug, info, instrument, trace, warn};
 
 #[cfg(feature = "stream")]
@@ -21,7 +21,7 @@ use tokio::sync::broadcast;
 
 pub struct OptimizerExporter {
     pub(super) database: Database,
-    
+
     // State fields
     pub(super) initialized: bool,
     pub(super) uid: Option<u32>,
@@ -44,7 +44,7 @@ impl OptimizerExporter {
     pub fn new(database: Database) -> OptimizerExporter {
         OptimizerExporter {
             database,
-            
+
             // Initialize state fields
             initialized: false,
             uid: None,
@@ -173,7 +173,7 @@ impl Exporter for OptimizerExporter {
                     Ok(cmd) => {
                         let event = self.handle_set_avatar_enhanced(cmd);
                         self.emit_event(event);
-                    },
+                    }
                     Err(error) => {
                         warn!(%error, "could not parse set avatar enhanced data command");
                     }
@@ -197,7 +197,7 @@ impl Exporter for OptimizerExporter {
                         if let Some(event) = self.handle_gacha(cmd) {
                             self.emit_event(event);
                         }
-                    },
+                    }
                     Err(error) => {
                         warn!(%error, "could not parse gacha data command");
                     }
@@ -212,7 +212,7 @@ impl Exporter for OptimizerExporter {
                         for event in events {
                             self.emit_event(event);
                         }
-                    },
+                    }
                     Err(error) => {
                         warn!(%error, "could not parse player sync data command");
                     }
@@ -246,8 +246,6 @@ impl Exporter for OptimizerExporter {
 
     #[instrument(skip_all)]
     fn export(&self) -> Option<Self::Export> {
-        info!("exporting collected data");
-
         if self.is_empty() {
             warn!("no data was recorded");
             return None;
@@ -278,7 +276,10 @@ impl Exporter for OptimizerExporter {
         }
 
         if !self.unresolved_multipath_characters.is_empty() {
-            warn!(num = self.unresolved_multipath_characters.len(), "multipath characters were not resolved");
+            warn!(
+                num = self.unresolved_multipath_characters.len(),
+                "multipath characters were not resolved"
+            );
         }
 
         let export = Export {
@@ -308,11 +309,14 @@ impl Exporter for OptimizerExporter {
     fn subscribe(&self) -> (Option<OptimizerEvent>, broadcast::Receiver<OptimizerEvent>) {
         (
             if self.is_initialized() {
-                Some(OptimizerEvent::InitialScan(self.export().expect("marked as initialized but data was not recorded")))
+                Some(OptimizerEvent::InitialScan(
+                    self.export()
+                        .expect("marked as initialized but data was not recorded"),
+                ))
             } else {
                 None
             },
-            self.event_channel.subscribe()
+            self.event_channel.subscribe(),
         )
     }
 }
