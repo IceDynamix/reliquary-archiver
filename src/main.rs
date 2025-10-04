@@ -3,12 +3,12 @@
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::panic;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
+use std::{io, panic};
 
 #[cfg(feature = "pcap")]
 use capture::PCAP_FILTER;
@@ -21,8 +21,11 @@ use reliquary::network::command::GameCommandError;
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
 use tokio::pin;
 use tracing::instrument::WithSubscriber;
+use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, instrument, warn};
-use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
+use tracing_subscriber::filter::Filtered;
+use tracing_subscriber::fmt::{MakeWriter, SubscriberBuilder};
+use tracing_subscriber::{prelude::*, reload, EnvFilter, Layer, Registry};
 
 #[cfg(windows)]
 use {self_update::cargo_crate_version, std::env, std::process::Command};
@@ -293,8 +296,17 @@ fn update(auth_token: Option<&str>, no_confirm: bool) -> Result<(), Box<dyn std:
 
 struct VecWriter;
 
+impl VecWriter {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
 pub static LOG_BUFFER: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
 pub static LOG_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(|| tokio::sync::Notify::new());
+
+type VecLayerHandle = Box<dyn Fn(LevelFilter) + Send>;
+pub static VEC_LAYER_HANDLE: LazyLock<Mutex<Option<VecLayerHandle>>> = LazyLock::new(|| Mutex::new(None));
 
 impl std::io::Write for VecWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -307,6 +319,40 @@ impl std::io::Write for VecWriter {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+struct DualWriter<A: io::Write, B: io::Write> {
+    m: Arc<Mutex<(A, B)>>,
+}
+
+impl<A: io::Write, B: io::Write> DualWriter<A, B> {
+    fn new(a: A, b: B) -> Self {
+        Self {
+            m: Arc::new(Mutex::new((a, b))),
+        }
+    }
+}
+
+impl<A: io::Write, B: io::Write> io::Write for DualWriter<A, B> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut m = self.m.lock().unwrap();
+        m.0.write(buf)?;
+        m.1.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut m = self.m.lock().unwrap();
+        m.0.flush()?;
+        m.1.flush()
+    }
+}
+
+impl<'a, A: io::Write, B: io::Write> MakeWriter<'a> for DualWriter<A, B> {
+    type Writer = DualWriter<A, B>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        DualWriter { m: self.m.clone() }
     }
 }
 
@@ -328,14 +374,45 @@ fn tracing_init(args: &Args) {
             .from_env_lossy()
     }
 
-    let stdout_log = tracing_subscriber::fmt::layer().with_ansi(false).with_filter(env_filter(args));
-
-    let vec_layer = tracing_subscriber::fmt::layer()
+    let subscriber = tracing_subscriber::fmt::fmt()
         .with_ansi(false)
-        .with_writer(|| VecWriter)
-        .with_filter(env_filter(args));
+        .with_env_filter(env_filter(args))
+        .with_writer(DualWriter::new(VecWriter::new(), io::stdout()))
+        .with_filter_reloading();
+    //layer().with_ansi(false).with_filter(env_filter(args));
 
-    let subscriber = Registry::default().with(stdout_log);
+    // Create the vec_layer with a reloadable filter
+    // let vec_filter = env_filter(args);
+    // Filtered<Layer<Registry, DefaultFields, Format, impl Fn() -> VecWriter>, Layer<EnvFilter, Registry>, Registry>
+
+    let handle = subscriber.reload_handle();
+    *VEC_LAYER_HANDLE.lock().unwrap() = Some(Box::new(move |l| {
+        handle.modify(|f| {
+            *f = EnvFilter::builder()
+                .parse(match l {
+                    LevelFilter::TRACE => "trace",
+                    LevelFilter::DEBUG => "debug",
+                    LevelFilter::INFO => "info",
+                    LevelFilter::WARN => "warn",
+                    LevelFilter::ERROR => "error",
+                    _ => "off",
+                })
+                .unwrap();
+        });
+    }));
+
+    // let (vec_filter, vec_reload_handle) = reload::Layer::new(vec_filter);
+    // let vec_layer = tracing_subscriber::fmt::layer()
+    //     .with_ansi(false)
+    //     .with_writer(VecWriter::new)
+    //     .with_filter(vec_filter);
+
+    // // Store the reload handle globally
+    // *VEC_LAYER_HANDLE.lock().unwrap() = Some(vec_reload_handle);
+
+    // let builder = SubscriberBuilder::default().with_writer(VecWriter::new).finish();
+
+    // let subscriber = Registry::default().with(stdout_log);
 
     let file_log = if let Some(log_path) = &args.log_path {
         let log_file = File::create(log_path).unwrap();
@@ -348,8 +425,10 @@ fn tracing_init(args: &Args) {
         None
     };
 
+    let subscriber = subscriber.finish();
+
     let subscriber = subscriber.with(file_log);
-    let subscriber = subscriber.with(vec_layer);
+    // let subscriber = subscriber.with(builder);
 
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }

@@ -12,6 +12,7 @@ use futures::channel::oneshot;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use raxis::gfx::color::Oklch;
+use raxis::layout::helpers::spacer;
 use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, ScrollConfig, StrokeLineCap, StrokeLineJoin};
 use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
@@ -46,12 +47,14 @@ use raxis::{
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use tokio::sync::broadcast;
 use tracing::info;
+use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::file_download::{self, download_view};
+use crate::rgui::components::togglegroup::{togglegroup, ToggleOption};
 use crate::scopefns::Also;
 use crate::websocket::start_websocket_server;
 use crate::worker::{self, archiver_worker};
-use crate::{LOG_BUFFER, LOG_NOTIFY};
+use crate::{LOG_BUFFER, LOG_NOTIFY, VEC_LAYER_HANDLE};
 
 mod components;
 
@@ -65,6 +68,7 @@ pub const SPACE_MD: f32 = 8.0;
 pub const SPACE_LG: f32 = 16.0;
 
 pub const BORDER_RADIUS: f32 = 8.0;
+pub const BORDER_RADIUS_SM: f32 = 4.0;
 
 // Color constants
 const CARD_BACKGROUND: Color = Color::from_oklch(Oklch::deg(0.17, 0.006, 285.885, 0.6));
@@ -81,6 +85,12 @@ const TEXT_COLOR: Color = Color {
     r: 1.0,
     g: 1.0,
     b: 1.0,
+    a: 0.9,
+};
+const TEXT_ON_LIGHT_COLOR: Color = Color {
+    r: 0.0,
+    g: 0.0,
+    b: 0.0,
     a: 0.9,
 };
 const BORDER_COLOR: Color = Color {
@@ -142,12 +152,25 @@ pub struct FileContainer {
 }
 
 // State Management
-#[derive(Default)]
 pub struct Store {
     json_export: Option<FileContainer>,
     export_out_of_date: bool,
     connection_stats: StatsStore,
     export_stats: ExportStats,
+
+    log_level: LevelFilter,
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            json_export: None,
+            export_out_of_date: false,
+            connection_stats: StatsStore::default(),
+            export_stats: ExportStats::default(),
+            log_level: LevelFilter::INFO, // TODO: This is not right
+        }
+    }
 }
 
 #[derive(Default, Debug, Clone, Copy)]
@@ -433,6 +456,8 @@ pub enum RootMessage {
     WaitingScreen(WaitingMessage),
     RefreshExport,
     TriggerRender,
+    LogLevelChanged(LevelFilter),
+    ExportLog,
 }
 
 #[derive(Debug, Clone)]
@@ -663,6 +688,7 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
             color: BORDER_COLOR, //Color::from(0x000000FF),
             ..Default::default()
         }),
+        border_radius: Some(BorderRadius::all(BORDER_RADIUS_SM)),
         child_gap: gap,
         padding,
         content: widget(InvalidateOnBoundsChanged {
@@ -733,7 +759,9 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                                     })
                                     .as_element(
                                         combine_id(w_id!(), i % visible_items),
-                                        Text::new(format!("Show more ({})", short_size(lines[i].len()))).with_font_size(8.0),
+                                        Text::new(format!("Show more ({})", short_size(lines[i].len())))
+                                            .with_font_size(8.0)
+                                            .with_color(TEXT_ON_LIGHT_COLOR),
                                     ),
                             ],
 
@@ -853,6 +881,14 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     }
 }
 
+// #[derive(Clone, Copy, PartialEq)]
+// pub enum LogLevel {
+//     Debug,
+//     Info,
+//     Warn,
+//     Error,
+// }
+
 // Main view function
 pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let help_text = Text::new("have questions or issues?")
@@ -917,7 +953,40 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
             DANGER_COLOR
         });
 
+    let level_group = togglegroup(
+        vec![
+            ToggleOption::new(LevelFilter::INFO, "Info"),
+            ToggleOption::new(LevelFilter::DEBUG, "Debug"),
+            ToggleOption::new(LevelFilter::TRACE, "Trace"),
+            // ToggleOption::new(LevelFilter::WARN, "Warn"),
+            // ToggleOption::new(LevelFilter::ERROR, "Error"),
+        ],
+        // &VEC_LAYER_HANDLE
+        //     .lock()
+        //     .unwrap()
+        //     .as_ref()
+        //     .map(|h| h.with_current(|f| f.max_level_hint()).unwrap_or_default())
+        //     .flatten()
+        //     .unwrap_or(LevelFilter::INFO),
+        // &LevelFilter::INFO,
+        &state.store.log_level,
+        |value| Some(RootMessage::LogLevelChanged(value)),
+    );
+
     let footer = column![
+        row![
+            level_group,
+            spacer(),
+            Button::new()
+                .with_bg_color(CARD_BACKGROUND)
+                .with_border(1.0, BORDER_COLOR)
+                .with_border_radius(BORDER_RADIUS_SM)
+                .with_click_handler(|_, shell| shell.publish(RootMessage::ExportLog))
+                .as_element(w_id!(), Text::new("Export").with_color(TEXT_COLOR).with_font_size(10.0))
+                .with_padding(PAD_SM)
+        ]
+        .with_width(Sizing::grow())
+        .with_padding(BoxAmount::bottom(PAD_SM)),
         log_view(hook),
         row![
             ws_status,
@@ -1047,6 +1116,27 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
                 None
             }
         }
+
+        RootMessage::LogLevelChanged(level) => {
+            state.store.log_level = level;
+
+            if let Some(handle) = VEC_LAYER_HANDLE.lock().unwrap().as_ref() {
+                handle(level);
+            }
+
+            None
+        }
+
+        RootMessage::ExportLog => Some(
+            Task::future(async move {
+                if let Some(mut file) = rfd::AsyncFileDialog::new().set_file_name("log.txt").save_file().await {
+                    let lines = LOG_BUFFER.lock().unwrap().join("\n");
+                    file.write(lines.as_bytes()).await;
+                    info!("Exported log to {}", file.path().display());
+                }
+            })
+            .discard(),
+        ),
     }
     .also(|_| {
         // Handle connection transitions

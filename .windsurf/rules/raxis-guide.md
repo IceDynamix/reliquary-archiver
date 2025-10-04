@@ -1,5 +1,5 @@
 ---
-trigger: model_decision
+trigger: manual
 description: when writing raxis ui components
 ---
 

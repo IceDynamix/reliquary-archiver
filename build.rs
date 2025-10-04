@@ -4,9 +4,8 @@ use std::fs::File;
 use std::path::Path;
 
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap,
-    MultiplePathAvatarConfigMap, RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap,
-    RelicSubAffixConfigMap,
+    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap, RelicConfigMap,
+    RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::{ResourceMap, TextMapEntry};
 use ureq::serde::de::DeserializeOwned;
@@ -14,8 +13,7 @@ use ureq::serde::Serialize;
 use ureq::serde_json::Value;
 
 const BASE_RESOURCE_URL: &str = "https://gitlab.com/Dimbreath/turnbasedgamedata/-/raw/main";
-const KEY_URL: &str =
-    "https://raw.githubusercontent.com/tamilpp25/Iridium-SR/refs/heads/main/data/Keys.json";
+const KEY_URL: &str = "https://raw.githubusercontent.com/tamilpp25/Iridium-SR/refs/heads/main/data/Keys.json";
 
 macro_rules! download_config {
     ($t:ty, $ex:expr, [$($url:expr),+ $(,)?]) => {
@@ -88,10 +86,7 @@ fn main() {
         AvatarConfigMap,
         AvatarName,
         text_hashes,
-        [
-            &resource_url::<AvatarConfigMap>(),
-            &resource_url_of("AvatarConfigLD.json"),
-        ]
+        [&resource_url::<AvatarConfigMap>(), &resource_url_of("AvatarConfigLD.json"),]
     );
     download_config_and_store_text_hashes!(EquipmentConfigMap, EquipmentName, text_hashes);
     download_config_and_store_text_hashes!(RelicSetConfigMap, SetName, text_hashes);
@@ -113,10 +108,10 @@ fn main() {
 
     write_to_out(download_as_json::<Value>(KEY_URL), "keys.json");
 
-    #[cfg(target_os = "windows")] {
+    #[cfg(target_os = "windows")]
+    {
         let mut res = winres::WindowsResource::new();
-        res.set_icon("assets/icon.ico")
-           .set("InternalName", "Reliquary Archiver");
+        res.set_icon("assets/icon.ico").set("InternalName", "Reliquary Archiver");
         res.compile().unwrap();
     }
 }
@@ -127,11 +122,10 @@ fn save_text_map(hashes: &HashSet<TextMapEntry>, language: &str) {
     let file_name = format!("TextMap{language}.json");
 
     let text_map_url = format!("{BASE_RESOURCE_URL}/TextMap/{file_name}");
-    let text_map: HashMap<String, String> =
-        download_as_json::<HashMap<String, String>>(&text_map_url)
-            .into_iter()
-            .filter(|(k, _)| hashes.contains(k))
-            .collect();
+    let text_map: HashMap<String, String> = download_as_json::<HashMap<String, String>>(&text_map_url)
+        .into_iter()
+        .filter(|(k, _)| hashes.contains(k))
+        .collect();
 
     write_to_out(text_map, &file_name);
 }
