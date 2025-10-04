@@ -15,7 +15,9 @@ use raxis::gfx::color::Oklch;
 use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, ScrollConfig, StrokeLineCap, StrokeLineJoin};
 use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
-use raxis::runtime::Backdrop;
+use raxis::runtime::task::ClipboardAction;
+use raxis::runtime::vkey::VKey;
+use raxis::runtime::{task, Backdrop};
 use raxis::svg_path;
 use raxis::util::str::StableString;
 use raxis::util::unique::combine_id;
@@ -543,12 +545,19 @@ fn short_size(size: usize) -> String {
     }
 }
 
-#[derive(Debug)]
-struct InvalidateOnBoundsChanged;
+struct InvalidateOnBoundsChanged<Message, E: Fn(&raxis::widgets::Event) -> Option<Task<Message>>> {
+    event_listener: E,
+}
+impl<Message, E: Fn(&raxis::widgets::Event) -> Option<Task<Message>>> std::fmt::Debug for InvalidateOnBoundsChanged<Message, E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("InvalidateOnBoundsChanged").finish()
+    }
+}
+
 struct InvalidateOnBoundsChangedState {
     prev_bounds: raxis::widgets::Bounds,
 }
-impl<Message> Widget<Message> for InvalidateOnBoundsChanged {
+impl<Message, E: Fn(&raxis::widgets::Event) -> Option<Task<Message>>> Widget<Message> for InvalidateOnBoundsChanged<Message, E> {
     fn state(&self, arenas: &raxis::layout::UIArenas, device_resources: &raxis::runtime::DeviceResources) -> raxis::widgets::State {
         Some(Box::new(InvalidateOnBoundsChangedState {
             prev_bounds: raxis::widgets::Bounds::default(),
@@ -583,6 +592,10 @@ impl<Message> Widget<Message> for InvalidateOnBoundsChanged {
                 shell.request_redraw(hwnd, raxis::RedrawRequest::Immediate);
                 state.prev_bounds = bounds;
             }
+        }
+
+        if let Some(task) = (self.event_listener)(event) {
+            shell.dispatch_task(task);
         }
     }
 }
@@ -652,7 +665,30 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         }),
         child_gap: gap,
         padding,
-        content: widget(InvalidateOnBoundsChanged),
+        content: widget(InvalidateOnBoundsChanged {
+            event_listener: {
+                let selection_state = selection_state.clone();
+                move |e| match e {
+                    raxis::widgets::Event::KeyDown { key, modifiers } => {
+                        if matches!(key, VKey::C | VKey::X) && modifiers.ctrl {
+                            if let Some(selection_range) = selection_state.borrow_mut().take() {
+                                let lines = LOG_BUFFER.lock().unwrap();
+                                let selected_lines = lines[selection_range.start..selection_range.end]
+                                    .iter()
+                                    .map(|line| line.clone())
+                                    .collect::<Vec<_>>();
+
+                                return Some(task::effect(task::Action::Clipboard(ClipboardAction::Set(
+                                    selected_lines.join("\n"),
+                                ))));
+                            }
+                        }
+                        None
+                    }
+                    _ => None,
+                }
+            },
+        }),
         children: {
             // DWrite runs into precision issues with really long text (it only uses f32)
             // So we have to calculate the width manually with a f64
@@ -765,8 +801,8 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                                         is_dragging.set(true);
                                     }
                                 }
-                                MouseAreaEvent::MouseMove { .. } => {
-                                    if is_dragging.get() {
+                                MouseAreaEvent::MouseMove { inside, .. } => {
+                                    if inside && is_dragging.get() {
                                         if let Some(start_line) = drag_start.get() {
                                             let start = start_line.min(line_index);
                                             let end = start_line.max(line_index) + 1;
@@ -1114,7 +1150,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .with_title("Reliquary Archiver")
     .replace_titlebar()
-    .with_backdrop(Backdrop::MicaAlt)
+    .with_backdrop(Backdrop::Acrylic)
     .with_window_size(960, 760)
     .run()?;
 
