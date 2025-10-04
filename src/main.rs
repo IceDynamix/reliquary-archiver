@@ -1,12 +1,13 @@
-// #![windows_subsystem = "windows"]
+#![windows_subsystem = "windows"]
 #![allow(unused)]
 
 use std::collections::HashSet;
 use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, LockResult, Mutex, TryLockResult};
 use std::time::Duration;
 use std::{io, panic};
 
@@ -115,6 +116,14 @@ impl CaptureMode {
 
 fn main() {
     color_eyre::install().unwrap();
+
+    let old_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        old_hook(panic_info);
+        error!("Backtrace: {:#?}", backtrace);
+    }));
+
     let args = Args::parse();
 
     // Copy the exit_after_capture flag to a local variable before args is moved into the closure
@@ -124,7 +133,7 @@ fn main() {
 
     debug!(?args);
 
-    if let Err(_) = panic::catch_unwind(move || {
+    if let Err(payload) = panic::catch_unwind(move || {
         // Only self update on Windows, since that's the only platform we ship releases for
         #[cfg(windows)]
         {
@@ -242,6 +251,25 @@ fn main() {
         }
     }) {
         error!("the application panicked, this is a bug, please report it on GitHub or Discord");
+
+        // Write crashlog
+        if let Ok(mut file) = File::create("crashlog.txt") {
+            if let TryLockResult::Ok(buffer) = LOG_BUFFER.try_lock() {
+                let lines = buffer.join("\n");
+                file.write_all(lines.as_bytes()).unwrap();
+            } else {
+                file.write_all("failed to lock log buffer".as_bytes()).unwrap();
+            }
+            file.write_all("\n\n".as_bytes()).unwrap();
+            if let Some(s) = payload.downcast_ref::<&str>() {
+                file.write_all(s.as_bytes()).unwrap();
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                file.write_all(s.as_bytes()).unwrap();
+            } else {
+                file.write_all("panic: unknown payload type".as_bytes()).unwrap();
+            }
+            info!("wrote crashlog to crashlog.txt");
+        }
 
         info!("press enter to close");
         std::io::stdin().read_line(&mut String::new()).unwrap();
