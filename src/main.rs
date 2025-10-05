@@ -1,4 +1,4 @@
-#![windows_subsystem = "windows"]
+// #![windows_subsystem = "windows"]
 #![allow(unused)]
 
 use std::collections::HashSet;

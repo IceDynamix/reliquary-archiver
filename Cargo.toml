@@ -80,15 +80,15 @@ winres = "0.1.12"
 # (some kind of timestamp), except that i don't know what it is exactly and i haven't bothered
 # to circumvent the addition that happens in the kcp library
 overflow-checks = false
-debug = "line-tables-only"
-# codegen-backend = "cranelift"
+# debug = "line-tables-only"
+# # codegen-backend = "cranelift"
 
-[profile.dev.package."*"]
-debug = false
+# [profile.dev.package."*"]
+# debug = false
 
-[profile.debugging]
-inherits = "dev"
-debug = true
+# [profile.debugging]
+# inherits = "dev"
+# debug = true
 
 [profile.release]
 opt-level = "z"         # optimize for size

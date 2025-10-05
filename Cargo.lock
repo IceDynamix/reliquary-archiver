@@ -2159,6 +2159,7 @@ dependencies = [
  "const_format",
  "futures",
  "lazy_static",
+ "log",
  "raxis-core",
  "raxis-proc-macro",
  "slotmap",

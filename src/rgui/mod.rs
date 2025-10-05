@@ -13,7 +13,7 @@ use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use raxis::gfx::color::Oklch;
 use raxis::layout::helpers::spacer;
-use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, ScrollConfig, StrokeLineCap, StrokeLineJoin};
+use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, ScrollBarSize, ScrollConfig, StrokeLineCap, StrokeLineJoin};
 use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
 use raxis::runtime::task::ClipboardAction;
@@ -679,7 +679,7 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
             sticky_bottom: Some(true),
             scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
             scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
-            scrollbar_size: Some(12.0),
+            scrollbar_size: Some(ScrollBarSize::ThinThick(8.0, 12.0)),
             ..Default::default()
         }),
         background_color: Some(CARD_BACKGROUND),
@@ -1029,10 +1029,11 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         .with_scroll(ScrollConfig {
             vertical: Some(true),
             // Safe area padding for the window controls
-            safe_area_padding: Some(BoxAmount::all(0.0).apply(|p| p.top = 30.0)),
+            safe_area_padding: Some(BoxAmount::all(4.0).apply(|p| p.top = 34.0)),
             scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
             scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
-            scrollbar_size: Some(12.0),
+            scrollbar_track_radius: Some(BorderRadius::all(4.0)),
+            scrollbar_size: Some(ScrollBarSize::ThinThick(8.0, 12.0)),
             ..Default::default()
         })
 }
@@ -1240,7 +1241,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .with_title("Reliquary Archiver")
     .replace_titlebar()
-    .with_backdrop(Backdrop::Acrylic)
+    .with_backdrop(Backdrop::Mica)
     .with_window_size(960, 760)
     .run()?;
 
