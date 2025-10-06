@@ -24,6 +24,7 @@ use raxis::util::unique::combine_id;
 use raxis::widgets::image::{Image, ImageFit};
 use raxis::widgets::mouse_area::{MouseArea, MouseAreaEvent};
 use raxis::widgets::rule::{horizontal_rule, Rule};
+use raxis::widgets::slider::Slider;
 use raxis::widgets::svg::Svg;
 use raxis::widgets::svg_path::ColorChoice;
 use raxis::widgets::text::TextAlignment;
@@ -174,6 +175,7 @@ pub struct Store {
     log_level: LevelFilter,
     background_image: String,
     image_fit: ImageFit,
+    background_opacity: f32,
 }
 
 impl Default for Store {
@@ -186,6 +188,7 @@ impl Default for Store {
             log_level: LevelFilter::INFO, // TODO: This is not right
             background_image: "gem.jpg".to_string(),
             image_fit: ImageFit::Cover,
+            background_opacity: 0.12,
         }
     }
 }
@@ -229,6 +232,7 @@ pub struct RootState {
     store: Store,
     screen: Screen,
     settings_open: bool,
+    opacity_slider_dragging: bool,
 }
 
 #[derive(Debug)]
@@ -516,6 +520,8 @@ pub enum RootMessage {
     ToggleMenu,
     BackgroundImageSelected(Option<PathBuf>),
     ImageFitChanged(ImageFit),
+    OpacityChanged(f32),
+    OpacitySliderDrag(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -964,7 +970,7 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
 
 fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
-    let opacity = use_animation(&mut instance, state.settings_open);
+    let opacity = use_animation(&mut instance, state.settings_open && !state.opacity_slider_dragging);
     let opacity = opacity.interpolate(hook, 0.0, 1.0, Instant::now());
 
     if !state.settings_open && opacity == 0.0 {
@@ -1013,7 +1019,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         .as_element()
         .with_padding(BoxAmount::new(PAD_LG, 0.0, PAD_SM, 0.0));
 
-    let fit_mode_toggles = togglegroup(
+    let mut fit_mode_toggles = togglegroup(
         w_id!(),
         vec![
             ToggleOption::new(ImageFit::Fill, "Fill"),
@@ -1024,7 +1030,48 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         ],
         &state.store.image_fit,
         |fit| Some(RootMessage::ImageFitChanged(fit)),
-    );
+    )
+    .with_width(Sizing::grow());
+
+    fit_mode_toggles.children = fit_mode_toggles
+        .children
+        .into_iter()
+        .map(|mut child| child.with_width(Sizing::grow()))
+        .collect();
+
+    // Opacity slider settings
+    let opacity_label = Text::new("Background Opacity")
+        .with_font_size(14.0)
+        .with_color(TEXT_COLOR)
+        .as_element()
+        .with_padding(BoxAmount::new(PAD_LG, 0.0, PAD_SM, 0.0));
+
+    let opacity_value_text = Text::new(format!("{:.0}%", state.store.background_opacity * 100.0))
+        .with_font_size(12.0)
+        .with_color(TEXT_MUTED)
+        .as_element();
+
+    let opacity_slider = Slider::new(0.0, 1.0, state.store.background_opacity)
+        .with_step(0.01)
+        .with_track_height(6.0)
+        .with_thumb_size(18.0)
+        .with_track_color(CARD_BACKGROUND.deviate(0.2))
+        .with_filled_track_color(PRIMARY_COLOR)
+        .with_thumb_color(Color::WHITE)
+        .with_thumb_border_color(PRIMARY_COLOR)
+        .with_value_change_handler(|value, _, shell| {
+            shell.publish(RootMessage::OpacityChanged(value));
+        })
+        .with_drag_handler(|is_dragging, _, shell| {
+            shell.publish(RootMessage::OpacitySliderDrag(is_dragging));
+        })
+        .as_element(w_id!())
+        .with_width(Sizing::grow());
+
+    let opacity_row = row![opacity_label, spacer(), opacity_value_text]
+        .with_width(Sizing::grow())
+        .with_child_gap(SPACE_SM)
+        .align_y(VerticalAlignment::Center);
 
     let settings_content = column![
         Text::new("Settings")
@@ -1032,11 +1079,12 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
             .with_color(TEXT_COLOR)
             .as_element()
             .with_padding(BoxAmount::bottom(PAD_LG)),
-        bg_image_label,
+        row![bg_image_label, spacer(), select_image_button,].with_width(Sizing::grow()),
         current_image_text,
-        select_image_button,
         fit_mode_label,
         fit_mode_toggles,
+        opacity_row,
+        opacity_slider,
     ]
     .with_width(Sizing::fixed(400.0))
     .with_padding(BoxAmount::all(PAD_LG * 2.0));
@@ -1246,7 +1294,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     .with_id(w_id!())
     .with_widget(
         Image::new(state.store.background_image.clone())
-            .with_opacity(0.12)
+            .with_opacity(state.store.background_opacity)
             .with_fit(state.store.image_fit),
     )
     .with_width(Sizing::grow())
@@ -1370,6 +1418,16 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         RootMessage::ImageFitChanged(fit) => {
             state.store.image_fit = fit;
             tracing::info!("Image fit mode changed to: {:?}", fit);
+            None
+        }
+
+        RootMessage::OpacityChanged(opacity) => {
+            state.store.background_opacity = opacity;
+            None
+        }
+
+        RootMessage::OpacitySliderDrag(is_dragging) => {
+            state.opacity_slider_dragging = is_dragging;
             None
         }
     }

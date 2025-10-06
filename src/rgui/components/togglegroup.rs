@@ -2,7 +2,10 @@ use raxis::{
     layout::model::{Border, BorderRadius, Color, Direction::LeftToRight, Element, HorizontalAlignment, Sizing, VerticalAlignment},
     util::unique::combine_id,
     w_id,
-    widgets::{button::Button, text::Text},
+    widgets::{
+        button::Button,
+        text::{Text, TextAlignment},
+    },
     HookManager,
 };
 
@@ -184,7 +187,12 @@ where
                 })
                 .as_element(
                     combine_id(base_id, idx as u64),
-                    Text::new(option.label).with_color(text_color).with_font_size(config.text_size),
+                    Text::new(option.label)
+                        .with_color(text_color)
+                        .with_font_size(config.text_size)
+                        .with_text_alignment(TextAlignment::Center)
+                        .as_element()
+                        .with_width(Sizing::grow()),
                 )
                 .with_padding(config.button_padding)
         })
