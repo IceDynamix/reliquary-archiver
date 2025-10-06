@@ -132,13 +132,12 @@ impl Default for ToggleGroupConfig {
 ///     None,
 ///     hook,
 /// );
-pub fn togglegroup<T, PMsg, F>(options: Vec<ToggleOption<T>>, active_value: &T, on_change: F) -> Element<PMsg>
+pub fn togglegroup<T, PMsg, F>(base_id: u64, options: Vec<ToggleOption<T>>, active_value: &T, on_change: F) -> Element<PMsg>
 where
     T: Clone + PartialEq + 'static,
     PMsg: Send + Clone + std::fmt::Debug + 'static,
     F: Fn(T) -> Option<PMsg> + Clone + 'static,
 {
-    let base_id = w_id!();
     let total_count = options.len();
 
     let config = ToggleGroupConfig::default();

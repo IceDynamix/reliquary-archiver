@@ -78,6 +78,8 @@ const CARD_BACKGROUND: Color = Color::from_oklch(Oklch::deg(0.17, 0.006, 285.885
 const SCROLLBAR_THUMB_COLOR: Color = Color::from_oklch(Oklch::deg(0.47, 0.006, 285.885, 0.6));
 const SCROLLBAR_TRACK_COLOR: Color = Color::from_oklch(Oklch::deg(0.47, 0.006, 285.885, 0.2));
 
+const OPAQUE_CARD_BACKGROUND: Color = Color::from_oklch(Oklch::deg(0.17, 0.006, 285.885, 1.0));
+
 const TEXT_MUTED: Color = Color {
     r: 1.0,
     g: 1.0,
@@ -132,6 +134,14 @@ const SHADOW_SM: DropShadow = DropShadow {
     ..DropShadow::default()
 };
 
+const SHADOW_XL: DropShadow = DropShadow {
+    offset_y: 20.0,
+    blur_radius: 25.0,
+    spread_radius: -5.0,
+    color: Color::from_hex(0x0000008A),
+    ..DropShadow::default()
+};
+
 #[derive(Debug, Clone)]
 pub struct FileExtensions {
     pub description: String,
@@ -162,6 +172,8 @@ pub struct Store {
     export_stats: ExportStats,
 
     log_level: LevelFilter,
+    background_image: String,
+    image_fit: ImageFit,
 }
 
 impl Default for Store {
@@ -172,6 +184,8 @@ impl Default for Store {
             connection_stats: StatsStore::default(),
             export_stats: ExportStats::default(),
             log_level: LevelFilter::INFO, // TODO: This is not right
+            background_image: "gem.jpg".to_string(),
+            image_fit: ImageFit::Cover,
         }
     }
 }
@@ -500,6 +514,8 @@ pub enum RootMessage {
     LogLevelChanged(LevelFilter),
     ExportLog,
     ToggleMenu,
+    BackgroundImageSelected(Option<PathBuf>),
+    ImageFitChanged(ImageFit),
 }
 
 #[derive(Debug, Clone)]
@@ -955,6 +971,76 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         return Element::default();
     }
 
+    // Background image settings
+    let bg_image_label = Text::new("Background Image")
+        .with_font_size(14.0)
+        .with_color(TEXT_COLOR)
+        .as_element()
+        .with_padding(BoxAmount::bottom(PAD_SM));
+
+    let current_image_text = Text::new(format!("Current: {}", state.store.background_image))
+        .with_font_size(12.0)
+        .with_color(TEXT_MUTED)
+        .as_element()
+        .with_padding(BoxAmount::bottom(PAD_SM));
+
+    let select_image_button = Button::new()
+        .with_bg_color(PRIMARY_COLOR)
+        .with_border_radius(BORDER_RADIUS_SM)
+        .with_click_handler(move |_, shell| {
+            shell.dispatch_task(Task::future(async {
+                let file = rfd::AsyncFileDialog::new()
+                    .add_filter("Image files", &["jpg", "jpeg", "png", "bmp", "gif", "webp"])
+                    .set_title("Select background image")
+                    .pick_file()
+                    .await;
+                RootMessage::BackgroundImageSelected(file.map(|f| f.path().to_path_buf()))
+            }));
+        })
+        .as_element(
+            w_id!(),
+            Text::new("Select Image")
+                .with_font_size(12.0)
+                .with_color(Color::WHITE)
+                .as_element()
+                .with_padding(BoxAmount::new(PAD_SM, PAD_MD, PAD_SM, PAD_MD)),
+        );
+
+    // Image fit mode settings
+    let fit_mode_label = Text::new("Image Fit Mode")
+        .with_font_size(14.0)
+        .with_color(TEXT_COLOR)
+        .as_element()
+        .with_padding(BoxAmount::new(PAD_LG, 0.0, PAD_SM, 0.0));
+
+    let fit_mode_toggles = togglegroup(
+        w_id!(),
+        vec![
+            ToggleOption::new(ImageFit::Fill, "Fill"),
+            ToggleOption::new(ImageFit::Contain, "Contain"),
+            ToggleOption::new(ImageFit::Cover, "Cover"),
+            ToggleOption::new(ImageFit::ScaleDown, "Scale Down"),
+            ToggleOption::new(ImageFit::None, "None"),
+        ],
+        &state.store.image_fit,
+        |fit| Some(RootMessage::ImageFitChanged(fit)),
+    );
+
+    let settings_content = column![
+        Text::new("Settings")
+            .with_font_size(20.0)
+            .with_color(TEXT_COLOR)
+            .as_element()
+            .with_padding(BoxAmount::bottom(PAD_LG)),
+        bg_image_label,
+        current_image_text,
+        select_image_button,
+        fit_mode_label,
+        fit_mode_toggles,
+    ]
+    .with_width(Sizing::fixed(400.0))
+    .with_padding(BoxAmount::all(PAD_LG * 2.0));
+
     Element {
         id: Some(w_id!()),
         width: Sizing::percent(1.0),
@@ -967,20 +1053,16 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
 
         children: vec![center(Element {
             id: Some(w_id!()),
-            // width: Sizing::grow(),
-            // height: Sizing::grow(),
-            background_color: Some(Color::from(0xFFFFFFFF)),
-            border_radius: Some(BorderRadius::all(4.0)),
+            background_color: Some(OPAQUE_CARD_BACKGROUND),
+            border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
             border: Some(Border {
                 width: 1.0,
-                color: Color::from(0x00000080),
+                color: BORDER_COLOR,
                 ..Default::default()
             }),
+            drop_shadow: Some(SHADOW_XL),
 
-            children: vec![Text::new("Modal")
-                .with_text_alignment(TextAlignment::Center)
-                .with_color(Color::BLACK)
-                .as_element()],
+            children: vec![settings_content],
             ..Default::default()
         })],
 
@@ -1075,6 +1157,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         });
 
     let level_group = togglegroup(
+        w_id!(),
         vec![
             ToggleOption::new(LevelFilter::INFO, "Info"),
             ToggleOption::new(LevelFilter::DEBUG, "Debug"),
@@ -1161,7 +1244,11 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         modal(state, hook)
     ]
     .with_id(w_id!())
-    .with_widget(Image::new("gem.jpg").with_opacity(0.12).with_fit(ImageFit::Cover))
+    .with_widget(
+        Image::new(state.store.background_image.clone())
+            .with_opacity(0.12)
+            .with_fit(state.store.image_fit),
+    )
     .with_width(Sizing::grow())
     .with_height(Sizing::grow())
 }
@@ -1269,6 +1356,20 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::ToggleMenu => {
             state.settings_open = !state.settings_open;
+            None
+        }
+
+        RootMessage::BackgroundImageSelected(path) => {
+            if let Some(path) = path {
+                state.store.background_image = path.to_string_lossy().to_string();
+                tracing::info!("Background image changed to: {}", state.store.background_image);
+            }
+            None
+        }
+
+        RootMessage::ImageFitChanged(fit) => {
+            state.store.image_fit = fit;
+            tracing::info!("Image fit mode changed to: {:?}", fit);
             None
         }
     }
