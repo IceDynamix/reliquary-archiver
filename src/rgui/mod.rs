@@ -19,12 +19,14 @@ use raxis::runtime::scroll::ScrollPosition;
 use raxis::runtime::task::ClipboardAction;
 use raxis::runtime::vkey::VKey;
 use raxis::runtime::{task, Backdrop};
-use raxis::svg_path;
 use raxis::util::str::StableString;
 use raxis::util::unique::combine_id;
+use raxis::widgets::image::{Image, ImageFit};
 use raxis::widgets::mouse_area::{MouseArea, MouseAreaEvent};
 use raxis::widgets::rule::{horizontal_rule, Rule};
 use raxis::widgets::svg::Svg;
+use raxis::widgets::svg_path::ColorChoice;
+use raxis::widgets::text::TextAlignment;
 use raxis::widgets::Widget;
 use raxis::{
     column,
@@ -44,6 +46,7 @@ use raxis::{
     },
     HookManager,
 };
+use raxis::{svg, svg_path, use_animation, SvgPathCommands};
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use tokio::sync::broadcast;
 use tracing::info;
@@ -211,6 +214,7 @@ pub struct RootState {
     worker_sender: Option<worker::WorkerHandle>,
     store: Store,
     screen: Screen,
+    settings_open: bool,
 }
 
 #[derive(Debug)]
@@ -349,13 +353,50 @@ fn stat_line(label: &'static str, value: usize) -> Element<RootMessage> {
 
 fn refresh_icon<M>() -> Element<M> {
     SvgPath::new(
-        svg_path!(
+        svg![svg_path!(
             "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8 M21 3v5h-5 M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16 M8 16H3v5"
-        ),
+        )],
         ViewBox::new(24.0, 24.0),
     )
     .with_size(32.0, 32.0)
     .with_stroke(Color::WHITE)
+    .with_stroke_width(2.0)
+    .with_stroke_cap(StrokeLineCap::Round)
+    .with_stroke_join(StrokeLineJoin::Round)
+    .as_element(w_id!())
+    .with_padding(PAD_MD)
+}
+
+fn cog_icon<M>() -> Element<M> {
+    SvgPath::new(
+        svg![
+            svg_path!("M11 10.27 7 3.34"),
+            svg_path!("m11 13.73-4 6.93"),
+            svg_path!("M12 22v-2"),
+            svg_path!("M12 2v2"),
+            svg_path!("M14 12h8"),
+            svg_path!("m17 20.66-1-1.73"),
+            svg_path!("m17 3.34-1 1.73"),
+            svg_path!("M2 12h2"),
+            svg_path!("m20.66 17-1.73-1"),
+            svg_path!("m20.66 7-1.73 1"),
+            svg_path!("m3.34 17 1.73-1"),
+            svg_path!("m3.34 7 1.73 1"),
+            SvgPathCommands::Circle {
+                cx: 12.0,
+                cy: 12.0,
+                r: 2.0
+            },
+            SvgPathCommands::Circle {
+                cx: 12.0,
+                cy: 12.0,
+                r: 8.0
+            },
+        ],
+        ViewBox::new(24.0, 24.0),
+    )
+    .with_size(32.0, 32.0)
+    .with_stroke(ColorChoice::CurrentColor)
     .with_stroke_width(2.0)
     .with_stroke_cap(StrokeLineCap::Round)
     .with_stroke_join(StrokeLineJoin::Round)
@@ -458,6 +499,7 @@ pub enum RootMessage {
     TriggerRender,
     LogLevelChanged(LevelFilter),
     ExportLog,
+    ToggleMenu,
 }
 
 #[derive(Debug, Clone)]
@@ -570,10 +612,13 @@ fn short_size(size: usize) -> String {
     }
 }
 
-struct InvalidateOnBoundsChanged<Message, E: Fn(&raxis::widgets::Event) -> Option<Task<Message>>> {
+struct InvalidateOnBoundsChanged<Message, E: Fn(&raxis::widgets::Event, &mut raxis::Shell<Message>) -> Option<Task<Message>>> {
+    _marker: std::marker::PhantomData<Message>,
     event_listener: E,
 }
-impl<Message, E: Fn(&raxis::widgets::Event) -> Option<Task<Message>>> std::fmt::Debug for InvalidateOnBoundsChanged<Message, E> {
+impl<Message, E: Fn(&raxis::widgets::Event, &mut raxis::Shell<Message>) -> Option<Task<Message>>> std::fmt::Debug
+    for InvalidateOnBoundsChanged<Message, E>
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("InvalidateOnBoundsChanged").finish()
     }
@@ -582,7 +627,9 @@ impl<Message, E: Fn(&raxis::widgets::Event) -> Option<Task<Message>>> std::fmt::
 struct InvalidateOnBoundsChangedState {
     prev_bounds: raxis::widgets::Bounds,
 }
-impl<Message, E: Fn(&raxis::widgets::Event) -> Option<Task<Message>>> Widget<Message> for InvalidateOnBoundsChanged<Message, E> {
+impl<Message, E: Fn(&raxis::widgets::Event, &mut raxis::Shell<Message>) -> Option<Task<Message>>> Widget<Message>
+    for InvalidateOnBoundsChanged<Message, E>
+{
     fn state(&self, arenas: &raxis::layout::UIArenas, device_resources: &raxis::runtime::DeviceResources) -> raxis::widgets::State {
         Some(Box::new(InvalidateOnBoundsChangedState {
             prev_bounds: raxis::widgets::Bounds::default(),
@@ -619,7 +666,7 @@ impl<Message, E: Fn(&raxis::widgets::Event) -> Option<Task<Message>>> Widget<Mes
             }
         }
 
-        if let Some(task) = (self.event_listener)(event) {
+        if let Some(task) = (self.event_listener)(event, shell) {
             shell.dispatch_task(task);
         }
     }
@@ -692,9 +739,12 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         child_gap: gap,
         padding,
         content: widget(InvalidateOnBoundsChanged {
+            _marker: std::marker::PhantomData,
             event_listener: {
                 let selection_state = selection_state.clone();
-                move |e| match e {
+                let is_dragging = is_dragging.clone();
+                let drag_start = drag_start.clone();
+                move |e, shell| match e {
                     raxis::widgets::Event::KeyDown { key, modifiers } => {
                         if matches!(key, VKey::C | VKey::X) && modifiers.ctrl {
                             if let Some(selection_range) = selection_state.borrow_mut().take() {
@@ -709,6 +759,21 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                                 ))));
                             }
                         }
+                        None
+                    }
+                    raxis::widgets::Event::MouseButtonDown {
+                        x,
+                        y,
+                        click_count,
+                        modifiers,
+                    } => {
+                        shell.capture_event(container_id);
+                        None
+                    }
+
+                    raxis::widgets::Event::MouseButtonUp { .. } => {
+                        is_dragging.set(false);
+                        drag_start.set(None);
                         None
                     }
                     _ => None,
@@ -881,6 +946,48 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     }
 }
 
+fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+    let mut instance = hook.instance(w_id!());
+    let opacity = use_animation(&mut instance, state.settings_open);
+    let opacity = opacity.interpolate(hook, 0.0, 1.0, Instant::now());
+
+    if !state.settings_open && opacity == 0.0 {
+        return Element::default();
+    }
+
+    Element {
+        id: Some(w_id!()),
+        width: Sizing::percent(1.0),
+        height: Sizing::percent(1.0),
+        opacity: Some(opacity),
+        background_color: Some(Color::from(0x00000080)),
+        floating: Some(FloatingConfig { ..Default::default() }),
+
+        content: widget(Button::new().clear().with_click_handler(|_, s| s.publish(RootMessage::ToggleMenu))),
+
+        children: vec![center(Element {
+            id: Some(w_id!()),
+            // width: Sizing::grow(),
+            // height: Sizing::grow(),
+            background_color: Some(Color::from(0xFFFFFFFF)),
+            border_radius: Some(BorderRadius::all(4.0)),
+            border: Some(Border {
+                width: 1.0,
+                color: Color::from(0x00000080),
+                ..Default::default()
+            }),
+
+            children: vec![Text::new("Modal")
+                .with_text_alignment(TextAlignment::Center)
+                .with_color(Color::BLACK)
+                .as_element()],
+            ..Default::default()
+        })],
+
+        ..Default::default()
+    }
+}
+
 // #[derive(Clone, Copy, PartialEq)]
 // pub enum LogLevel {
 //     Debug,
@@ -903,7 +1010,21 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     let header = column![social_buttons, help_text]
         .with_child_gap(SPACE_SM)
         .with_padding(BoxAmount::all(PAD_LG).apply(|p| p.bottom = PAD_SM))
+        .with_width(Sizing::grow())
         .with_height(Sizing::Grow { min: 0.0, max: 182.0 }); // Size of footer + log view; this ensures the main content is as centered as possible
+
+    let menu_button = Button::new()
+        .ghost()
+        .with_border_radius(BORDER_RADIUS)
+        .with_click_handler(|_, s| s.publish(RootMessage::ToggleMenu))
+        .as_element(w_id!(), cog_icon());
+
+    let header = row![
+        header,
+        spacer(),
+        container(menu_button).with_padding(BoxAmount::all(PAD_MD).apply(|p| p.top += PAD_LG)),
+    ]
+    .with_width(Sizing::grow());
 
     let ws_status_text = match &state.store.connection_stats.ws_status {
         WebSocketStatus::Pending => "starting server...".to_string(),
@@ -1001,41 +1122,48 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     .with_width(Sizing::grow())
     .with_height(Sizing::fit());
 
-    let modal = Element {
-        // background_color: Some(Color::from(0x00000033)),
-        floating: Some(FloatingConfig {
-            anchor: Some(Alignment2D {
-                x: Some(HorizontalAlignment::Center),
-                y: Some(VerticalAlignment::Center),
-            }),
-            align: Some(Alignment2D {
-                x: Some(HorizontalAlignment::Center),
-                y: Some(VerticalAlignment::Center),
-            }),
-            ..Default::default()
-        }),
-        width: Sizing::percent(100.0),
-        height: Sizing::percent(100.0),
-        ..Default::default()
-    };
+    // let modal = Element {
+    //     // background_color: Some(Color::from(0x00000033)),
+    //     floating: Some(FloatingConfig {
+    //         anchor: Some(Alignment2D {
+    //             x: Some(HorizontalAlignment::Center),
+    //             y: Some(VerticalAlignment::Center),
+    //         }),
+    //         align: Some(Alignment2D {
+    //             x: Some(HorizontalAlignment::Center),
+    //             y: Some(VerticalAlignment::Center),
+    //         }),
+    //         ..Default::default()
+    //     }),
+    //     width: Sizing::percent(100.0),
+    //     height: Sizing::percent(100.0),
+    //     ..Default::default()
+    // };
 
-    column![header, center(content), footer, modal]
-        .with_id(w_id!())
-        .with_color(TEXT_COLOR)
-        .with_width(Sizing::grow())
-        .with_height(Sizing::grow())
-        .with_padding(PAD_MD)
-        .with_child_gap(SPACE_MD)
-        .with_scroll(ScrollConfig {
-            vertical: Some(true),
-            // Safe area padding for the window controls
-            safe_area_padding: Some(BoxAmount::all(4.0).apply(|p| p.top = 34.0)),
-            scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
-            scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
-            scrollbar_track_radius: Some(BorderRadius::all(4.0)),
-            scrollbar_size: Some(ScrollBarSize::ThinThick(8.0, 12.0)),
-            ..Default::default()
-        })
+    row![
+        column![header, center(content), footer]
+            .with_id(w_id!())
+            .with_color(TEXT_COLOR)
+            .with_width(Sizing::grow())
+            .with_height(Sizing::grow())
+            .with_padding(PAD_MD)
+            .with_child_gap(SPACE_MD)
+            .with_scroll(ScrollConfig {
+                vertical: Some(true),
+                // Safe area padding for the window controls
+                safe_area_padding: Some(BoxAmount::all(4.0).apply(|p| p.top = 34.0)),
+                scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
+                scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
+                scrollbar_track_radius: Some(BorderRadius::all(4.0)),
+                scrollbar_size: Some(ScrollBarSize::ThinThick(8.0, 12.0)),
+                ..Default::default()
+            }),
+        modal(state, hook)
+    ]
+    .with_id(w_id!())
+    .with_widget(Image::new("gem.jpg").with_opacity(0.12).with_fit(ImageFit::Cover))
+    .with_width(Sizing::grow())
+    .with_height(Sizing::grow())
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
@@ -1138,6 +1266,11 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             })
             .discard(),
         ),
+
+        RootMessage::ToggleMenu => {
+            state.settings_open = !state.settings_open;
+            None
+        }
     }
     .also(|_| {
         // Handle connection transitions
@@ -1241,7 +1374,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .with_title("Reliquary Archiver")
     .replace_titlebar()
-    .with_backdrop(Backdrop::Mica)
+    .with_backdrop(Backdrop::MicaAlt)
     .with_window_size(960, 760)
     .run()?;
 

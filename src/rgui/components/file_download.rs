@@ -6,7 +6,7 @@ use raxis::{
         model::{Border, BorderRadius, BoxAmount, Color, Direction, Element, Sizing, StrokeLineCap, StrokeLineJoin, VerticalAlignment},
     },
     runtime::task::Task,
-    svg_path, w_id,
+    svg, svg_path, w_id,
     widgets::{
         button::Button,
         svg::ViewBox,
@@ -52,7 +52,7 @@ fn format_file_size(size: usize) -> String {
 // Download arrow icon SVG path
 fn download_arrow_icon<M>(stroke: Color) -> Element<M> {
     SvgPath::new(
-        svg_path!("M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5"),
+        svg![svg_path!("M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5")],
         ViewBox::new(24.0, 24.0),
     )
     .with_size(32.0, 32.0)
