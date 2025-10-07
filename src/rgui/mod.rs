@@ -385,6 +385,17 @@ fn refresh_icon<M>() -> Element<M> {
     .with_padding(PAD_MD)
 }
 
+fn x_icon<M>() -> Element<M> {
+    SvgPath::new(svg![svg_path!("M18 6 6 18"), svg_path!("m6 6 12 12"),], ViewBox::new(24.0, 24.0))
+        .with_size(16.0, 16.0)
+        .with_stroke(ColorChoice::CurrentColor)
+        .with_stroke_width(2.0)
+        .with_stroke_cap(StrokeLineCap::Round)
+        .with_stroke_join(StrokeLineJoin::Round)
+        .as_element(w_id!())
+        .with_padding(PAD_MD)
+}
+
 fn cog_icon<M>() -> Element<M> {
     SvgPath::new(
         svg![
@@ -970,8 +981,10 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
 
 fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
-    let opacity = use_animation(&mut instance, state.settings_open && !state.opacity_slider_dragging);
+    let opacity = use_animation(&mut instance, state.settings_open);
+    let bg_opacity = use_animation(&mut instance, !state.opacity_slider_dragging);
     let opacity = opacity.interpolate(hook, 0.0, 1.0, Instant::now());
+    let bg_opacity = bg_opacity.interpolate(hook, 0.0, 0.5, Instant::now());
 
     if !state.settings_open && opacity == 0.0 {
         return Element::default();
@@ -1049,7 +1062,8 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
     let opacity_value_text = Text::new(format!("{:.0}%", state.store.background_opacity * 100.0))
         .with_font_size(12.0)
         .with_color(TEXT_MUTED)
-        .as_element();
+        .as_element()
+        .with_padding(BoxAmount::new(PAD_LG, 0.0, PAD_SM, 0.0));
 
     let opacity_slider = Slider::new(0.0, 1.0, state.store.background_opacity)
         .with_step(0.01)
@@ -1073,28 +1087,40 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         .with_child_gap(SPACE_SM)
         .align_y(VerticalAlignment::Center);
 
+    let close_button = Button::new()
+        .ghost()
+        .with_border_radius(BorderRadius::all(BORDER_RADIUS_SM))
+        .with_click_handler(|_, shell| shell.publish(RootMessage::ToggleMenu))
+        .as_element(w_id!(), x_icon());
+
     let settings_content = column![
-        Text::new("Settings")
-            .with_font_size(20.0)
-            .with_color(TEXT_COLOR)
-            .as_element()
-            .with_padding(BoxAmount::bottom(PAD_LG)),
-        row![bg_image_label, spacer(), select_image_button,].with_width(Sizing::grow()),
+        row![
+            Text::new("Settings").with_font_size(20.0).with_color(TEXT_COLOR).as_element(),
+            spacer(),
+            close_button
+        ]
+        .with_width(Sizing::grow())
+        .align_y(VerticalAlignment::Top)
+        .with_padding(BoxAmount::new(0.0, 0.0, PAD_MD, 0.0)),
+        row![bg_image_label, spacer(), select_image_button,]
+            .with_width(Sizing::grow())
+            .align_y(VerticalAlignment::Center),
         current_image_text,
         fit_mode_label,
         fit_mode_toggles,
         opacity_row,
         opacity_slider,
     ]
+    .with_child_gap(SPACE_SM)
     .with_width(Sizing::fixed(400.0))
-    .with_padding(BoxAmount::all(PAD_LG * 2.0));
+    .with_padding(BoxAmount::all(PAD_LG));
 
     Element {
         id: Some(w_id!()),
         width: Sizing::percent(1.0),
         height: Sizing::percent(1.0),
         opacity: Some(opacity),
-        background_color: Some(Color::from(0x00000080)),
+        background_color: Some(Color::from_rgba(0.0, 0.0, 0.0, bg_opacity)),
         floating: Some(FloatingConfig { ..Default::default() }),
 
         content: widget(Button::new().clear().with_click_handler(|_, s| s.publish(RootMessage::ToggleMenu))),
@@ -1109,6 +1135,8 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
                 ..Default::default()
             }),
             drop_shadow: Some(SHADOW_XL),
+
+            content: widget(Button::new().clear()),
 
             children: vec![settings_content],
             ..Default::default()
