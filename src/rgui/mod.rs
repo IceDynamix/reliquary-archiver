@@ -13,7 +13,9 @@ use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use raxis::gfx::color::Oklch;
 use raxis::layout::helpers::spacer;
-use raxis::layout::model::{Alignment2D, Color, DropShadow, FloatingConfig, ScrollBarSize, ScrollConfig, StrokeLineCap, StrokeLineJoin};
+use raxis::layout::model::{
+    Alignment2D, Color, DropShadow, FloatingConfig, ScrollBarSize, ScrollConfig, StrokeLineCap, StrokeLineJoin, TextShadow,
+};
 use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
 use raxis::runtime::task::ClipboardAction;
@@ -28,6 +30,7 @@ use raxis::widgets::slider::Slider;
 use raxis::widgets::svg::Svg;
 use raxis::widgets::svg_path::ColorChoice;
 use raxis::widgets::text::TextAlignment;
+use raxis::widgets::toggle::Toggle;
 use raxis::widgets::Widget;
 use raxis::{
     column,
@@ -143,6 +146,72 @@ const SHADOW_XL: DropShadow = DropShadow {
     ..DropShadow::default()
 };
 
+const TEXT_SHADOW_4PX: TextShadow = TextShadow {
+    offset_x: 0.0,
+    offset_y: 0.0,
+    blur_radius: 4.0,
+    color: Color::BLACK,
+};
+
+const TEXT_SHADOW_2PX: TextShadow = TextShadow {
+    offset_x: 0.0,
+    offset_y: 0.0,
+    blur_radius: 2.0,
+    color: Color::BLACK,
+};
+
+// Helper function to conditionally apply text shadow to Text widgets
+fn maybe_text_shadow(text: Text, enabled: bool) -> Text {
+    if enabled {
+        // text.with_text_shadows(vec![TEXT_SHADOW_4PX, TEXT_SHADOW_2PX])
+        text.with_text_shadows(vec![
+            TextShadow {
+                offset_x: -1.0,
+                offset_y: -1.0,
+                blur_radius: 1.0,
+                color: Color::BLACK,
+            },
+            TextShadow {
+                offset_x: 1.0,
+                offset_y: 1.0,
+                blur_radius: 1.0,
+                color: Color::BLACK,
+            },
+            TextShadow {
+                offset_x: -1.0,
+                offset_y: 1.0,
+                blur_radius: 1.0,
+                color: Color::BLACK,
+            },
+            TextShadow {
+                offset_x: 1.0,
+                offset_y: -1.0,
+                blur_radius: 1.0,
+                color: Color::BLACK,
+            },
+        ])
+    } else {
+        text
+    }
+}
+
+// fn maybe_text_shadow(text: Text, enabled: bool) -> Text {
+//     if enabled {
+//         text.with_text_shadows(vec![
+//             TextShadow {
+//                 color: Color::WHITE.scale_alpha(0.5),
+//                 ..TEXT_SHADOW_4PX
+//             },
+//             TextShadow {
+//                 color: Color::WHITE.scale_alpha(0.5),
+//                 ..TEXT_SHADOW_2PX
+//             },
+//         ])
+//     } else {
+//         text
+//     }
+// }
+
 #[derive(Debug, Clone)]
 pub struct FileExtensions {
     pub description: String,
@@ -176,6 +245,7 @@ pub struct Store {
     background_image: String,
     image_fit: ImageFit,
     background_opacity: f32,
+    text_shadow_enabled: bool,
 }
 
 impl Default for Store {
@@ -189,6 +259,7 @@ impl Default for Store {
             background_image: "gem.jpg".to_string(),
             image_fit: ImageFit::Cover,
             background_opacity: 0.12,
+            text_shadow_enabled: false,
         }
     }
 }
@@ -283,6 +354,8 @@ impl WaitingScreen {
     }
 
     fn waiting_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+        let text_shadow_enabled = store.text_shadow_enabled;
+
         let upload_button = Button::new()
             .with_bg_color(PRIMARY_COLOR)
             .with_border_radius(BORDER_RADIUS)
@@ -320,25 +393,34 @@ impl WaitingScreen {
             .with_padding(BoxAmount::all(PAD_MD));
 
         column![
-            Text::new("Waiting for login...")
-                .with_font_size(24.0)
-                .with_paragraph_alignment(ParagraphAlignment::Center),
-            Text::new("Please log into the game. If you are already in-game, you must log out and log back in.")
-                .with_font_size(16.0)
-                .with_color(TEXT_MUTED)
-                .with_paragraph_alignment(ParagraphAlignment::Center)
-                .as_element()
-                .with_padding(BoxAmount::horizontal(PAD_LG)),
+            maybe_text_shadow(
+                Text::new("Waiting for login...")
+                    .with_font_size(24.0)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled
+            ),
+            maybe_text_shadow(
+                Text::new("Please log into the game. If you are already in-game, you must log out and log back in.")
+                    .with_font_size(16.0)
+                    .with_color(TEXT_MUTED)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled
+            )
+            .as_element()
+            .with_padding(BoxAmount::horizontal(PAD_LG)),
             Rule::horizontal()
                 .with_color(BORDER_COLOR)
                 .as_element(w_id!())
                 .with_padding(BoxAmount::vertical(PAD_LG)),
-            Text::new("Alternatively, if you have a packet capture file, you can upload it.")
-                .with_font_size(16.0)
-                .with_color(TEXT_MUTED)
-                .with_paragraph_alignment(ParagraphAlignment::Center)
-                .as_element()
-                .with_padding(BoxAmount::horizontal(PAD_LG)),
+            maybe_text_shadow(
+                Text::new("Alternatively, if you have a packet capture file, you can upload it.")
+                    .with_font_size(16.0)
+                    .with_color(TEXT_MUTED)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled
+            )
+            .as_element()
+            .with_padding(BoxAmount::horizontal(PAD_LG)),
             upload_bar,
         ]
         .with_child_gap(SPACE_SM)
@@ -355,14 +437,14 @@ pub struct ActiveScreen {
     // Active screen specific state
 }
 
-fn stat_line(label: &'static str, value: usize) -> Element<RootMessage> {
+fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> Element<RootMessage> {
     row![
-        Text::new(label).with_font_size(16.0),
+        maybe_text_shadow(Text::new(label).with_font_size(16.0), text_shadow_enabled),
         Rule::horizontal()
             .with_custom_dashes(&[5.0, 5.0], 0.0)
             .with_color(BORDER_COLOR)
             .as_element(combine_id(w_id!(), label)),
-        Text::new(value.to_string()).with_font_size(16.0)
+        maybe_text_shadow(Text::new(value.to_string()).with_font_size(16.0), text_shadow_enabled)
     ]
     .with_child_gap(SPACE_MD)
     .with_width(Sizing::grow())
@@ -447,11 +529,13 @@ impl ActiveScreen {
     }
 
     fn active_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+        let text_shadow_enabled = store.text_shadow_enabled;
+
         let stats_display = column![
-            stat_line("Relics", store.export_stats.relics),
-            stat_line("Characters", store.export_stats.characters),
-            stat_line("Light Cones", store.export_stats.light_cones),
-            stat_line("Materials", store.export_stats.materials),
+            stat_line("Relics", store.export_stats.relics, text_shadow_enabled),
+            stat_line("Characters", store.export_stats.characters, text_shadow_enabled),
+            stat_line("Light Cones", store.export_stats.light_cones, text_shadow_enabled),
+            stat_line("Materials", store.export_stats.materials, text_shadow_enabled),
         ]
         .with_width(Sizing::grow())
         .with_child_gap(SPACE_MD);
@@ -482,12 +566,15 @@ impl ActiveScreen {
             .align_y(VerticalAlignment::Center);
 
         column![
-            Text::new("Connected!")
-                .with_font_size(24.0)
-                .with_color(SUCCESS_COLOR)
-                .with_paragraph_alignment(ParagraphAlignment::Center)
-                .as_element()
-                .with_padding(BoxAmount::all(PAD_MD)),
+            maybe_text_shadow(
+                Text::new("Connected!")
+                    .with_font_size(24.0)
+                    .with_color(SUCCESS_COLOR)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled
+            )
+            .as_element()
+            .with_padding(BoxAmount::all(PAD_MD)),
             stats_display,
             action_bar,
         ]
@@ -533,6 +620,7 @@ pub enum RootMessage {
     ImageFitChanged(ImageFit),
     OpacityChanged(f32),
     OpacitySliderDrag(bool),
+    TextShadowToggled(bool),
 }
 
 #[derive(Debug, Clone)]
@@ -673,7 +761,7 @@ impl<Message, E: Fn(&raxis::widgets::Event, &mut raxis::Shell<Message>) -> Optio
         &mut self,
         arenas: &raxis::layout::UIArenas,
         instance: &mut raxis::widgets::Instance,
-        shell: &raxis::Shell<Message>,
+        shell: &mut raxis::Shell<Message>,
         recorder: &mut raxis::gfx::command_recorder::CommandRecorder,
         style: raxis::layout::model::ElementStyle,
         bounds: raxis::widgets::Bounds,
@@ -990,19 +1078,22 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         return Element::default();
     }
 
-    // Background image settings
-    let bg_image_label = Text::new("Background Image")
-        .with_font_size(14.0)
-        .with_color(TEXT_COLOR)
-        .as_element()
-        .with_padding(BoxAmount::bottom(PAD_SM));
+    // Header
+    let close_button = Button::new()
+        .ghost()
+        .with_border_radius(BorderRadius::all(BORDER_RADIUS_SM))
+        .with_click_handler(|_, shell| shell.publish(RootMessage::ToggleMenu))
+        .as_element(w_id!(), x_icon());
 
-    let current_image_text = Text::new(format!("Current: {}", state.store.background_image))
-        .with_font_size(12.0)
-        .with_color(TEXT_MUTED)
-        .as_element()
-        .with_padding(BoxAmount::bottom(PAD_SM));
+    let header_section = row![
+        Text::new("Settings").with_font_size(20.0).with_color(TEXT_COLOR).as_element(),
+        spacer(),
+        close_button
+    ]
+    .with_width(Sizing::grow())
+    .align_y(VerticalAlignment::Top);
 
+    // Background image section
     let select_image_button = Button::new()
         .with_bg_color(PRIMARY_COLOR)
         .with_border_radius(BORDER_RADIUS_SM)
@@ -1025,13 +1116,26 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
                 .with_padding(BoxAmount::new(PAD_SM, PAD_MD, PAD_SM, PAD_MD)),
         );
 
-    // Image fit mode settings
-    let fit_mode_label = Text::new("Image Fit Mode")
-        .with_font_size(14.0)
-        .with_color(TEXT_COLOR)
-        .as_element()
-        .with_padding(BoxAmount::new(PAD_LG, 0.0, PAD_SM, 0.0));
+    let bg_image_section = column![
+        row![
+            Text::new("Background Image")
+                .with_font_size(14.0)
+                .with_color(TEXT_COLOR)
+                .as_element(),
+            spacer(),
+            select_image_button,
+        ]
+        .with_width(Sizing::grow())
+        .align_y(VerticalAlignment::Center),
+        Text::new(format!("Current: {}", state.store.background_image))
+            .with_font_size(12.0)
+            .with_color(TEXT_MUTED)
+            .as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow());
 
+    // Image fit mode section
     let mut fit_mode_toggles = togglegroup(
         w_id!(),
         vec![
@@ -1052,19 +1156,14 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         .map(|mut child| child.with_width(Sizing::grow()))
         .collect();
 
-    // Opacity slider settings
-    let opacity_label = Text::new("Background Opacity")
-        .with_font_size(14.0)
-        .with_color(TEXT_COLOR)
-        .as_element()
-        .with_padding(BoxAmount::new(PAD_LG, 0.0, PAD_SM, 0.0));
+    let fit_mode_section = column![
+        Text::new("Image Fit Mode").with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
+        fit_mode_toggles,
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow());
 
-    let opacity_value_text = Text::new(format!("{:.0}%", state.store.background_opacity * 100.0))
-        .with_font_size(12.0)
-        .with_color(TEXT_MUTED)
-        .as_element()
-        .with_padding(BoxAmount::new(PAD_LG, 0.0, PAD_SM, 0.0));
-
+    // Opacity slider section
     let opacity_slider = Slider::new(0.0, 1.0, state.store.background_opacity)
         .with_step(0.01)
         .with_track_height(6.0)
@@ -1082,36 +1181,58 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         .as_element(w_id!())
         .with_width(Sizing::grow());
 
-    let opacity_row = row![opacity_label, spacer(), opacity_value_text]
-        .with_width(Sizing::grow())
-        .with_child_gap(SPACE_SM)
-        .align_y(VerticalAlignment::Center);
-
-    let close_button = Button::new()
-        .ghost()
-        .with_border_radius(BorderRadius::all(BORDER_RADIUS_SM))
-        .with_click_handler(|_, shell| shell.publish(RootMessage::ToggleMenu))
-        .as_element(w_id!(), x_icon());
-
-    let settings_content = column![
+    let opacity_section = column![
         row![
-            Text::new("Settings").with_font_size(20.0).with_color(TEXT_COLOR).as_element(),
+            Text::new("Background Opacity")
+                .with_font_size(14.0)
+                .with_color(TEXT_COLOR)
+                .as_element(),
             spacer(),
-            close_button
+            Text::new(format!("{:.0}%", state.store.background_opacity * 100.0))
+                .with_font_size(12.0)
+                .with_color(TEXT_MUTED)
+                .as_element(),
         ]
         .with_width(Sizing::grow())
-        .align_y(VerticalAlignment::Top)
-        .with_padding(BoxAmount::new(0.0, 0.0, PAD_MD, 0.0)),
-        row![bg_image_label, spacer(), select_image_button,]
-            .with_width(Sizing::grow())
-            .align_y(VerticalAlignment::Center),
-        current_image_text,
-        fit_mode_label,
-        fit_mode_toggles,
-        opacity_row,
+        .with_child_gap(SPACE_SM)
+        .align_y(VerticalAlignment::Center),
         opacity_slider,
     ]
     .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow());
+
+    // Text shadow section
+    let text_shadow_toggle = Toggle::new(state.store.text_shadow_enabled)
+        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
+        .with_toggle_handler(|enabled, _, shell| {
+            shell.publish(RootMessage::TextShadowToggled(enabled));
+        })
+        .as_element(w_id!());
+
+    let text_shadow_section = column![
+        row![
+            Text::new("Text Shadow").with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
+            spacer(),
+            text_shadow_toggle
+        ]
+        .with_width(Sizing::grow())
+        .align_y(VerticalAlignment::Center),
+        Text::new("Add a text-shadow to text for better readability")
+            .with_font_size(11.0)
+            .with_color(TEXT_MUTED)
+            .as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow());
+
+    let settings_content = column![
+        header_section,
+        bg_image_section,
+        fit_mode_section,
+        opacity_section,
+        text_shadow_section,
+    ]
+    .with_child_gap(SPACE_LG)
     .with_width(Sizing::fixed(400.0))
     .with_padding(BoxAmount::all(PAD_LG));
 
@@ -1156,10 +1277,15 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
 
 // Main view function
 pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
-    let help_text = Text::new("have questions or issues?")
-        .with_font_size(16.0)
-        .italic()
-        .with_color(TEXT_MUTED);
+    let text_shadow_enabled = state.store.text_shadow_enabled;
+
+    let help_text = maybe_text_shadow(
+        Text::new("have questions or issues?")
+            .with_font_size(16.0)
+            .italic()
+            .with_color(TEXT_MUTED),
+        text_shadow_enabled,
+    );
 
     let social_buttons = row![github_button(), discord_button()]
         .with_child_gap(SPACE_MD)
@@ -1201,14 +1327,17 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         WebSocketStatus::Failed { error } => format!("failed to start server: {}", error),
     };
 
-    let ws_status = Text::new(ws_status_text)
-        .with_font_size(12.0)
-        .with_color(match &state.store.connection_stats.ws_status {
-            WebSocketStatus::Failed { .. } => DANGER_COLOR,
-            _ => TEXT_MUTED,
-        })
-        .as_element()
-        .with_id(w_id!());
+    let ws_status = maybe_text_shadow(
+        Text::new(ws_status_text)
+            .with_font_size(12.0)
+            .with_color(match &state.store.connection_stats.ws_status {
+                WebSocketStatus::Failed { .. } => DANGER_COLOR,
+                _ => TEXT_MUTED,
+            }),
+        text_shadow_enabled,
+    )
+    .as_element()
+    .with_id(w_id!());
 
     let content = match &state.screen {
         Screen::Waiting(screen) => screen.view(&state.store, hook),
@@ -1224,13 +1353,16 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         "disconnected".to_string()
     };
 
-    let connection_status = Text::new(connection_status_text)
-        .with_font_size(12.0)
-        .with_color(if state.store.connection_stats.connected {
-            SUCCESS_COLOR
-        } else {
-            DANGER_COLOR
-        });
+    let connection_status = maybe_text_shadow(
+        Text::new(connection_status_text)
+            .with_font_size(12.0)
+            .with_color(if state.store.connection_stats.connected {
+                SUCCESS_COLOR
+            } else {
+                DANGER_COLOR
+            }),
+        text_shadow_enabled,
+    );
 
     let level_group = togglegroup(
         w_id!(),
@@ -1456,6 +1588,12 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::OpacitySliderDrag(is_dragging) => {
             state.opacity_slider_dragging = is_dragging;
+            None
+        }
+
+        RootMessage::TextShadowToggled(enabled) => {
+            state.store.text_shadow_enabled = enabled;
+            tracing::info!("Text shadow toggled: {}", enabled);
             None
         }
     }
