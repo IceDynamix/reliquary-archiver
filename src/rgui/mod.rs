@@ -18,7 +18,7 @@ use raxis::layout::model::{
 };
 use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
-use raxis::runtime::task::ClipboardAction;
+use raxis::runtime::task::{hide_window, show_window, ClipboardAction};
 use raxis::runtime::vkey::VKey;
 use raxis::runtime::{task, Backdrop};
 use raxis::util::str::StableString;
@@ -50,7 +50,7 @@ use raxis::{
     },
     HookManager,
 };
-use raxis::{svg, svg_path, use_animation, SvgPathCommands};
+use raxis::{svg, svg_path, use_animation, SvgPathCommands, SystemCommand, SystemCommandResponse, TrayEvent, TrayIconConfig};
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use tokio::sync::broadcast;
 use tracing::info;
@@ -246,6 +246,8 @@ pub struct Store {
     image_fit: ImageFit,
     background_opacity: f32,
     text_shadow_enabled: bool,
+    minimize_to_tray_on_close: bool,
+    minimize_to_tray_on_minimize: bool,
 }
 
 impl Default for Store {
@@ -260,6 +262,8 @@ impl Default for Store {
             image_fit: ImageFit::Cover,
             background_opacity: 0.12,
             text_shadow_enabled: false,
+            minimize_to_tray_on_close: true,
+            minimize_to_tray_on_minimize: false,
         }
     }
 }
@@ -621,6 +625,11 @@ pub enum RootMessage {
     OpacityChanged(f32),
     OpacitySliderDrag(bool),
     TextShadowToggled(bool),
+    MinimizeToTrayOnCloseToggled(bool),
+    MinimizeToTrayOnMinimizeToggled(bool),
+    TrayIconClicked,
+    HideWindow,
+    ShowWindow,
 }
 
 #[derive(Debug, Clone)]
@@ -1225,12 +1234,68 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow());
 
+    // Minimize to tray on close section
+    let minimize_on_close_toggle = Toggle::new(state.store.minimize_to_tray_on_close)
+        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
+        .with_toggle_handler(|enabled, _, shell| {
+            shell.publish(RootMessage::MinimizeToTrayOnCloseToggled(enabled));
+        })
+        .as_element(w_id!());
+
+    let minimize_on_close_section = column![
+        row![
+            Text::new("Minimize to Tray on Close")
+                .with_font_size(14.0)
+                .with_color(TEXT_COLOR)
+                .as_element(),
+            spacer(),
+            minimize_on_close_toggle
+        ]
+        .with_width(Sizing::grow())
+        .align_y(VerticalAlignment::Center),
+        Text::new("Hide to system tray instead of closing when clicking the X button")
+            .with_font_size(11.0)
+            .with_color(TEXT_MUTED)
+            .as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow());
+
+    // Minimize to tray on minimize section
+    let minimize_on_minimize_toggle = Toggle::new(state.store.minimize_to_tray_on_minimize)
+        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
+        .with_toggle_handler(|enabled, _, shell| {
+            shell.publish(RootMessage::MinimizeToTrayOnMinimizeToggled(enabled));
+        })
+        .as_element(w_id!());
+
+    let minimize_on_minimize_section = column![
+        row![
+            Text::new("Minimize to Tray on Minimize")
+                .with_font_size(14.0)
+                .with_color(TEXT_COLOR)
+                .as_element(),
+            spacer(),
+            minimize_on_minimize_toggle
+        ]
+        .with_width(Sizing::grow())
+        .align_y(VerticalAlignment::Center),
+        Text::new("Hide to system tray instead of taskbar when minimizing")
+            .with_font_size(11.0)
+            .with_color(TEXT_MUTED)
+            .as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow());
+
     let settings_content = column![
         header_section,
         bg_image_section,
         fit_mode_section,
         opacity_section,
         text_shadow_section,
+        minimize_on_close_section,
+        minimize_on_minimize_section,
     ]
     .with_child_gap(SPACE_LG)
     .with_width(Sizing::fixed(400.0))
@@ -1593,9 +1658,24 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::TextShadowToggled(enabled) => {
             state.store.text_shadow_enabled = enabled;
-            tracing::info!("Text shadow toggled: {}", enabled);
             None
         }
+
+        RootMessage::MinimizeToTrayOnCloseToggled(enabled) => {
+            state.store.minimize_to_tray_on_close = enabled;
+            None
+        }
+
+        RootMessage::MinimizeToTrayOnMinimizeToggled(enabled) => {
+            state.store.minimize_to_tray_on_minimize = enabled;
+            None
+        }
+
+        RootMessage::TrayIconClicked => Some(show_window()),
+
+        RootMessage::HideWindow => Some(hide_window()),
+
+        RootMessage::ShowWindow => Some(show_window()),
     }
     .also(|_| {
         // Handle connection transitions
@@ -1679,7 +1759,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let state = RootState::default();
     let exporter = state.exporter.clone();
 
-    raxis::Application::new(state, view, update, move |_state| {
+    let app = raxis::Application::new(state, view, update, move |_state| {
         Some(Task::batch(vec![
             Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
             Task::future(start_websocket_server(53313, exporter.clone()))
@@ -1698,10 +1778,44 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         ]))
     })
     .with_title("Reliquary Archiver")
+    .with_tray_icon(TrayIconConfig {
+        icon_resource: Some(1),
+        tooltip: Some("Reliquary Archiver".to_string()),
+    })
+    .with_tray_event_handler(|_state, event| {
+        match event {
+            TrayEvent::LeftClick | TrayEvent::LeftDoubleClick => Some(RootMessage::TrayIconClicked),
+            TrayEvent::RightClick => {
+                // Could add context menu in the future
+                None
+            }
+        }
+    })
+    .with_syscommand_handler(|state, command| match command {
+        SystemCommand::Close => {
+            if state.store.minimize_to_tray_on_close {
+                tracing::info!("Close button clicked - minimizing to tray");
+                return SystemCommandResponse::PreventWith(RootMessage::HideWindow);
+            }
+            tracing::info!("Close button clicked - closing application");
+            SystemCommandResponse::Allow
+        }
+        SystemCommand::Minimize => {
+            if state.store.minimize_to_tray_on_minimize {
+                tracing::info!("Minimize button clicked - minimizing to tray");
+                return SystemCommandResponse::PreventWith(RootMessage::HideWindow);
+            }
+            tracing::info!("Minimize button clicked - minimizing to taskbar");
+            SystemCommandResponse::Allow
+        }
+        SystemCommand::Maximize | SystemCommand::Restore => SystemCommandResponse::Allow,
+        _ => SystemCommandResponse::Allow,
+    })
     .replace_titlebar()
     .with_backdrop(Backdrop::MicaAlt)
-    .with_window_size(960, 760)
-    .run()?;
+    .with_window_size(960, 760);
+
+    app.run()?;
 
     Ok(())
 }
