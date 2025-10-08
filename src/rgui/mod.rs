@@ -50,7 +50,9 @@ use raxis::{
     },
     HookManager,
 };
-use raxis::{svg, svg_path, use_animation, SvgPathCommands, SystemCommand, SystemCommandResponse, TrayEvent, TrayIconConfig};
+use raxis::{
+    svg, svg_path, use_animation, ContextMenuItem, SvgPathCommands, SystemCommand, SystemCommandResponse, TrayEvent, TrayIconConfig,
+};
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use tokio::sync::broadcast;
 use tracing::info;
@@ -627,9 +629,11 @@ pub enum RootMessage {
     TextShadowToggled(bool),
     MinimizeToTrayOnCloseToggled(bool),
     MinimizeToTrayOnMinimizeToggled(bool),
-    TrayIconClicked,
     HideWindow,
     ShowWindow,
+    ContextMenuShow,
+    ContextMenuQuit,
+    ContextMenuCancelled,
 }
 
 #[derive(Debug, Clone)]
@@ -1671,11 +1675,15 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             None
         }
 
-        RootMessage::TrayIconClicked => Some(show_window()),
+        RootMessage::HideWindow => Some(task::hide_window()),
 
-        RootMessage::HideWindow => Some(hide_window()),
+        RootMessage::ShowWindow => Some(task::show_window()),
 
-        RootMessage::ShowWindow => Some(show_window()),
+        RootMessage::ContextMenuShow => Some(task::show_window()),
+
+        RootMessage::ContextMenuQuit => Some(task::exit_application()),
+
+        RootMessage::ContextMenuCancelled => None,
     }
     .also(|_| {
         // Handle connection transitions
@@ -1782,30 +1790,28 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         icon_resource: Some(1),
         tooltip: Some("Reliquary Archiver".to_string()),
     })
-    .with_tray_event_handler(|_state, event| {
-        match event {
-            TrayEvent::LeftClick | TrayEvent::LeftDoubleClick => Some(RootMessage::TrayIconClicked),
-            TrayEvent::RightClick => {
-                // Could add context menu in the future
-                None
-            }
-        }
+    .with_tray_event_handler(|_state, event| match event {
+        TrayEvent::LeftClick | TrayEvent::LeftDoubleClick => Some(task::show_window()),
+        TrayEvent::RightClick => Some(task::show_context_menu(
+            vec![
+                ContextMenuItem::new(RootMessage::ContextMenuShow, "Show Window"),
+                ContextMenuItem::separator(),
+                ContextMenuItem::new(RootMessage::ContextMenuQuit, "Quit"),
+            ],
+            RootMessage::ContextMenuCancelled,
+        )),
     })
     .with_syscommand_handler(|state, command| match command {
         SystemCommand::Close => {
             if state.store.minimize_to_tray_on_close {
-                tracing::info!("Close button clicked - minimizing to tray");
                 return SystemCommandResponse::PreventWith(RootMessage::HideWindow);
             }
-            tracing::info!("Close button clicked - closing application");
             SystemCommandResponse::Allow
         }
         SystemCommand::Minimize => {
             if state.store.minimize_to_tray_on_minimize {
-                tracing::info!("Minimize button clicked - minimizing to tray");
                 return SystemCommandResponse::PreventWith(RootMessage::HideWindow);
             }
-            tracing::info!("Minimize button clicked - minimizing to taskbar");
             SystemCommandResponse::Allow
         }
         SystemCommand::Maximize | SystemCommand::Restore => SystemCommandResponse::Allow,
