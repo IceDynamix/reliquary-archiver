@@ -264,7 +264,7 @@ impl Default for Store {
             image_fit: ImageFit::Cover,
             background_opacity: 0.12,
             text_shadow_enabled: false,
-            minimize_to_tray_on_close: true,
+            minimize_to_tray_on_close: false,
             minimize_to_tray_on_minimize: false,
         }
     }
@@ -1298,6 +1298,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         fit_mode_section,
         opacity_section,
         text_shadow_section,
+        horizontal_rule(w_id!()),
         minimize_on_close_section,
         minimize_on_minimize_section,
     ]
@@ -1521,6 +1522,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         modal(state, hook)
     ]
     .with_id(w_id!())
+    .with_color(TEXT_COLOR)
     .with_widget(
         Image::new(state.store.background_image.clone())
             .with_opacity(state.store.background_opacity)
