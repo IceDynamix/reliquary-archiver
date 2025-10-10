@@ -1594,10 +1594,8 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
                     let settings = settings.clone();
                     Task::future(async move {
                         let path = get_settings_path(path);
-                        println!("Saving settings to {}", path.display());
                         tokio::fs::create_dir_all(path.parent().unwrap().to_owned()).await;
                         tokio::fs::write(path, serde_json::to_string(&settings).unwrap()).await;
-                        println!("Settings saved");
                     })
                 })
                 .discard(),
@@ -1751,7 +1749,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         RootMessage::ContextMenuCancelled => None,
 
         RootMessage::LoadSettings(path) => {
-            println!("Loading settings from {}", path.display());
+            info!("Loading settings from {}", path.display());
             if path.exists() {
                 Some(Task::future(tokio::fs::read_to_string(path)).and_then(|content| {
                     let settings: Settings = serde_json::from_str(&content).unwrap();
