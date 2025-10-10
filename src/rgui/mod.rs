@@ -18,7 +18,7 @@ use raxis::layout::model::{
 };
 use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
-use raxis::runtime::task::{hide_window, show_window, ClipboardAction};
+use raxis::runtime::task::{hide_window, show_window, ClipboardAction, WindowMode};
 use raxis::runtime::vkey::VKey;
 use raxis::runtime::{task, Backdrop};
 use raxis::util::str::StableString;
@@ -632,6 +632,7 @@ pub enum RootMessage {
     HideWindow,
     ShowWindow,
     ContextMenuShow,
+    ContextMenuMinimize,
     ContextMenuQuit,
     ContextMenuCancelled,
 }
@@ -960,7 +961,8 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                                         combine_id(w_id!(), i % visible_items),
                                         Text::new(format!("Show more ({})", short_size(lines[i].len())))
                                             .with_font_size(8.0)
-                                            .with_color(TEXT_ON_LIGHT_COLOR),
+                                            .with_color(TEXT_ON_LIGHT_COLOR)
+                                            .with_assisted_id(combine_id(w_id!(), i % visible_items)),
                                     ),
                             ],
 
@@ -1325,7 +1327,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
                 color: BORDER_COLOR,
                 ..Default::default()
             }),
-            drop_shadow: Some(SHADOW_XL),
+            drop_shadows: vec![SHADOW_XL],
 
             content: widget(Button::new().clear()),
 
@@ -1683,6 +1685,8 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::ContextMenuShow => Some(task::show_window()),
 
+        RootMessage::ContextMenuMinimize => Some(task::hide_window()),
+
         RootMessage::ContextMenuQuit => Some(task::exit_application()),
 
         RootMessage::ContextMenuCancelled => None,
@@ -1794,14 +1798,20 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .with_tray_event_handler(|_state, event| match event {
         TrayEvent::LeftClick | TrayEvent::LeftDoubleClick => Some(task::show_window()),
-        TrayEvent::RightClick => Some(task::show_context_menu(
-            vec![
-                ContextMenuItem::new(RootMessage::ContextMenuShow, "Show Window"),
-                ContextMenuItem::separator(),
-                ContextMenuItem::new(RootMessage::ContextMenuQuit, "Quit"),
-            ],
-            RootMessage::ContextMenuCancelled,
-        )),
+        TrayEvent::RightClick => Some(task::get_window_mode().then(|mode| {
+            task::show_context_menu(
+                vec![
+                    if mode == WindowMode::Hidden {
+                        ContextMenuItem::new(RootMessage::ContextMenuShow, "Show Window")
+                    } else {
+                        ContextMenuItem::new(RootMessage::ContextMenuMinimize, "Minimize to Tray")
+                    },
+                    ContextMenuItem::separator(),
+                    ContextMenuItem::new(RootMessage::ContextMenuQuit, "Quit"),
+                ],
+                RootMessage::ContextMenuCancelled,
+            )
+        })),
     })
     .with_syscommand_handler(|state, command| match command {
         SystemCommand::Close => {
