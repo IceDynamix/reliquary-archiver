@@ -23,7 +23,7 @@ use raxis::runtime::vkey::VKey;
 use raxis::runtime::{task, Backdrop};
 use raxis::util::str::StableString;
 use raxis::util::unique::combine_id;
-use raxis::widgets::image::{Image, ImageFit};
+use raxis::widgets::image::Image;
 use raxis::widgets::mouse_area::{MouseArea, MouseAreaEvent};
 use raxis::widgets::rule::{horizontal_rule, Rule};
 use raxis::widgets::slider::Slider;
@@ -244,6 +244,26 @@ pub struct Store {
     export_stats: ExportStats,
 
     log_level: LevelFilter,
+    settings: Settings,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+pub enum ImageFit {
+    /// Stretch to fill the container (default)
+    #[default]
+    Fill,
+    /// Scale to fit inside the container while maintaining aspect ratio
+    Contain,
+    /// Scale to cover the container while maintaining aspect ratio (may crop)
+    Cover,
+    /// Like contain but never scale up beyond intrinsic size
+    ScaleDown,
+    /// Display at intrinsic size with no scaling
+    None,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Settings {
     background_image: String,
     image_fit: ImageFit,
     background_opacity: f32,
@@ -260,6 +280,14 @@ impl Default for Store {
             connection_stats: StatsStore::default(),
             export_stats: ExportStats::default(),
             log_level: LevelFilter::INFO, // TODO: This is not right
+            settings: Settings::default(),
+        }
+    }
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
             background_image: "gem.jpg".to_string(),
             image_fit: ImageFit::Cover,
             background_opacity: 0.12,
@@ -360,7 +388,7 @@ impl WaitingScreen {
     }
 
     fn waiting_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
-        let text_shadow_enabled = store.text_shadow_enabled;
+        let text_shadow_enabled = store.settings.text_shadow_enabled;
 
         let upload_button = Button::new()
             .with_bg_color(PRIMARY_COLOR)
@@ -535,7 +563,7 @@ impl ActiveScreen {
     }
 
     fn active_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
-        let text_shadow_enabled = store.text_shadow_enabled;
+        let text_shadow_enabled = store.settings.text_shadow_enabled;
 
         let stats_display = column![
             stat_line("Relics", store.export_stats.relics, text_shadow_enabled),
@@ -635,6 +663,9 @@ pub enum RootMessage {
     ContextMenuMinimize,
     ContextMenuQuit,
     ContextMenuCancelled,
+    LoadSettings(PathBuf),
+    ActivateSettings(Settings),
+    SaveSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -1142,7 +1173,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         ]
         .with_width(Sizing::grow())
         .align_y(VerticalAlignment::Center),
-        Text::new(format!("Current: {}", state.store.background_image))
+        Text::new(format!("Current: {}", state.store.settings.background_image))
             .with_font_size(12.0)
             .with_color(TEXT_MUTED)
             .as_element(),
@@ -1160,7 +1191,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
             ToggleOption::new(ImageFit::ScaleDown, "Scale Down"),
             ToggleOption::new(ImageFit::None, "None"),
         ],
-        &state.store.image_fit,
+        &state.store.settings.image_fit,
         |fit| Some(RootMessage::ImageFitChanged(fit)),
     )
     .with_width(Sizing::grow());
@@ -1179,7 +1210,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
     .with_width(Sizing::grow());
 
     // Opacity slider section
-    let opacity_slider = Slider::new(0.0, 1.0, state.store.background_opacity)
+    let opacity_slider = Slider::new(0.0, 1.0, state.store.settings.background_opacity)
         .with_step(0.01)
         .with_track_height(6.0)
         .with_thumb_size(18.0)
@@ -1203,7 +1234,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
                 .with_color(TEXT_COLOR)
                 .as_element(),
             spacer(),
-            Text::new(format!("{:.0}%", state.store.background_opacity * 100.0))
+            Text::new(format!("{:.0}%", state.store.settings.background_opacity * 100.0))
                 .with_font_size(12.0)
                 .with_color(TEXT_MUTED)
                 .as_element(),
@@ -1217,7 +1248,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
     .with_width(Sizing::grow());
 
     // Text shadow section
-    let text_shadow_toggle = Toggle::new(state.store.text_shadow_enabled)
+    let text_shadow_toggle = Toggle::new(state.store.settings.text_shadow_enabled)
         .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
         .with_toggle_handler(|enabled, _, shell| {
             shell.publish(RootMessage::TextShadowToggled(enabled));
@@ -1241,7 +1272,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
     .with_width(Sizing::grow());
 
     // Minimize to tray on close section
-    let minimize_on_close_toggle = Toggle::new(state.store.minimize_to_tray_on_close)
+    let minimize_on_close_toggle = Toggle::new(state.store.settings.minimize_to_tray_on_close)
         .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
         .with_toggle_handler(|enabled, _, shell| {
             shell.publish(RootMessage::MinimizeToTrayOnCloseToggled(enabled));
@@ -1268,7 +1299,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
     .with_width(Sizing::grow());
 
     // Minimize to tray on minimize section
-    let minimize_on_minimize_toggle = Toggle::new(state.store.minimize_to_tray_on_minimize)
+    let minimize_on_minimize_toggle = Toggle::new(state.store.settings.minimize_to_tray_on_minimize)
         .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
         .with_toggle_handler(|enabled, _, shell| {
             shell.publish(RootMessage::MinimizeToTrayOnMinimizeToggled(enabled));
@@ -1349,7 +1380,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
 
 // Main view function
 pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
-    let text_shadow_enabled = state.store.text_shadow_enabled;
+    let text_shadow_enabled = state.store.settings.text_shadow_enabled;
 
     let help_text = maybe_text_shadow(
         Text::new("have questions or issues?")
@@ -1526,12 +1557,22 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     .with_id(w_id!())
     .with_color(TEXT_COLOR)
     .with_widget(
-        Image::new(state.store.background_image.clone())
-            .with_opacity(state.store.background_opacity)
-            .with_fit(state.store.image_fit),
+        Image::new(state.store.settings.background_image.clone())
+            .with_opacity(state.store.settings.background_opacity)
+            .with_fit(match state.store.settings.image_fit {
+                ImageFit::Fill => raxis::widgets::image::ImageFit::Fill,
+                ImageFit::Contain => raxis::widgets::image::ImageFit::Contain,
+                ImageFit::Cover => raxis::widgets::image::ImageFit::Cover,
+                ImageFit::ScaleDown => raxis::widgets::image::ImageFit::ScaleDown,
+                ImageFit::None => raxis::widgets::image::ImageFit::None,
+            }),
     )
     .with_width(Sizing::grow())
     .with_height(Sizing::grow())
+}
+
+fn get_settings_path(appdata: PathBuf) -> PathBuf {
+    appdata.join("reliquary-archiver").join("settings.json")
 }
 
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
@@ -1544,6 +1585,24 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             }
         };
     }
+
+    fn save_settings(state: &RootState) -> Option<Task<RootMessage>> {
+        let settings = state.store.settings.clone();
+        Some(
+            task::get_local_app_data()
+                .and_then(move |path| {
+                    let settings = settings.clone();
+                    Task::future(async move {
+                        let path = get_settings_path(path);
+                        println!("Saving settings to {}", path.display());
+                        tokio::fs::create_dir_all(path.parent().unwrap().to_owned()).await;
+                        tokio::fs::write(path, serde_json::to_string(&settings).unwrap()).await;
+                        println!("Settings saved");
+                    })
+                })
+                .discard(),
+        )
+    };
 
     match message {
         RootMessage::TriggerRender => None, // Just update the view
@@ -1642,21 +1701,21 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::BackgroundImageSelected(path) => {
             if let Some(path) = path {
-                state.store.background_image = path.to_string_lossy().to_string();
-                tracing::info!("Background image changed to: {}", state.store.background_image);
+                state.store.settings.background_image = path.to_string_lossy().to_string();
+                tracing::info!("Background image changed to: {}", state.store.settings.background_image);
             }
-            None
+            save_settings(state)
         }
 
         RootMessage::ImageFitChanged(fit) => {
-            state.store.image_fit = fit;
+            state.store.settings.image_fit = fit;
             tracing::info!("Image fit mode changed to: {:?}", fit);
-            None
+            save_settings(state)
         }
 
         RootMessage::OpacityChanged(opacity) => {
-            state.store.background_opacity = opacity;
-            None
+            state.store.settings.background_opacity = opacity;
+            save_settings(state)
         }
 
         RootMessage::OpacitySliderDrag(is_dragging) => {
@@ -1665,18 +1724,18 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         }
 
         RootMessage::TextShadowToggled(enabled) => {
-            state.store.text_shadow_enabled = enabled;
-            None
+            state.store.settings.text_shadow_enabled = enabled;
+            save_settings(state)
         }
 
         RootMessage::MinimizeToTrayOnCloseToggled(enabled) => {
-            state.store.minimize_to_tray_on_close = enabled;
-            None
+            state.store.settings.minimize_to_tray_on_close = enabled;
+            save_settings(state)
         }
 
         RootMessage::MinimizeToTrayOnMinimizeToggled(enabled) => {
-            state.store.minimize_to_tray_on_minimize = enabled;
-            None
+            state.store.settings.minimize_to_tray_on_minimize = enabled;
+            save_settings(state)
         }
 
         RootMessage::HideWindow => Some(task::hide_window()),
@@ -1690,6 +1749,25 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         RootMessage::ContextMenuQuit => Some(task::exit_application()),
 
         RootMessage::ContextMenuCancelled => None,
+
+        RootMessage::LoadSettings(path) => {
+            println!("Loading settings from {}", path.display());
+            if path.exists() {
+                Some(Task::future(tokio::fs::read_to_string(path)).and_then(|content| {
+                    let settings: Settings = serde_json::from_str(&content).unwrap();
+                    Task::done(RootMessage::ActivateSettings(settings))
+                }))
+            } else {
+                None
+            }
+        }
+
+        RootMessage::SaveSettings => save_settings(state),
+
+        RootMessage::ActivateSettings(settings) => {
+            state.store.settings = settings;
+            None
+        }
     }
     .also(|_| {
         // Handle connection transitions
@@ -1775,6 +1853,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = raxis::Application::new(state, view, update, move |_state| {
         Some(Task::batch(vec![
+            task::get_local_app_data().and_then(|path| Task::done(RootMessage::LoadSettings(get_settings_path(path)))),
             Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
             Task::future(start_websocket_server(53313, exporter.clone()))
                 .then(|e| match e {
@@ -1815,13 +1894,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .with_syscommand_handler(|state, command| match command {
         SystemCommand::Close => {
-            if state.store.minimize_to_tray_on_close {
+            if state.store.settings.minimize_to_tray_on_close {
                 return SystemCommandResponse::PreventWith(RootMessage::HideWindow);
             }
             SystemCommandResponse::Allow
         }
         SystemCommand::Minimize => {
-            if state.store.minimize_to_tray_on_minimize {
+            if state.store.settings.minimize_to_tray_on_minimize {
                 return SystemCommandResponse::PreventWith(RootMessage::HideWindow);
             }
             SystemCommandResponse::Allow
