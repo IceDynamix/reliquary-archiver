@@ -288,7 +288,7 @@ impl Default for Store {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            background_image: "gem.jpg".to_string(),
+            background_image: "".to_string(),
             image_fit: ImageFit::Cover,
             background_opacity: 0.12,
             text_shadow_enabled: false,
@@ -478,7 +478,12 @@ fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> El
             .with_custom_dashes(&[5.0, 5.0], 0.0)
             .with_color(BORDER_COLOR)
             .as_element(combine_id(w_id!(), label)),
-        maybe_text_shadow(Text::new(value.to_string()).with_font_size(16.0), text_shadow_enabled)
+        maybe_text_shadow(
+            Text::new(value.to_string())
+                .with_font_size(16.0)
+                .with_assisted_id(combine_id(w_id!(), label)),
+            text_shadow_enabled
+        )
     ]
     .with_child_gap(SPACE_MD)
     .with_width(Sizing::grow())
@@ -651,6 +656,7 @@ pub enum RootMessage {
     ExportLog,
     ToggleMenu,
     BackgroundImageSelected(Option<PathBuf>),
+    RemoveBackgroundImage,
     ImageFitChanged(ImageFit),
     OpacityChanged(f32),
     OpacitySliderDrag(bool),
@@ -1162,21 +1168,49 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
                 .with_padding(BoxAmount::new(PAD_SM, PAD_MD, PAD_SM, PAD_MD)),
         );
 
-    let bg_image_section = column![
-        row![
-            Text::new("Background Image")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            select_image_button,
-        ]
-        .with_width(Sizing::grow())
-        .align_y(VerticalAlignment::Center),
-        Text::new(format!("Current: {}", state.store.settings.background_image))
-            .with_font_size(12.0)
-            .with_color(TEXT_MUTED)
+    let remove_image_button = Button::new()
+        .with_border_radius(BorderRadius::all(BORDER_RADIUS_SM))
+        .with_bg_color(Color::from_rgba(220.0 / 255.0, 38.0 / 255.0, 38.0 / 255.0, 1.0))
+        .with_click_handler(|_, shell| shell.publish(RootMessage::RemoveBackgroundImage))
+        .as_element(
+            w_id!(),
+            Text::new("✕")
+                .with_font_size(12.0)
+                .with_color(Color::WHITE)
+                .as_element()
+                .with_padding(BoxAmount::new(PAD_SM, PAD_MD, PAD_SM, PAD_MD)),
+        );
+
+    let mut bg_image_row = row![
+        Text::new("Background Image")
+            .with_font_size(14.0)
+            .with_color(TEXT_COLOR)
             .as_element(),
+        spacer(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow())
+    .align_y(VerticalAlignment::Center);
+
+    // Add remove button if background image is present
+    if !state.store.settings.background_image.is_empty() {
+        bg_image_row.push_child(remove_image_button);
+    }
+    bg_image_row.push_child(select_image_button);
+
+    let bg_image_section = column![
+        bg_image_row,
+        Text::new(format!(
+            "Current: {}",
+            if state.store.settings.background_image.is_empty() {
+                "None"
+            } else {
+                state.store.settings.background_image.as_str()
+            }
+        ))
+        .with_font_size(12.0)
+        .with_color(TEXT_MUTED)
+        .as_element(),
     ]
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow());
@@ -1556,17 +1590,23 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     ]
     .with_id(w_id!())
     .with_color(TEXT_COLOR)
-    .with_widget(
-        Image::new(state.store.settings.background_image.clone())
-            .with_opacity(state.store.settings.background_opacity)
-            .with_fit(match state.store.settings.image_fit {
-                ImageFit::Fill => raxis::widgets::image::ImageFit::Fill,
-                ImageFit::Contain => raxis::widgets::image::ImageFit::Contain,
-                ImageFit::Cover => raxis::widgets::image::ImageFit::Cover,
-                ImageFit::ScaleDown => raxis::widgets::image::ImageFit::ScaleDown,
-                ImageFit::None => raxis::widgets::image::ImageFit::None,
-            }),
-    )
+    .apply(|e| {
+        if !state.store.settings.background_image.is_empty() {
+            e.with_widget(
+                Image::new(state.store.settings.background_image.clone())
+                    .with_opacity(state.store.settings.background_opacity)
+                    .with_fit(match state.store.settings.image_fit {
+                        ImageFit::Fill => raxis::widgets::image::ImageFit::Fill,
+                        ImageFit::Contain => raxis::widgets::image::ImageFit::Contain,
+                        ImageFit::Cover => raxis::widgets::image::ImageFit::Cover,
+                        ImageFit::ScaleDown => raxis::widgets::image::ImageFit::ScaleDown,
+                        ImageFit::None => raxis::widgets::image::ImageFit::None,
+                    }),
+            )
+        } else {
+            e
+        }
+    })
     .with_width(Sizing::grow())
     .with_height(Sizing::grow())
 }
@@ -1702,6 +1742,12 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
                 state.store.settings.background_image = path.to_string_lossy().to_string();
                 tracing::info!("Background image changed to: {}", state.store.settings.background_image);
             }
+            save_settings(state)
+        }
+
+        RootMessage::RemoveBackgroundImage => {
+            state.store.settings.background_image = String::new();
+            tracing::info!("Background image removed");
             save_settings(state)
         }
 
