@@ -1,5 +1,5 @@
 use raxis::{
-    layout::model::{Border, BorderRadius, Color, Direction::LeftToRight, Element, HorizontalAlignment, Sizing, VerticalAlignment},
+    layout::model::{Alignment, Border, BorderRadius, Color, Direction::LeftToRight, Element, Sizing},
     util::unique::combine_id,
     w_id,
     widgets::{

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use raxis::{
     layout::{
-        helpers::{center, row, ElementAlignmentExt},
-        model::{Border, BorderRadius, BoxAmount, Color, Direction, Element, Sizing, StrokeLineCap, StrokeLineJoin, VerticalAlignment},
+        helpers::{center, row},
+        model::{Alignment, Border, BorderRadius, BoxAmount, Color, Direction, Element, Sizing, StrokeLineCap, StrokeLineJoin},
     },
     runtime::task::Task,
     svg, svg_path, w_id,
@@ -127,7 +127,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         .with_height(Sizing::fit())
         .with_padding(PAD_SM)
         .with_child_gap(SPACE_SM)
-        .with_vertical_alignment(VerticalAlignment::Center)
+        .with_axis_align_content(Alignment::Center)
     } else {
         Text::new("Export not ready")
             .with_font_size(14.0)
@@ -149,7 +149,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
             ..Default::default()
         }),
         child_gap: SPACE_SM,
-        vertical_alignment: VerticalAlignment::Center,
+        cross_align_items: Alignment::Center,
         // children: {
         //     let mut children = button_elements;
         //     children.push(file_info);

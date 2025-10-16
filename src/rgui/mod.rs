@@ -35,8 +35,8 @@ use raxis::widgets::Widget;
 use raxis::{
     column,
     layout::{
-        helpers::{center, container, row, ElementAlignmentExt},
-        model::{Border, BorderRadius, BoxAmount, Direction, Element, HorizontalAlignment, Sizing, VerticalAlignment},
+        helpers::{center, container, row},
+        model::{Alignment, Border, BorderRadius, BoxAmount, Direction, Element, Sizing},
     },
     row,
     runtime::task::Task,
@@ -423,7 +423,6 @@ impl WaitingScreen {
 
         let upload_bar = row![upload_button, download_section]
             .with_child_gap(SPACE_MD)
-            .with_horizontal_alignment(HorizontalAlignment::Center)
             .with_padding(BoxAmount::all(PAD_MD));
 
         column![
@@ -458,11 +457,9 @@ impl WaitingScreen {
             upload_bar,
         ]
         .with_child_gap(SPACE_SM)
-        .with_horizontal_alignment(HorizontalAlignment::Center)
-        .with_vertical_alignment(VerticalAlignment::Center)
+        .with_cross_align_items(Alignment::Center)
         .with_padding(BoxAmount::all(PAD_LG * 2.0))
         .with_border_radius(BorderRadius::all(BORDER_RADIUS))
-        .align_x(HorizontalAlignment::Center)
     }
 }
 
@@ -487,7 +484,7 @@ fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> El
     ]
     .with_child_gap(SPACE_MD)
     .with_width(Sizing::grow())
-    .align_y(VerticalAlignment::Center)
+    .with_cross_align_items(Alignment::Center)
 }
 
 fn refresh_icon<M>() -> Element<M> {
@@ -600,9 +597,8 @@ impl ActiveScreen {
 
         let action_bar = row![refresh_button, download_section]
             .with_child_gap(SPACE_LG)
-            .with_horizontal_alignment(HorizontalAlignment::Center)
-            .with_padding(BoxAmount::all(PAD_MD))
-            .align_y(VerticalAlignment::Center);
+            .with_axis_align_content(Alignment::Center)
+            .with_padding(BoxAmount::all(PAD_MD));
 
         column![
             maybe_text_shadow(
@@ -618,11 +614,9 @@ impl ActiveScreen {
             action_bar,
         ]
         .with_child_gap(SPACE_LG)
-        .with_horizontal_alignment(HorizontalAlignment::Center)
-        .with_vertical_alignment(VerticalAlignment::Center)
+        .with_cross_align_items(Alignment::Center)
         .with_padding(BoxAmount::all(PAD_LG * 2.0))
         .with_border_radius(BorderRadius::all(BORDER_RADIUS))
-        .align_x(HorizontalAlignment::Center)
     }
 }
 
@@ -1142,8 +1136,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         spacer(),
         close_button
     ]
-    .with_width(Sizing::grow())
-    .align_y(VerticalAlignment::Top);
+    .with_width(Sizing::grow());
 
     // Background image section
     let select_image_button = Button::new()
@@ -1190,7 +1183,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
     ]
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow())
-    .align_y(VerticalAlignment::Center);
+    .with_cross_align_items(Alignment::Center);
 
     // Add remove button if background image is present
     if !state.store.settings.background_image.is_empty() {
@@ -1275,7 +1268,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
         ]
         .with_width(Sizing::grow())
         .with_child_gap(SPACE_SM)
-        .align_y(VerticalAlignment::Center),
+        .with_cross_align_items(Alignment::Center),
         opacity_slider,
     ]
     .with_child_gap(SPACE_SM)
@@ -1296,7 +1289,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
             text_shadow_toggle
         ]
         .with_width(Sizing::grow())
-        .align_y(VerticalAlignment::Center),
+        .with_cross_align_items(Alignment::Center),
         Text::new("Add a text-shadow to text for better readability")
             .with_font_size(11.0)
             .with_color(TEXT_MUTED)
@@ -1323,7 +1316,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
             minimize_on_close_toggle
         ]
         .with_width(Sizing::grow())
-        .align_y(VerticalAlignment::Center),
+        .with_cross_align_items(Alignment::Center),
         Text::new("Hide to system tray instead of closing when clicking the X button")
             .with_font_size(11.0)
             .with_color(TEXT_MUTED)
@@ -1350,7 +1343,7 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
             minimize_on_minimize_toggle
         ]
         .with_width(Sizing::grow())
-        .align_y(VerticalAlignment::Center),
+        .with_cross_align_items(Alignment::Center),
         Text::new("Hide to system tray instead of taskbar when minimizing")
             .with_font_size(11.0)
             .with_color(TEXT_MUTED)
@@ -1424,9 +1417,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         text_shadow_enabled,
     );
 
-    let social_buttons = row![github_button(), discord_button()]
-        .with_child_gap(SPACE_MD)
-        .with_vertical_alignment(VerticalAlignment::Center);
+    let social_buttons = row![github_button(), discord_button()].with_child_gap(SPACE_MD);
 
     let header = column![social_buttons, help_text]
         .with_child_gap(SPACE_SM)
@@ -1543,8 +1534,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
             connection_status,
         ]
         .with_width(Sizing::grow())
-        .with_vertical_alignment(VerticalAlignment::Bottom)
-        .align_y(VerticalAlignment::Bottom)
+        .with_cross_align_items(Alignment::End)
         .with_padding(PAD_MD)
     ]
     .with_width(Sizing::grow())
@@ -1554,12 +1544,12 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     //     // background_color: Some(Color::from(0x00000033)),
     //     floating: Some(FloatingConfig {
     //         anchor: Some(Alignment2D {
-    //             x: Some(HorizontalAlignment::Center),
-    //             y: Some(VerticalAlignment::Center),
+    //             x: Some(Alignment::Center),
+    //             y: Some(Alignment::Center),
     //         }),
     //         align: Some(Alignment2D {
-    //             x: Some(HorizontalAlignment::Center),
-    //             y: Some(VerticalAlignment::Center),
+    //             x: Some(Alignment::Center),
+    //             y: Some(Alignment::Center),
     //         }),
     //         ..Default::default()
     //     }),

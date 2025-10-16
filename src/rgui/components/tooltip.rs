@@ -1,7 +1,7 @@
 use std::{cell::RefCell, rc::Rc};
 
 use raxis::{
-    layout::model::{Alignment2D, Color, Element, FloatingConfig, HorizontalAlignment, Offset2D, VerticalAlignment},
+    layout::model::{Alignment, Alignment2D, Color, Element, FloatingConfig, Offset2D},
     util::unique::combine_id,
     w_id,
     widgets::{
@@ -63,8 +63,8 @@ impl TooltipTheme {
 #[derive(Debug, Clone)]
 pub struct TooltipPosition {
     pub offset: Offset2D,
-    pub anchor: Alignment2D<HorizontalAlignment, VerticalAlignment>,
-    pub align: Alignment2D<HorizontalAlignment, VerticalAlignment>,
+    pub anchor: Alignment2D<Alignment, Alignment>,
+    pub align: Alignment2D<Alignment, Alignment>,
 }
 
 impl Default for TooltipPosition {
@@ -75,12 +75,12 @@ impl Default for TooltipPosition {
                 y: Some(-4.0),
             },
             anchor: Alignment2D {
-                x: Some(HorizontalAlignment::Center),
-                y: Some(VerticalAlignment::Top),
+                x: Some(Alignment::Center),
+                y: Some(Alignment::Start),
             },
             align: Alignment2D {
-                x: Some(HorizontalAlignment::Center),
-                y: Some(VerticalAlignment::Bottom),
+                x: Some(Alignment::Center),
+                y: Some(Alignment::End),
             },
         }
     }
