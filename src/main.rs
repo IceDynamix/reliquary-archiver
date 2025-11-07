@@ -139,9 +139,27 @@ fn main() {
             let file_name = Local::now()
                 .format("archive_output-%Y-%m-%dT%H-%M-%S.json")
                 .to_string();
+
             let mut output_file = match args.output {
                 Some(out) => out,
-                _ => PathBuf::from(file_name.clone()),
+                _ => {
+                    // Check if current directory is system32 and use executable directory if so
+                    let current_dir = std::env::current_dir().unwrap_or_default();
+                    let is_system32 =
+                        current_dir.ends_with("system32") || current_dir.ends_with("System32");
+
+                    if is_system32 {
+                        // Use executable directory instead of system32
+                        let exe_dir = std::env::current_exe()
+                            .unwrap_or_default()
+                            .parent()
+                            .unwrap_or(&current_dir)
+                            .to_path_buf();
+                        exe_dir.join(file_name.clone())
+                    } else {
+                        PathBuf::from(file_name.clone())
+                    }
+                }
             };
 
             macro_rules! pick_file {
