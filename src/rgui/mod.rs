@@ -15,6 +15,7 @@ use raxis::gfx::color::Oklch;
 use raxis::layout::helpers::spacer;
 use raxis::layout::model::{
     Alignment2D, Color, DropShadow, FloatingConfig, ScrollBarSize, ScrollConfig, StrokeLineCap, StrokeLineJoin, TextShadow,
+    ScrollbarStyle,
 };
 use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
@@ -890,9 +891,12 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
             horizontal: Some(true),
             vertical: Some(true),
             sticky_bottom: Some(true),
-            scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
-            scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
-            scrollbar_size: Some(ScrollBarSize::ThinThick(8.0, 12.0)),
+            scrollbar_style: Some(ScrollbarStyle {
+                thumb_color: SCROLLBAR_THUMB_COLOR,
+                track_color: SCROLLBAR_TRACK_COLOR,
+                size: ScrollBarSize::ThinThick(8.0, 12.0),
+                ..Default::default()
+            }),
             ..Default::default()
         }),
         background_color: Some(CARD_BACKGROUND),
@@ -1570,10 +1574,13 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
                 vertical: Some(true),
                 // Safe area padding for the window controls
                 safe_area_padding: Some(BoxAmount::all(4.0).apply(|p| p.top = 34.0)),
-                scrollbar_thumb_color: Some(SCROLLBAR_THUMB_COLOR),
-                scrollbar_track_color: Some(SCROLLBAR_TRACK_COLOR),
-                scrollbar_track_radius: Some(BorderRadius::all(4.0)),
-                scrollbar_size: Some(ScrollBarSize::ThinThick(8.0, 12.0)),
+                scrollbar_style: Some(ScrollbarStyle {
+                    thumb_color: SCROLLBAR_THUMB_COLOR,
+                    track_color: SCROLLBAR_TRACK_COLOR,
+                    track_radius: BorderRadius::all(4.0),
+                    size: ScrollBarSize::ThinThick(8.0, 12.0),
+                ..Default::default()
+                }),
                 ..Default::default()
             }),
         modal(state, hook)
