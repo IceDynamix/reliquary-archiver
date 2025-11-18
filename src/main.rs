@@ -51,9 +51,9 @@ struct Args {
     #[cfg(feature = "stream")]
     #[arg(short, long)]
     stream: bool,
-    /// Port to listen on for the websocket server, defaults to 53313
+    /// Port to listen on for the websocket server, defaults to 23313
     #[cfg(feature = "stream")]
-    #[arg(short = 'p', long, default_value_t = 53313)] // Seele :)
+    #[arg(short = 'p', long, default_value_t = 23313)]
     websocket_port: u16,
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
