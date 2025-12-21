@@ -7,3 +7,4 @@ wpcap.lib
 /*.log
 npcap-sdk*.zip
 .DS_Store
+*.bat
