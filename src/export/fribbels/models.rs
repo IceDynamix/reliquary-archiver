@@ -188,6 +188,7 @@ pub struct Traces {
     pub stat_8: bool,
     pub stat_9: bool,
     pub stat_10: bool,
+    pub special: bool
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
