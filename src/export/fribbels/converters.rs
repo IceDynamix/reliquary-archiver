@@ -235,6 +235,7 @@ pub fn export_skill_tree(
         stat_8: false,
         stat_9: false,
         stat_10: false,
+        special: false,
     };
 
     let mut memosprite = Memosprite {
@@ -339,6 +340,10 @@ pub fn export_skill_tree(
             "Point20" => {
                 trace!("detected memosprite talent trace");
                 memosprite.talent = level;
+            }
+            "Point21" => {
+                trace!("detected special trace",);
+                traces.special = true;
             }
 
             _ => {
