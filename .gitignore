@@ -8,3 +8,4 @@ wpcap.lib
 npcap-sdk*.zip
 .DS_Store
 *.bat
+*.vscode

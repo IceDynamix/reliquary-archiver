@@ -8,8 +8,10 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, LazyLock, LockResult, Mutex, TryLockResult};
+use futures::lock::Mutex as FuturesMutex;
 use std::time::Duration;
-use std::{io, panic};
+use std::io;
+use std::panic::AssertUnwindSafe;
 
 #[cfg(feature = "pcap")]
 use capture::PCAP_FILTER;
@@ -34,13 +36,14 @@ use {self_update::cargo_crate_version, std::env, std::process::Command};
 #[cfg(feature = "stream")]
 mod websocket;
 
+#[cfg(feature = "gui")]
+mod rgui;
+
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 
 mod capture;
-// mod gui;
-mod rgui;
 mod scopefns;
 mod worker;
 
@@ -89,6 +92,15 @@ struct Args {
     exit_after_capture: bool,
 }
 
+#[cfg(feature = "gui")]
+impl From<Args> for rgui::Args {
+    fn from(args: Args) -> rgui::Args {
+        rgui::Args{
+            websocket_port: args.websocket_port,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 enum CaptureMode {
     Live,
@@ -114,7 +126,17 @@ impl CaptureMode {
     }
 }
 
-fn main() {
+#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
+compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
+
+#[cfg(all(not(windows), feature = "gui"))]
+compile_error!("GUI is only available on windows");
+
+#[cfg(all(not(windows), feature = "pktmon"))]
+compile_error!("The \"pktmon\" capture backend is only available on windows");
+
+#[tokio::main]
+async fn main() {
     color_eyre::install().unwrap();
 
     let old_hook = std::panic::take_hook();
@@ -133,123 +155,8 @@ fn main() {
 
     debug!(?args);
 
-    if let Err(payload) = panic::catch_unwind(move || {
-        // Only self update on Windows, since that's the only platform we ship releases for
-        #[cfg(windows)]
-        {
-            if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
-                if let Err(e) = update(args.auth_token.as_deref(), args.always_update) {
-                    error!("Failed to update: {}", e);
-                }
-            }
-        }
-
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-        if !unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
-            fn confirm(msg: &str) -> bool {
-                use std::io::Write;
-
-                print!("{}", msg);
-                if std::io::stdout().flush().is_err() {
-                    return false;
-                }
-
-                let mut input = String::new();
-                if std::io::stdin().read_line(&mut input).is_err() {
-                    return false;
-                }
-
-                input = input.trim().to_lowercase();
-                input.starts_with("y") || input.is_empty()
-            }
-
-            println!();
-            println!("===========================================================================================================");
-            println!("                       Administrative privileges are required to capture packets");
-            println!("===========================================================================================================");
-            println!();
-            println!("Reliquary Archiver now uses PacketMonitor (pktmon) to capture the game traffic instead of npcap on Windows");
-            println!("Due to the way pktmon works, it requires running the application as an administrator");
-            println!();
-            println!("If you don't feel comfortable running the application as an administrator, you can download the pcap");
-            println!("version of Reliquary Archiver from the GitHub releases page.");
-            println!();
-            if confirm("Would you like to restart the application with elevated privileges? (Y/n): ") {
-                if let Err(e) = escalate_to_admin() {
-                    error!("Failed to escalate privileges: {}", e);
-                }
-            }
-
-            return;
-        }
-
-        // gui::run().unwrap();
-        rgui::run().unwrap();
-
-        // let database = Database::new();
-        // let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
-        // let exporter = OptimizerExporter::new(database);
-
-        // let capture_mode = CaptureMode::from_args(&args);
-        // let export = match capture_mode {
-        //     CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
-        //     #[cfg(feature = "pcap")]
-        //     CaptureMode::Pcap(path) => capture_from_pcap(exporter, sniffer, path),
-        //     #[cfg(feature = "pktmon")]
-        //     CaptureMode::Etl(path) => capture_from_etl(exporter, sniffer, path),
-        // };
-
-        // if let Some(export) = export {
-        //     let file_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
-        //     let mut output_file = match args.output {
-        //         Some(out) => out,
-        //         _ => PathBuf::from(file_name.clone()),
-        //     };
-
-        //     macro_rules! pick_file {
-        //         () => {
-        //             if let Some(new_path) = rfd::FileDialog::new()
-        //                 .set_title("Select output file location")
-        //                 .set_file_name(&file_name)
-        //                 .add_filter("JSON files", &["json"])
-        //                 .save_file()
-        //             {
-        //                 output_file = new_path;
-        //                 continue;
-        //             } else {
-        //                 error!("No alternative path selected, aborting write");
-        //                 break;
-        //             }
-        //         };
-        //     }
-        //     info!("exporting collected data");
-        //     loop {
-        //         match File::create(&output_file) {
-        //             Ok(file) => {
-        //                 if let Err(e) = serde_json::to_writer_pretty(&file, &export) {
-        //                     error!("Failed to write to {}: {}", output_file.display(), e);
-        //                     pick_file!();
-        //                 }
-        //                 info!(
-        //                     "wrote output to {}",
-        //                     output_file.canonicalize().unwrap().display()
-        //                 );
-        //                 break;
-        //             }
-        //             Err(e) => {
-        //                 error!("Failed to create file at {}: {}", output_file.display(), e);
-        //                 pick_file!();
-        //             }
-        //         }
-        //     }
-        // } else {
-        //     warn!("skipped writing output");
-        // }
-
-        if let Some(log_path) = args.log_path {
-            info!("wrote logs to {}", log_path.display());
-        }
-    }) {
+    // AssertUnwindSafe is justified as all we do is write a crash log before ending the program and therefore there is no risk posed by potential broken invariants
+    if let Err(payload) = AssertUnwindSafe(capture(args)).catch_unwind().await {
         error!("the application panicked, this is a bug, please report it on GitHub or Discord");
 
         // Write crashlog
@@ -273,6 +180,126 @@ fn main() {
 
         info!("press enter to close");
         std::io::stdin().read_line(&mut String::new()).unwrap();
+    }
+}
+
+async fn capture(args: Args) {
+    // Only self update on Windows, since that's the only platform we ship releases for
+    #[cfg(windows)]
+    {
+        if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
+            if let Err(e) = update(args.auth_token.as_deref(), args.always_update) {
+                error!("Failed to update: {}", e);
+            }
+        }
+    }
+
+    #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+    if !unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
+        fn confirm(msg: &str) -> bool {
+            use std::io::Write;
+
+            print!("{}", msg);
+            if std::io::stdout().flush().is_err() {
+                return false;
+            }
+
+            let mut input = String::new();
+            if std::io::stdin().read_line(&mut input).is_err() {
+                return false;
+            }
+
+            input = input.trim().to_lowercase();
+            input.starts_with("y") || input.is_empty()
+        }
+
+        println!();
+        println!("===========================================================================================================");
+        println!("                       Administrative privileges are required to capture packets");
+        println!("===========================================================================================================");
+        println!();
+        println!("Reliquary Archiver now uses PacketMonitor (pktmon) to capture the game traffic instead of npcap on Windows");
+        println!("Due to the way pktmon works, it requires running the application as an administrator");
+        println!();
+        println!("If you don't feel comfortable running the application as an administrator, you can download the pcap");
+        println!("version of Reliquary Archiver from the GitHub releases page.");
+        println!();
+        if confirm("Would you like to restart the application with elevated privileges? (Y/n): ") {
+            if let Err(e) = escalate_to_admin() {
+                error!("Failed to escalate privileges: {}", e);
+            }
+        }
+
+        return;
+    }
+
+    #[cfg(feature = "gui")]
+    rgui::run(args.into()).unwrap();
+
+    #[cfg(not(feature = "gui"))]
+    {
+        let database = Database::new();
+        let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
+        let exporter = OptimizerExporter::new();
+
+        let capture_mode = CaptureMode::from_args(&args);
+        let export = match capture_mode {
+            CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer).await,
+            #[cfg(feature = "pcap")]
+            CaptureMode::Pcap(path) => capture_from_pcap(exporter, sniffer, path),
+            #[cfg(feature = "pktmon")]
+            CaptureMode::Etl(path) => capture_from_etl(exporter, sniffer, path),
+        };
+
+        if let Some(export) = export {
+            let file_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
+            let mut output_file = match args.output {
+                Some(out) => out,
+                _ => PathBuf::from(file_name.clone()),
+            };
+
+            macro_rules! pick_file {
+                () => {
+                    if let Some(new_path) = rfd::FileDialog::new()
+                        .set_title("Select output file location")
+                        .set_file_name(&file_name)
+                        .add_filter("JSON files", &["json"])
+                        .save_file()
+                    {
+                        output_file = new_path;
+                        continue;
+                    } else {
+                        error!("No alternative path selected, aborting write");
+                        break;
+                    }
+                };
+            }
+            info!("exporting collected data");
+            loop {
+                match File::create(&output_file) {
+                    Ok(file) => {
+                        if let Err(e) = serde_json::to_writer_pretty(&file, &export) {
+                            error!("Failed to write to {}: {}", output_file.display(), e);
+                            pick_file!();
+                        }
+                        info!(
+                            "wrote output to {}",
+                            output_file.canonicalize().unwrap().display()
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        error!("Failed to create file at {}: {}", output_file.display(), e);
+                        pick_file!();
+                    }
+                }
+            }
+        } else {
+            warn!("skipped writing output");
+        }
+        if let Some(log_path) = args.log_path {
+            info!("wrote logs to {}", log_path.display());
+        }
     }
 }
 
@@ -551,30 +578,29 @@ async fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer)
 where
     E: Exporter,
 {
-    let exporter = Arc::new(Mutex::new(exporter));
+    use crate::websocket::start_websocket_server;
 
-    #[cfg(feature = "stream")]
-    {
-        if args.stream {
-            let port = args.websocket_port;
-            // let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
-
-            info!("WebSocket server running on ws://localhost:{}/ws", port);
-            info!("You can connect to this WebSocket server to receive real-time relic updates");
-
-            let result = live_capture(args, exporter, sniffer);
-
-            // ws_server.abort();
-
-            result.await
-        } else {
-            live_capture(args, exporter, sniffer).await
-        }
-    }
+    let exporter = Arc::new(FuturesMutex::new(exporter));
 
     #[cfg(not(feature = "stream"))]
-    {
-        live_capture(args, exporter, sniffer).await
+    let streaming = false;
+
+    #[cfg(feature = "stream")]
+    let streaming = args.stream;
+
+    if streaming {
+        let port = args.websocket_port;
+
+        let ws_server = start_websocket_server(port, exporter.clone()).await;
+
+        info!("WebSocket server running on ws://localhost:{}/ws", port);
+        info!("You can connect to this WebSocket server to receive real-time relic updates");
+
+        let result = live_capture(args, exporter, sniffer, streaming);
+
+        result.await
+    } else {
+        live_capture(args, exporter, sniffer, streaming).await
     }
 }
 
@@ -587,7 +613,7 @@ async fn maybe_timeout(timeout: Option<Duration>) -> () {
 }
 
 #[instrument(skip_all)]
-async fn live_capture<E>(args: &Args, exporter: Arc<Mutex<E>>, mut sniffer: GameSniffer) -> Option<E::Export>
+async fn live_capture<E>(args: &Args, exporter: Arc<FuturesMutex<E>>, mut sniffer: GameSniffer, streaming: bool) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -606,12 +632,6 @@ where
     let packet_stream = rx.expect("Failed to start packet capture");
 
     let mut packet_stream = packet_stream.fuse();
-
-    #[cfg(feature = "stream")]
-    let streaming = args.stream;
-
-    #[cfg(not(feature = "stream"))]
-    let streaming = false;
 
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
 
@@ -684,7 +704,7 @@ where
                                             break 'recv;
                                         }
 
-                                        exporter.lock().unwrap().read_command(command);
+                                        exporter.lock().await.read_command(command);
                                     }
                                     Err(e) => {
                                         warn!(%e);
@@ -699,7 +719,7 @@ where
                             }
                         }
 
-                        if !streaming && exporter.lock().unwrap().is_initialized() {
+                        if !streaming && exporter.lock().await.is_initialized() {
                             info!("retrieved all relevant packets, stop listening");
                             break 'recv;
                         }
@@ -744,7 +764,7 @@ where
     //     handle.abort();
     // }
 
-    exporter.lock().unwrap().export()
+    exporter.lock().await.export()
 }
 
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
