@@ -11,11 +11,11 @@ homepage = "https://github.com/IceDynamix/reliquary-archiver"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+async-stream = "0.3.6"
 base64 = "0.22.1"
 clap = { version = "4.5.31", features = ["derive"] }
 chrono = "0.4.40"
 color-eyre = "0.6.3"
-pcap = { version = "2.2.0", optional = true, features = ["capture-stream"] }
 protobuf = "=3.7.1" # match the protobuf version used in reliquary-codegen
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
@@ -26,45 +26,27 @@ reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v16.0.0", 
     "proto-rqa",
 ] }
 ctrlc = "3.4.5"
-axum = { version = "0.8.3", optional = true, features = ["ws", "tracing"] }
 tokio = { version = "1.44.2", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
-# iced = { git = "https://github.com/iced-rs/iced", rev = "9ef2c468831ae3dd86ce7afc0f675070ca68dd4a", features = [
-#     "image",
-#     "canvas",
-#     "crisp",
-#     "tokio",
-#     "svg",
-#     "advanced",
-#     "hot",
-#     "debug",
-# ] }
 open = "5.3.2"
-# lyon_algorithms = "1.0.5"
 rfd = "0.15.3"
-# async-trait = "0.1.88"
 tracing-log = "0.2.0"
-raxis = { path = "../raxis", features = ["tokio"] }
-async-stream = "0.3.6"
-
-# [package.metadata.patch]
-# crates = ["winit"]
-
-# [patch."https://github.com/iced-rs/winit"]
-# winit = { path = "./target/patch/11414b6" }
+axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
+pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
+# raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "67be35bf0dda4ede37cde360bfbad8493232731c", features = ["tokio"] }
+raxis = { optional = true, path = "../raxis", features = ["tokio"]}
 
 [target.'cfg(windows)'.dependencies]
-self_update = "0.42.0"
-pktmon = { version = "0.6.2", features = ["tokio"], optional = true }
-windows = { version = "0.61", features = [
-    "Win32_UI_Shell",
-    "Win32_UI_WindowsAndMessaging",
-    "Win32_System_Registry",
-    "Win32_Foundation",
-    "Win32_System_Console",
-] }
+# By default self_update makes its http requests with reqwest, which itself relies on tokio
+# main is an async function that lives within an already existing tokio runtime
+# therefore when self_update calls update(), a second tokio runtime is spawned which leads to a crash
+# self_update added a ureq feature but has not yet pushed to crates.io
+# (latest release is 0.42.0 which is over a year old as of writing this)
+self_update = { git = "https://github.com/jaemk/self_update", features = ["ureq", "rustls"], default-features = false}
+pktmon = { optional = true, version = "0.6.2", features = ["tokio"] }
+windows = { optional = true, version = "0.61"}
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
@@ -96,7 +78,15 @@ lto = true
 overflow-checks = false # see comment above
 
 [features]
-default = ["stream", "pcap"]
-pktmon = ["dep:pktmon"]
-pcap = ["dep:pcap"]
+default = ["gui", "pcap"]
+gui = ["dep:raxis", "windows/Win32_Foundation", "stream"]
 stream = ["dep:axum"]
+pcap = ["dep:pcap"]
+pktmon = [
+    "dep:pktmon",
+    # windows dependencies necessary for admin detection and escalation
+    "windows/Win32_UI_Shell",
+    "windows/Win32_System_Console",
+    "windows/Win32_UI_WindowsAndMessaging",
+    "windows/Win32_System_Registry",
+]

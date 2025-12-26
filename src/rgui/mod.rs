@@ -1893,7 +1893,11 @@ fn handle_sniffer_metric(state: &mut RootState, metric: worker::SnifferMetric) {
     }
 }
 
-pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+pub struct Args {
+    pub websocket_port: u16,
+}
+
+pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let state = RootState::default();
     let exporter = state.exporter.clone();
 
@@ -1901,7 +1905,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(Task::batch(vec![
             task::get_local_app_data().and_then(|path| Task::done(RootMessage::LoadSettings(get_settings_path(path)))),
             Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
-            Task::future(start_websocket_server(53313, exporter.clone()))
+            Task::future(start_websocket_server(args.websocket_port, exporter.clone()))
                 .then(|e| match e {
                     Err(e) => Task::done(WebSocketStatus::Failed { error: e }),
                     Ok((port, client_count_stream)) => Task::done(WebSocketStatus::Running { port, client_count: 0 })
@@ -1917,6 +1921,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         ]))
     })
     .with_title("Reliquary Archiver")
+    .with_icons(Some(1))
     .with_tray_icon(TrayIconConfig {
         icon_resource: Some(1),
         tooltip: Some("Reliquary Archiver".to_string()),
