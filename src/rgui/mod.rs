@@ -32,6 +32,7 @@ use raxis::widgets::svg::Svg;
 use raxis::widgets::svg_path::ColorChoice;
 use raxis::widgets::text::TextAlignment;
 use raxis::widgets::toggle::Toggle;
+use raxis::widgets::titlebar_controls::titlebar_controls;
 use raxis::widgets::Widget;
 use raxis::{
     column,
@@ -1438,7 +1439,11 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     let header = row![
         header,
         spacer(),
-        container(menu_button).with_padding(BoxAmount::all(PAD_MD).apply(|p| p.top += PAD_LG)),
+        column![
+            titlebar_controls(hook),
+            container(menu_button).with_padding(BoxAmount::all(PAD_MD)),
+        ].with_cross_align_items(Alignment::End)
+        
     ]
     .with_width(Sizing::grow());
 
@@ -1542,7 +1547,8 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         .with_padding(PAD_MD)
     ]
     .with_width(Sizing::grow())
-    .with_height(Sizing::fit());
+    .with_height(Sizing::fit())
+    .with_padding(PAD_MD);
 
     // let modal = Element {
     //     // background_color: Some(Color::from(0x00000033)),
@@ -1563,12 +1569,11 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     // };
 
     row![
-        column![header, center(content), footer]
+        column![header, center(content).with_padding(PAD_MD), footer]
             .with_id(w_id!())
             .with_color(TEXT_COLOR)
             .with_width(Sizing::grow())
             .with_height(Sizing::grow())
-            .with_padding(PAD_MD)
             .with_child_gap(SPACE_MD)
             .with_scroll(ScrollConfig {
                 vertical: Some(true),
