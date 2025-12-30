@@ -1,4 +1,4 @@
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
 #![allow(unused)]
 
 use std::collections::HashSet;
@@ -90,6 +90,10 @@ struct Args {
     /// Don't wait for enter to be pressed after capturing
     #[arg(short, long)]
     exit_after_capture: bool,
+    /// Run in headless mode (no GUI), only applicable when GUI feature is enabled
+    #[cfg(feature = "gui")]
+    #[arg(long, short = 'H', visible_alias = "cli", visible_alias = "nogui")]
+    headless: bool,
 }
 
 #[cfg(feature = "gui")]
@@ -146,7 +150,23 @@ async fn main() {
         error!("Backtrace: {:#?}", backtrace);
     }));
 
+    // Attach to parent console on Windows GUI builds
+    // This is needed for --help output and headless mode to be visible
+    // AttachConsole fails if no parent console exists (e.g. double-clicked from Explorer)
+    #[cfg(all(windows, feature = "gui"))]
+    let has_console = unsafe {
+        windows::Win32::System::Console::AttachConsole(
+            windows::Win32::System::Console::ATTACH_PARENT_PROCESS
+        ).is_ok()
+    };
+
     let args = Args::parse();
+
+    // Allocate a console for headless mode if AttachConsole didn't work
+    #[cfg(all(windows, feature = "gui"))]
+    if args.headless && !has_console {
+        unsafe { windows::Win32::System::Console::AllocConsole().ok() };
+    }
 
     // Copy the exit_after_capture flag to a local variable before args is moved into the closure
     let exit_after_capture = args.exit_after_capture;
@@ -234,9 +254,12 @@ async fn capture(args: Args) {
     }
 
     #[cfg(feature = "gui")]
-    rgui::run(args.into()).unwrap();
+    if !args.headless {
+        rgui::run(args.into()).unwrap();
+        return;
+    }
 
-    #[cfg(not(feature = "gui"))]
+    // Headless/CLI mode
     {
         let database = Database::new();
         let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());

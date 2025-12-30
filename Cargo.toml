@@ -79,7 +79,7 @@ overflow-checks = false # see comment above
 
 [features]
 default = ["gui", "pcap"]
-gui = ["dep:raxis", "windows/Win32_Foundation", "stream"]
+gui = ["dep:raxis", "windows/Win32_System_Console", "windows/Win32_Foundation", "stream"]
 stream = ["dep:axum"]
 pcap = ["dep:pcap"]
 pktmon = [
