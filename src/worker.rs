@@ -267,107 +267,112 @@ async fn live_capture<E: Exporter>(
     mut metric_tx: MappedSender<WorkerEvent, SnifferMetric>,
     mut recorded_rx: mpsc::Receiver<capture::Packet>,
 ) {
-    let live_rx = {
-        #[cfg(feature = "pcap")]
-        {
-            capture::listen_on_all(capture::pcap::PcapBackend)
-        }
+    // Outer loop to restart capture when it exits
+    loop {
+        let live_rx = {
+            let result = {
+                #[cfg(feature = "pcap")]
+                {
+                    capture::listen_on_all(capture::pcap::PcapBackend)
+                }
 
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-        {
-            capture::listen_on_all(capture::pktmon::PktmonBackend)
-        }
-    };
-
-    let live_rx = live_rx.expect("Failed to start packet capture");
-    let mut live_rx = live_rx.fuse();
-
-    // #[cfg(feature = "stream")]
-    // let streaming = args.stream;
-
-    // #[cfg(not(feature = "stream"))]
-    // let streaming = false;
-
-    info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
-    // if !streaming {
-    //     info!("listening with a timeout of {} seconds...", args.timeout);
-    // }
-
-    'recv: loop {
-        // We have to drop the Err before we cross an await point since StdErr is not Send
-        let packet = {
-            let packet = select! {
-                data = live_rx.select_next_some() => data,
-
-                data = recorded_rx.select_next_some() => Ok(data),
-
-                complete => break 'recv,
+                #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+                {
+                    capture::listen_on_all(capture::pktmon::PktmonBackend)
+                }
             };
 
-            match packet {
-                Ok(packet) => packet,
-                Err(e) => {
-                    warn!(%e);
+            match result.map_err(|e| e.to_string()) {
+                Ok(rx) => rx,
+                Err(err_msg) => {
+                    warn!(error = %err_msg, "Failed to start packet capture, retrying in 1 second...");
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                     continue;
                 }
             }
         };
+        let mut live_rx = live_rx.fuse();
 
-        metric_tx.send(SnifferMetric::NetworkPacketReceived).await.ok();
+        info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
 
-        match sniffer.receive_packet(packet.data) {
-            Ok(packets) => {
-                metric_tx.send(SnifferMetric::GameCommandsReceived(packets.len())).await.ok();
+        'recv: loop {
+            // We have to drop the Err before we cross an await point since StdErr is not Send
+            let packet = {
+                let packet = select! {
+                    data = live_rx.next() => match data {
+                        Some(data) => data,
+                        None => {
+                            warn!("live capture stream ended unexpectedly");
+                            break 'recv;
+                        }
+                    },
 
-                for packet in packets {
-                    match packet {
-                        GamePacket::Connection(c) => match c {
-                            ConnectionPacket::HandshakeEstablished => {
-                                info!("detected connection established");
-                                metric_tx.send(SnifferMetric::ConnectionEstablished).await.ok();
+                    data = recorded_rx.select_next_some() => Ok(data),
+                };
 
-                                if cfg!(all(feature = "pcap", windows)) {
-                                    info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
+                match packet {
+                    Ok(packet) => packet,
+                    Err(e) => {
+                        warn!(%e);
+                        continue;
+                    }
+                }
+            };
+
+            metric_tx.send(SnifferMetric::NetworkPacketReceived).await.ok();
+
+            match sniffer.receive_packet(packet.data) {
+                Ok(packets) => {
+                    metric_tx.send(SnifferMetric::GameCommandsReceived(packets.len())).await.ok();
+
+                    for packet in packets {
+                        match packet {
+                            GamePacket::Connection(c) => match c {
+                                ConnectionPacket::HandshakeEstablished => {
+                                    info!("detected connection established");
+                                    metric_tx.send(SnifferMetric::ConnectionEstablished).await.ok();
+
+                                    if cfg!(all(feature = "pcap", windows)) {
+                                        info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
+                                    }
                                 }
-                            }
-                            ConnectionPacket::Disconnected => {
-                                info!("detected connection disconnected");
-                                metric_tx.send(SnifferMetric::ConnectionDisconnected).await.ok();
-                            }
-                            _ => {}
-                        },
-                        GamePacket::Commands(command) => match command {
-                            Ok(command) => {
-                                if command.command_id == PlayerLoginScRsp {
-                                    info!("detected login start");
+                                ConnectionPacket::Disconnected => {
+                                    info!("detected connection disconnected");
+                                    metric_tx.send(SnifferMetric::ConnectionDisconnected).await.ok();
                                 }
+                                _ => {}
+                            },
+                            GamePacket::Commands(command) => match command {
+                                Ok(command) => {
+                                    if command.command_id == PlayerLoginScRsp {
+                                        info!("detected login start");
+                                    }
 
-                                exporter.lock().await.read_command(command);
-                            }
-                            Err(e) => {
-                                warn!(%e);
-                                if let GameCommandError::DecryptionKeyMissing = e {
-                                    metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
-                                } else {
-                                    metric_tx.send(SnifferMetric::NetworkError).await.ok();
+                                    exporter.lock().await.read_command(command);
                                 }
-                            }
-                        },
+                                Err(e) => {
+                                    warn!(%e);
+                                    if let GameCommandError::DecryptionKeyMissing = e {
+                                        metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
+                                    } else {
+                                        metric_tx.send(SnifferMetric::NetworkError).await.ok();
+                                    }
+                                }
+                            },
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(%e);
+                    if let NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) = e {
+                        metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
+                    } else {
+                        metric_tx.send(SnifferMetric::NetworkError).await.ok();
                     }
                 }
             }
-            Err(e) => {
-                warn!(%e);
-                if let NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) = e {
-                    metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
-                } else {
-                    metric_tx.send(SnifferMetric::NetworkError).await.ok();
-                }
-            }
         }
-    }
 
-    // for handle in join_handles {
-    //     handle.abort();
-    // }
+        info!("capture ended, restarting...");
+    }
 }
