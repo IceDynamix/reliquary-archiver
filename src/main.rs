@@ -1,4 +1,4 @@
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
 #![allow(unused)]
 
 use std::collections::HashSet;
@@ -90,12 +90,16 @@ struct Args {
     /// Don't wait for enter to be pressed after capturing
     #[arg(short, long)]
     exit_after_capture: bool,
+    /// Run in headless mode (no GUI), only applicable when GUI feature is enabled
+    #[cfg(feature = "gui")]
+    #[arg(long, short = 'H', visible_alias = "cli", visible_alias = "nogui")]
+    headless: bool,
 }
 
 #[cfg(feature = "gui")]
 impl From<Args> for rgui::Args {
-    fn from(args: Args) -> rgui::Args {
-        rgui::Args{
+    fn from(args: Args) -> Self {
+        Self {
             websocket_port: args.websocket_port,
         }
     }
@@ -146,7 +150,23 @@ async fn main() {
         error!("Backtrace: {:#?}", backtrace);
     }));
 
+    // Attach to parent console on Windows GUI builds
+    // This is needed for --help output and headless mode to be visible
+    // AttachConsole fails if no parent console exists (e.g. double-clicked from Explorer)
+    #[cfg(all(windows, feature = "gui"))]
+    let has_console = unsafe {
+        windows::Win32::System::Console::AttachConsole(
+            windows::Win32::System::Console::ATTACH_PARENT_PROCESS
+        ).is_ok()
+    };
+
     let args = Args::parse();
+
+    // Allocate a console for headless mode if AttachConsole didn't work
+    #[cfg(all(windows, feature = "gui"))]
+    if args.headless && !has_console {
+        unsafe { windows::Win32::System::Console::AllocConsole().ok() };
+    }
 
     // Copy the exit_after_capture flag to a local variable before args is moved into the closure
     let exit_after_capture = args.exit_after_capture;
@@ -187,8 +207,13 @@ async fn capture(args: Args) {
     // Only self update on Windows, since that's the only platform we ship releases for
     #[cfg(windows)]
     {
+        #[cfg(feature = "gui")]
+        let gui_mode = !args.headless;
+        #[cfg(not(feature = "gui"))]
+        let gui_mode = false;
+
         if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
-            if let Err(e) = update(args.auth_token.as_deref(), args.always_update) {
+            if let Err(e) = update(args.auth_token.as_deref(), args.always_update, gui_mode) {
                 error!("Failed to update: {}", e);
             }
         }
@@ -234,9 +259,12 @@ async fn capture(args: Args) {
     }
 
     #[cfg(feature = "gui")]
-    rgui::run(args.into()).unwrap();
+    if !args.headless {
+        rgui::run(args.into()).unwrap();
+        return;
+    }
 
-    #[cfg(not(feature = "gui"))]
+    // Headless/CLI mode
     {
         let database = Database::new();
         let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
@@ -304,29 +332,103 @@ async fn capture(args: Args) {
 }
 
 #[cfg(windows)]
-fn update(auth_token: Option<&str>, no_confirm: bool) -> Result<(), Box<dyn std::error::Error>> {
+fn update(auth_token: Option<&str>, no_confirm: bool, gui_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
     info!("checking for updates");
 
+    // First, check if an update is available by fetching the release list
+    let mut release_list_builder = self_update::backends::github::ReleaseList::configure();
+    release_list_builder
+        .repo_owner("IceDynamix")
+        .repo_name("reliquary-archiver");
+
+    if let Some(token) = auth_token {
+        release_list_builder.auth_token(token);
+    }
+
+    let releases = release_list_builder.build()?.fetch()?;
+
+    // Determine the identifier for our build
+    let identifier = if cfg!(feature = "pcap") {
+        Some("pcap")
+    } else if cfg!(feature = "pktmon") {
+        Some("pktmon")
+    } else {
+        None
+    };
+
+    // Find the latest release that has an asset for our target
+    let target = "x64";
+    let current_version = cargo_crate_version!();
+    
+    let latest_release = releases.iter().find(|r| {
+        r.asset_for(target, identifier).is_some()
+    });
+
+    let latest_release = match latest_release {
+        Some(r) => r,
+        None => {
+            info!("no compatible release found");
+            return Ok(());
+        }
+    };
+
+    // Compare versions
+    let latest_version = &latest_release.version;
+    if !self_update::version::bump_is_greater(current_version, latest_version)? {
+        info!("already up-to-date (current: {}, latest: {})", current_version, latest_version);
+        return Ok(());
+    }
+
+    info!("update available: {} -> {}", current_version, latest_version);
+
+    // Determine if we should proceed with the update
+    let should_update = if no_confirm {
+        true
+    } else if gui_mode {
+        // In GUI mode, show a dialog to ask the user
+        use rfd::{MessageDialog, MessageButtons, MessageLevel, MessageDialogResult};
+        
+        let result = MessageDialog::new()
+            .set_level(MessageLevel::Info)
+            .set_title("Update Available")
+            .set_description(format!(
+                "A new version of Reliquary Archiver is available!\n\nCurrent version: {}\nNew version: {}\n\nWould you like to update now?",
+                current_version, latest_version
+            ))
+            .set_buttons(MessageButtons::YesNo)
+            .show();
+        
+        matches!(result, MessageDialogResult::Yes)
+    } else {
+        // Console mode - let self_update handle the prompt
+        // We'll set no_confirm to false and let it prompt
+        true // We'll let the update() call handle the prompt
+    };
+
+    if !should_update {
+        info!("update declined by user");
+        return Ok(());
+    }
+
+    // Now perform the actual update
     let mut update_builder = self_update::backends::github::Update::configure();
 
     update_builder
         .repo_owner("IceDynamix")
         .repo_name("reliquary-archiver")
         .bin_name("reliquary-archiver")
-        .target("x64")
-        .show_download_progress(true)
+        .target(target)
+        .show_download_progress(!gui_mode) // Don't show console progress in GUI mode
         .show_output(false)
-        .no_confirm(no_confirm)
-        .current_version(cargo_crate_version!());
+        .no_confirm(no_confirm || gui_mode) // Skip self_update's prompt if we already confirmed via GUI
+        .current_version(current_version);
 
     if let Some(token) = auth_token {
         update_builder.auth_token(token);
     }
 
-    if cfg!(feature = "pcap") {
-        update_builder.identifier("pcap");
-    } else if cfg!(feature = "pktmon") {
-        update_builder.identifier("pktmon");
+    if let Some(id) = identifier {
+        update_builder.identifier(id);
     }
 
     let status = update_builder.build()?.update()?;

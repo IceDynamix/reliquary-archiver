@@ -78,8 +78,8 @@ lto = true
 overflow-checks = false # see comment above
 
 [features]
-default = ["gui", "pcap", "win10"]
-gui = ["dep:raxis", "windows/Win32_Foundation", "stream"]
+default = ["gui", "pcap"]
+gui = ["dep:raxis", "windows/Win32_System_Console", "windows/Win32_Foundation", "stream"]
 stream = ["dep:axum"]
 pcap = ["dep:pcap"]
 pktmon = [
@@ -90,5 +90,3 @@ pktmon = [
     "windows/Win32_UI_WindowsAndMessaging",
     "windows/Win32_System_Registry",
 ]
-# workaround for a bug with raxis where the background is transparent on windows 10
-win10 = []
