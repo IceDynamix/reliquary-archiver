@@ -2089,6 +2089,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 [[package]]
 name = "raxis"
 version = "0.1.0"
+source = "git+https://github.com/emmachase/raxis?rev=ae478f351393663fa692ac6c6b4d1da0f002562e#ae478f351393663fa692ac6c6b4d1da0f002562e"
 dependencies = [
  "async-stream",
  "const_format",
@@ -2113,6 +2114,7 @@ dependencies = [
 [[package]]
 name = "raxis-core"
 version = "0.1.0"
+source = "git+https://github.com/emmachase/raxis?rev=ae478f351393663fa692ac6c6b4d1da0f002562e#ae478f351393663fa692ac6c6b4d1da0f002562e"
 dependencies = [
  "windows 0.61.3",
  "windows-core 0.61.2",
@@ -2122,6 +2124,7 @@ dependencies = [
 [[package]]
 name = "raxis-proc-macro"
 version = "0.1.0"
+source = "git+https://github.com/emmachase/raxis?rev=ae478f351393663fa692ac6c6b4d1da0f002562e#ae478f351393663fa692ac6c6b4d1da0f002562e"
 dependencies = [
  "quote",
  "raxis-core",

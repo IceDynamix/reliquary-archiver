@@ -668,6 +668,7 @@ pub enum RootMessage {
     LoadSettings(PathBuf),
     ActivateSettings(Settings),
     SaveSettings,
+    Update
 }
 
 #[derive(Debug, Clone)]
@@ -1118,7 +1119,7 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     }
 }
 
-fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
     let opacity = use_animation(&mut instance, state.settings_open);
     let bg_opacity = use_animation(&mut instance, !state.opacity_slider_dragging);
@@ -1402,13 +1403,21 @@ fn modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<Root
     }
 }
 
-// #[derive(Clone, Copy, PartialEq)]
-// pub enum LogLevel {
-//     Debug,
-//     Info,
-//     Warn,
-//     Error,
-// }
+fn update_toast(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+    let update_button = Button::new()
+        .with_click_handler(move |_, shell| {
+            shell.publish(RootMessage::Update);
+        })
+        .ghost()
+        .with_border_radius(BORDER_RADIUS)
+        .as_element(w_id!(), Text::new("Update")
+            .with_font_size(11.0)
+            .with_color(TEXT_MUTED)
+            .as_element()
+        );
+
+    Element::default()
+}
 
 // Main view function
 pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
@@ -1588,7 +1597,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
                 }),
                 ..Default::default()
             }),
-        modal(state, hook)
+        settings_modal(state, hook)
     ]
     .with_id(w_id!())
     .with_color(TEXT_COLOR)
@@ -1800,7 +1809,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             info!("Loading settings from {}", path.display());
             if path.exists() {
                 Some(Task::future(tokio::fs::read_to_string(path)).and_then(|content| {
-                    let settings: Settings = serde_json::from_str(&content).unwrap();
+                    let settings: Settings = serde_json::from_str(&content).unwrap_or_default();
                     Task::done(RootMessage::ActivateSettings(settings))
                 }))
             } else {
@@ -1812,6 +1821,10 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::ActivateSettings(settings) => {
             state.store.settings = settings;
+            None
+        }
+
+        RootMessage::Update => {
             None
         }
     }
@@ -1920,7 +1933,11 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             }),
         ]))
     })
-    .with_title("Reliquary Archiver")
+    .with_title(if supports_raxis_backdrop() {
+        "Reliquary Archiver"
+    } else {
+        ""
+    })
     .with_icons(Some(1))
     .with_tray_icon(TrayIconConfig {
         icon_resource: Some(1),
@@ -1960,11 +1977,24 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         _ => SystemCommandResponse::Allow,
     })
     // window controls get hidden by custom backgrounds if enabled, background is transparent if disabled (on win 10)
-    // .replace_titlebar()
+    .replace_titlebar()
     .with_backdrop(Backdrop::MicaAlt)
     .with_window_size(960, 760);
 
     app.run()?;
 
     Ok(())
+}
+
+
+fn supports_raxis_backdrop() -> bool {
+    return true;
+    use windows::Wdk::System::SystemServices::RtlGetVersion;
+    use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+    let mut version_information = OSVERSIONINFOW {
+        dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    unsafe { RtlGetVersion(&mut version_information); }
+    version_information.dwMajorVersion == 10 && version_information.dwBuildNumber >= 22621
 }

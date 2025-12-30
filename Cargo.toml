@@ -35,8 +35,9 @@ rfd = "0.15.3"
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
-# raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "67be35bf0dda4ede37cde360bfbad8493232731c", features = ["tokio"] }
-raxis = { optional = true, path = "../raxis", features = ["tokio"]}
+raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "ae478f351393663fa692ac6c6b4d1da0f002562e", features = ["tokio"] }
+#raxis = { optional = true, git= "https://github.com/FI00ds/raxis",rev = "ba79e72e5ce25288e5463e615737f73befb5c108", features = ["tokio"]}
+#raxis = { optional = true, path = "../raxis", features = ["tokio"]}
 
 [target.'cfg(windows)'.dependencies]
 # By default self_update makes its http requests with reqwest, which itself relies on tokio
@@ -79,7 +80,15 @@ overflow-checks = false # see comment above
 
 [features]
 default = ["gui", "pcap"]
-gui = ["dep:raxis", "windows/Win32_System_Console", "windows/Win32_Foundation", "stream"]
+gui = [
+    "stream",
+    "dep:raxis",
+    "windows/Win32_Foundation",
+    "windows/Win32_System_Console",
+    # following dependencies necessary to check for windows 11
+    "windows/Wdk_System_SystemServices",
+    "windows/Win32_System_SystemInformation",
+]
 stream = ["dep:axum"]
 pcap = ["dep:pcap"]
 pktmon = [

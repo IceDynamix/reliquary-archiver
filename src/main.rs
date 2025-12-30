@@ -52,41 +52,52 @@ struct Args {
     #[arg()]
     /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
     output: Option<PathBuf>,
+
     /// Read packets from .pcap file instead of capturing live packets
     #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,
+
     /// Read packets from .etl file instead of capturing live packets
     #[cfg(feature = "pktmon")]
     #[arg(long)]
     etl: Option<PathBuf>,
+
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
+
     /// Host a websocket server to stream relic/lc updates in real-time.
     /// This also disables the timeout
     #[cfg(feature = "stream")]
     #[arg(short, long)]
     stream: bool,
+
     /// Port to listen on for the websocket server, defaults to 23313
     #[cfg(feature = "stream")]
     #[arg(short = 'p', long, default_value_t = 23313)]
     websocket_port: u16,
+
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+
     /// Path to output log to
     #[arg(short, long)]
     log_path: Option<PathBuf>,
+
     /// Don't check for updates, only applicable on Windows
     #[arg(long)]
     no_update: bool,
+
     /// Update without asking for confirmation, only applicable on Windows
     #[arg(long)]
     always_update: bool,
+
     /// Github Auth token to use when checking for updates, only applicable on Windows
     #[arg(long)]
     auth_token: Option<String>,
+
     /// Don't wait for enter to be pressed after capturing
     #[arg(short, long)]
     exit_after_capture: bool,
@@ -205,7 +216,7 @@ async fn main() {
 
 async fn capture(args: Args) {
     // Only self update on Windows, since that's the only platform we ship releases for
-    #[cfg(windows)]
+    #[cfg(all(windows, not(feature = "gui")))]
     {
         #[cfg(feature = "gui")]
         let gui_mode = !args.headless;
@@ -359,7 +370,7 @@ fn update(auth_token: Option<&str>, no_confirm: bool, gui_mode: bool) -> Result<
     // Find the latest release that has an asset for our target
     let target = "x64";
     let current_version = cargo_crate_version!();
-    
+
     let latest_release = releases.iter().find(|r| {
         r.asset_for(target, identifier).is_some()
     });
@@ -387,7 +398,7 @@ fn update(auth_token: Option<&str>, no_confirm: bool, gui_mode: bool) -> Result<
     } else if gui_mode {
         // In GUI mode, show a dialog to ask the user
         use rfd::{MessageDialog, MessageButtons, MessageLevel, MessageDialogResult};
-        
+
         let result = MessageDialog::new()
             .set_level(MessageLevel::Info)
             .set_title("Update Available")
@@ -397,7 +408,7 @@ fn update(auth_token: Option<&str>, no_confirm: bool, gui_mode: bool) -> Result<
             ))
             .set_buttons(MessageButtons::YesNo)
             .show();
-        
+
         matches!(result, MessageDialogResult::Yes)
     } else {
         // Console mode - let self_update handle the prompt
@@ -411,6 +422,7 @@ fn update(auth_token: Option<&str>, no_confirm: bool, gui_mode: bool) -> Result<
     }
 
     // Now perform the actual update
+
     let mut update_builder = self_update::backends::github::Update::configure();
 
     update_builder
