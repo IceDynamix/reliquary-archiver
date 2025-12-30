@@ -2024,7 +2024,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -2089,7 +2089,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 [[package]]
 name = "raxis"
 version = "0.1.0"
-source = "git+https://github.com/emmachase/raxis?rev=ae478f351393663fa692ac6c6b4d1da0f002562e#ae478f351393663fa692ac6c6b4d1da0f002562e"
+source = "git+https://github.com/FI00ds/raxis?rev=1dddf2526a9834fcfc863cebf3409aea3d519f3a#1dddf2526a9834fcfc863cebf3409aea3d519f3a"
 dependencies = [
  "async-stream",
  "const_format",
@@ -2114,7 +2114,7 @@ dependencies = [
 [[package]]
 name = "raxis-core"
 version = "0.1.0"
-source = "git+https://github.com/emmachase/raxis?rev=ae478f351393663fa692ac6c6b4d1da0f002562e#ae478f351393663fa692ac6c6b4d1da0f002562e"
+source = "git+https://github.com/FI00ds/raxis?rev=1dddf2526a9834fcfc863cebf3409aea3d519f3a#1dddf2526a9834fcfc863cebf3409aea3d519f3a"
 dependencies = [
  "windows 0.61.3",
  "windows-core 0.61.2",
@@ -2124,7 +2124,7 @@ dependencies = [
 [[package]]
 name = "raxis-proc-macro"
 version = "0.1.0"
-source = "git+https://github.com/emmachase/raxis?rev=ae478f351393663fa692ac6c6b4d1da0f002562e#ae478f351393663fa692ac6c6b4d1da0f002562e"
+source = "git+https://github.com/FI00ds/raxis?rev=1dddf2526a9834fcfc863cebf3409aea3d519f3a#1dddf2526a9834fcfc863cebf3409aea3d519f3a"
 dependencies = [
  "quote",
  "raxis-core",
@@ -2237,6 +2237,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq 2.12.1",
  "windows 0.61.3",
+ "windows-registry",
  "winres",
 ]
 
@@ -3632,6 +3633,17 @@ checksum = "9150af68066c4c5c07ddc0ce30421554771e528bde427614c61038bc2c92c2b1"
 dependencies = [
  "windows-core 0.61.2",
  "windows-link 0.1.3",
+]
+
+[[package]]
+name = "windows-registry"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02752bf7fbdcce7f2a27a742f798510f3e5ad88dbe84871e5168e2120c3d5720"
+dependencies = [
+ "windows-link 0.2.1",
+ "windows-result 0.4.1",
+ "windows-strings 0.5.1",
 ]
 
 [[package]]

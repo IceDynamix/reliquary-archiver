@@ -1,10 +1,13 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::ops::Range;
+use std::env;
+use std::ops::{Deref, Range};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
+
+use windows_registry::{CURRENT_USER, HSTRING, Type, Value};
 
 use async_stream::stream;
 use chrono::Local;
@@ -272,6 +275,7 @@ pub struct Settings {
     text_shadow_enabled: bool,
     minimize_to_tray_on_close: bool,
     minimize_to_tray_on_minimize: bool,
+    run_on_start: bool
 }
 
 impl Default for Store {
@@ -296,6 +300,7 @@ impl Default for Settings {
             text_shadow_enabled: false,
             minimize_to_tray_on_close: false,
             minimize_to_tray_on_minimize: false,
+            run_on_start: false,
         }
     }
 }
@@ -659,6 +664,8 @@ pub enum RootMessage {
     TextShadowToggled(bool),
     MinimizeToTrayOnCloseToggled(bool),
     MinimizeToTrayOnMinimizeToggled(bool),
+    RunOnStartToggled(bool),
+    SetRunOnStart(bool),
     HideWindow,
     ShowWindow,
     ContextMenuShow,
@@ -668,7 +675,6 @@ pub enum RootMessage {
     LoadSettings(PathBuf),
     ActivateSettings(Settings),
     SaveSettings,
-    Update
 }
 
 #[derive(Debug, Clone)]
@@ -1358,6 +1364,33 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow());
 
+    let run_on_start_toggle = Toggle::new(state.store.settings.run_on_start)
+        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
+        .with_toggle_handler(|enabled, _, shell| {
+            shell.publish(RootMessage::RunOnStartToggled(enabled));
+        })
+        .as_element(w_id!());
+
+    let run_on_start_section = column![
+        row![
+            Text::new("Run on startup")
+                .with_font_size(14.0)
+                .with_color(TEXT_COLOR)
+                .as_element(),
+            spacer(),
+            run_on_start_toggle
+        ]
+        .with_width(Sizing::grow())
+        .with_cross_align_items(Alignment::Center),
+        Text::new("Run automatically when your computer starts")
+            .with_font_size(11.0)
+            .with_color(TEXT_MUTED)
+            .as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow())
+    ;
+
     let settings_content = column![
         header_section,
         bg_image_section,
@@ -1367,6 +1400,7 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
         horizontal_rule(w_id!()),
         minimize_on_close_section,
         minimize_on_minimize_section,
+        run_on_start_section
     ]
     .with_child_gap(SPACE_LG)
     .with_width(Sizing::fixed(400.0))
@@ -1403,20 +1437,71 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
     }
 }
 
-fn update_toast(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
-    let update_button = Button::new()
-        .with_click_handler(move |_, shell| {
-            shell.publish(RootMessage::Update);
-        })
-        .ghost()
-        .with_border_radius(BORDER_RADIUS)
-        .as_element(w_id!(), Text::new("Update")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element()
-        );
+#[derive(Debug, Eq, PartialEq)]
+enum RegistryError {
+    KeyCreationFailed,
+    PathUnobtainable,
+    AddFailed,
+    RemoveFailed,
+}
 
-    Element::default()
+const REGISTRY_KEY_NAME: &str = "reliquary-archiver";
+const REGISTRY_KEY_PATH: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+fn set_run_on_start(enabled: bool) -> Result<(), RegistryError> {
+    let key = CURRENT_USER.create(REGISTRY_KEY_PATH).map_err(|e| { RegistryError::KeyCreationFailed })?;
+
+    let path_to_exe = env::current_exe().map_err(|e| { RegistryError::PathUnobtainable })?;
+
+    let operation_successful = if enabled {
+        key.set_string(REGISTRY_KEY_NAME, path_to_exe.to_str().unwrap())
+            .map_err(|e| { RegistryError::AddFailed })
+    } else {
+        key.remove_value(REGISTRY_KEY_NAME).map_err(|e| { RegistryError::RemoveFailed })
+    };
+
+    operation_successful
+}
+
+fn registry_matches_settings(enabled: bool) -> Result<bool, RegistryError> {
+    let key = CURRENT_USER.create(REGISTRY_KEY_PATH);
+    if key.is_err() {
+        tracing::error!("Failed to get registry key handle");
+        return Err(RegistryError::KeyCreationFailed);
+    };
+    let key = key.unwrap();
+
+    let val = key.get_value(REGISTRY_KEY_NAME);
+    if val.is_err() {
+        if enabled {
+            tracing::warn!("Run on start enabled but no key set in registry! Disabling setting.");
+            return Ok(false);
+        } else {
+            return Ok(true);
+        }
+    }
+    let val = val.unwrap();
+
+    if val.ty() != Type::String {
+        tracing::error!("Key in registry set but is not of type string! Removing registry key");
+        key.remove_value(REGISTRY_KEY_NAME).unwrap();
+        return Ok(false);
+    }
+
+    let path_to_exe = env::current_exe().unwrap().to_str().unwrap().to_owned() + "\0";
+    let path_in_registry = HSTRING::from_wide(val.as_wide()).to_string_lossy();
+
+    let paths_match = path_to_exe == path_in_registry;
+
+    tracing::debug!("\npaths are:\n(exe): {:?}\nand\n(reg): {:?}", path_to_exe, path_in_registry);
+
+    let matches = enabled == paths_match;
+
+    if (!paths_match) {
+        tracing::info!("Path in registry does not match path to exe. Removing registry key");
+        key.remove_value(REGISTRY_KEY_NAME).unwrap();
+    }
+    Ok(matches)
 }
 
 // Main view function
@@ -1452,7 +1537,6 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
             titlebar_controls(hook),
             container(menu_button).with_padding(BoxAmount::all(PAD_MD)),
         ].with_cross_align_items(Alignment::End)
-        
     ]
     .with_width(Sizing::grow());
 
@@ -1793,6 +1877,35 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             save_settings(state)
         }
 
+        RootMessage::RunOnStartToggled(enabled) => {
+            match set_run_on_start(enabled) {
+                Ok(()) => {
+                    state.store.settings.run_on_start = enabled;
+                },
+                Err(RegistryError::KeyCreationFailed) => {
+                    tracing::warn!("Unable to create registry key!");
+                },
+                Err(RegistryError::PathUnobtainable) => {
+                    tracing::warn!("Unable to get current exe path!");
+                },
+                Err(RegistryError::AddFailed) => {
+                    tracing::warn!("Failed to add registry key!");
+                },
+                Err(RegistryError::RemoveFailed) => {
+                    state.store.settings.run_on_start = false;
+                    tracing::warn!("Failed to remove registry key!");
+                },
+                // not reachable in set_run_on_start
+                _ => {},
+            }
+            save_settings(state)
+        },
+
+        RootMessage::SetRunOnStart(enabled) => {
+            state.store.settings.run_on_start = enabled;
+            save_settings(state)
+        },
+
         RootMessage::HideWindow => Some(task::hide_window()),
 
         RootMessage::ShowWindow => Some(task::show_window()),
@@ -1809,7 +1922,16 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             info!("Loading settings from {}", path.display());
             if path.exists() {
                 Some(Task::future(tokio::fs::read_to_string(path)).and_then(|content| {
-                    let settings: Settings = serde_json::from_str(&content).unwrap_or_default();
+                    let mut settings: Settings = serde_json::from_str(&content).unwrap_or_default();
+                    let run_on_start = settings.run_on_start;
+                    let test = match registry_matches_settings(run_on_start) {
+                        // settings are not guaranteed to match the registry
+                        // e.g. user moves the exe after enabling/disabling run on start
+                        // in case of mismatch, update the settings and delete registry key if appropriate
+                        Ok(false) => settings.run_on_start = !run_on_start,
+                        Ok(true) => {},
+                        _ => {},
+                    };
                     Task::done(RootMessage::ActivateSettings(settings))
                 }))
             } else {
@@ -1821,10 +1943,6 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::ActivateSettings(settings) => {
             state.store.settings = settings;
-            None
-        }
-
-        RootMessage::Update => {
             None
         }
     }
@@ -1914,9 +2032,10 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let state = RootState::default();
     let exporter = state.exporter.clone();
 
-    let app = raxis::Application::new(state, view, update, move |_state| {
+    let app = raxis::Application::new(state, view, update, move |state| {
+
         Some(Task::batch(vec![
-            task::get_local_app_data().and_then(|path| Task::done(RootMessage::LoadSettings(get_settings_path(path)))),
+            task::get_local_app_data().and_then(|path| {Task::done(RootMessage::LoadSettings(get_settings_path(path)))}),
             Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
             Task::future(start_websocket_server(args.websocket_port, exporter.clone()))
                 .then(|e| match e {
@@ -1933,11 +2052,7 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             }),
         ]))
     })
-    .with_title(if supports_raxis_backdrop() {
-        "Reliquary Archiver"
-    } else {
-        ""
-    })
+    .with_title("Reliquary Archiver")
     .with_icons(Some(1))
     .with_tray_icon(TrayIconConfig {
         icon_resource: Some(1),
@@ -1976,7 +2091,6 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
         SystemCommand::Maximize | SystemCommand::Restore => SystemCommandResponse::Allow,
         _ => SystemCommandResponse::Allow,
     })
-    // window controls get hidden by custom backgrounds if enabled, background is transparent if disabled (on win 10)
     .replace_titlebar()
     .with_backdrop(Backdrop::MicaAlt)
     .with_window_size(960, 760);
@@ -1984,17 +2098,4 @@ pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     app.run()?;
 
     Ok(())
-}
-
-
-fn supports_raxis_backdrop() -> bool {
-    return true;
-    use windows::Wdk::System::SystemServices::RtlGetVersion;
-    use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
-    let mut version_information = OSVERSIONINFOW {
-        dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
-        ..Default::default()
-    };
-    unsafe { RtlGetVersion(&mut version_information); }
-    version_information.dwMajorVersion == 10 && version_information.dwBuildNumber >= 22621
 }

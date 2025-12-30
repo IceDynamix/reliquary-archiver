@@ -35,8 +35,8 @@ rfd = "0.15.3"
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
-raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "ae478f351393663fa692ac6c6b4d1da0f002562e", features = ["tokio"] }
-#raxis = { optional = true, git= "https://github.com/FI00ds/raxis",rev = "ba79e72e5ce25288e5463e615737f73befb5c108", features = ["tokio"]}
+#raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "8b15dc50936f94fc28353fa33917267eb6c8ceed", features = ["tokio"] }
+raxis = { optional = true, git= "https://github.com/FI00ds/raxis", rev = "1dddf2526a9834fcfc863cebf3409aea3d519f3a", features = ["tokio"]}
 #raxis = { optional = true, path = "../raxis", features = ["tokio"]}
 
 [target.'cfg(windows)'.dependencies]
@@ -48,6 +48,7 @@ raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "ae4
 self_update = { git = "https://github.com/jaemk/self_update", features = ["ureq", "rustls"], default-features = false}
 pktmon = { optional = true, version = "0.6.2", features = ["tokio"] }
 windows = { optional = true, version = "0.61"}
+windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
@@ -85,9 +86,8 @@ gui = [
     "dep:raxis",
     "windows/Win32_Foundation",
     "windows/Win32_System_Console",
-    # following dependencies necessary to check for windows 11
-    "windows/Wdk_System_SystemServices",
-    "windows/Win32_System_SystemInformation",
+    "windows/Win32_System_Registry",
+    "windows-registry"
 ]
 stream = ["dep:axum"]
 pcap = ["dep:pcap"]
