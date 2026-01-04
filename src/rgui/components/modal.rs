@@ -2,8 +2,7 @@
 
 use std::time::Instant;
 
-use raxis::layout::helpers::center;
-use raxis::layout::model::{Border, BorderRadius, Color, Element, FloatingConfig, Sizing};
+use raxis::layout::model::{Alignment, Border, BorderRadius, BoxAmount, Color, Direction, Element, FloatingConfig, Sizing};
 use raxis::widgets::button::Button;
 use raxis::widgets::widget;
 use raxis::util::unique::{WidgetId, combine_id};
@@ -18,6 +17,14 @@ pub struct ModalConfig {
     /// Whether the backdrop should be visible (for cases like slider dragging where
     /// you want to hide the backdrop temporarily). Default true.
     pub backdrop_visible: bool,
+    /// Where you want the modal to appear (defaults to center of screen)
+    pub modal_position: ModalPosition,
+}
+
+#[derive(Default)]
+pub struct ModalPosition {
+    pub top: Option<f32>,
+    pub left: Option<f32>,
 }
 
 impl Default for ModalConfig {
@@ -25,6 +32,7 @@ impl Default for ModalConfig {
         Self {
             bg_opacity_target: 0.5,
             backdrop_visible: true,
+            modal_position: ModalPosition::default()
         }
     }
 }
@@ -79,7 +87,7 @@ pub fn modal_backdrop<M: Clone + Send + 'static>(
 
         content: widget(backdrop_button),
 
-        children: vec![center(Element {
+        children: vec![position(Element {
             id: Some(combine_id(id, w_id!())),
             background_color: Some(OPAQUE_CARD_BACKGROUND),
             border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
@@ -94,8 +102,27 @@ pub fn modal_backdrop<M: Clone + Send + 'static>(
 
             children: vec![content],
             ..Default::default()
-        })],
+        }, config.modal_position)],
 
+        ..Default::default()
+    }
+}
+
+fn position<Message>(content: impl Into<Element<Message>>, position: ModalPosition) -> Element<Message> {
+    Element {
+        direction: Direction::TopToBottom,
+        width: Sizing::grow(),
+        children: vec![Element {
+            direction: Direction::LeftToRight,
+            children: vec![content.into()],
+            axis_align_content: Alignment::Center,
+            width: if let Some(left) = position.left { Sizing::default() } else { Sizing::grow() },
+            padding: if let Some(left) = position.left { BoxAmount::left(left) } else { BoxAmount::default() },
+            ..Default::default()
+        }],
+        axis_align_content: Alignment::Center,
+        height: if let Some(top) = position.top { Sizing::default() } else { Sizing::grow() },
+        padding: if let Some(top) = position.top { BoxAmount::top(top) } else { BoxAmount::default() },
         ..Default::default()
     }
 }

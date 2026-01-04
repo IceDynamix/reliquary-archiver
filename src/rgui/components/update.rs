@@ -53,6 +53,7 @@ pub enum HandleResult {
 pub fn handle_message(
     msg: UpdateMessage,
     current_state: &mut Option<UpdateState>,
+    skip_consent: bool
 ) -> HandleResult {
     match msg {
         UpdateMessage::PerformCheck => {
@@ -63,11 +64,16 @@ pub fn handle_message(
         UpdateMessage::CheckResult(result) => {
             match result {
                 Ok(Some((current, latest))) => {
-                    info!("Update available: {} -> {}", current, latest);
-                    *current_state = Some(UpdateState::Available {
-                        current_version: current,
-                        latest_version: latest,
-                    });
+                    if (skip_consent) {
+                        info!("Update available! Updating immediately");
+                        return HandleResult::Task(Task::done(UpdateMessage::Confirm));
+                    } else {
+                        info!("Update available: {} -> {}", current, latest);
+                        *current_state = Some(UpdateState::Available {
+                            current_version: current,
+                            latest_version: latest,
+                        });
+                    }
                 }
                 Ok(None) => {
                     info!("Already up-to-date");

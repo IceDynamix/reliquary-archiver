@@ -61,56 +61,6 @@ impl Default for ToggleGroupConfig {
     }
 }
 
-/// ```
-// pub fn togglegroup<T, PMsg, F>(
-//     options: Vec<ToggleOption<T>>,
-//     active_value: &T,
-//     on_change: F,
-//     config: Option<ToggleGroupConfig>,
-//     hook: &mut HookManager<PMsg>,
-// ) -> Element<PMsg>
-// where
-//     T: Clone + PartialEq + 'static,
-//     PMsg: Send + Clone + std::fmt::Debug + 'static,
-//     F: Fn(T) -> PMsg + Clone + 'static,
-// {
-//     let config = config.unwrap_or_default();
-//     let border_radius = config.border_radius;
-
-//     togglegroup_custom(
-//         options,
-//         active_value,
-//         on_change,
-//         move |button, is_first, is_last| {
-//             let radius = if is_first {
-//                 BorderRadius::left(border_radius)
-//             } else if is_last {
-//                 BorderRadius::right(border_radius)
-//             } else {
-//                 BorderRadius::all(0.0)
-//             };
-
-//             button
-//                 .with_bg_color(config.active_color)
-//                 .with_border_radius(radius)
-//                 .with_border(config.border_width, config.border_color)
-//         },
-//         move |button, is_first, is_last| {
-//             let radius = if is_first {
-//                 BorderRadius::left(border_radius)
-//             } else if is_last {
-//                 BorderRadius::right(border_radius)
-//             } else {
-//                 BorderRadius::all(0.0)
-//             };
-
-//             button.with_bg_color(config.inactive_color)
-//         },
-//         config.button_gap,
-//         hook,
-//     )
-// }
-
 /// Creates a toggle group with multiple buttons where only one can be active at a time
 ///
 /// # Arguments
@@ -118,7 +68,6 @@ impl Default for ToggleGroupConfig {
 /// * `active_value` - The currently active value
 /// * `on_change` - Callback function that receives the new selected value
 /// * `config` - Optional configuration for appearance
-/// * `hook` - Hook manager for state management
 ///
 /// # Example
 /// ```ignore
@@ -133,9 +82,14 @@ impl Default for ToggleGroupConfig {
 ///     current_selection,
 ///     |new_value| Message::SelectionChanged(new_value),
 ///     None,
-///     hook,
 /// );
-pub fn togglegroup<T, PMsg, F>(base_id: u64, options: Vec<ToggleOption<T>>, active_value: &T, on_change: F) -> Element<PMsg>
+pub fn togglegroup<T, PMsg, F>(
+    base_id: u64,
+    options: Vec<ToggleOption<T>>,
+    active_value: &T,
+    on_change: F,
+    config: Option<ToggleGroupConfig>
+) -> Element<PMsg>
 where
     T: Clone + PartialEq + 'static,
     PMsg: Send + Clone + std::fmt::Debug + 'static,
@@ -143,7 +97,7 @@ where
 {
     let total_count = options.len();
 
-    let config = ToggleGroupConfig::default();
+    let config = config.unwrap_or_default();
 
     let buttons: Vec<Element<PMsg>> = options
         .into_iter()

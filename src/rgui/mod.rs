@@ -7,8 +7,6 @@ use std::rc::Rc;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use windows_registry::{CURRENT_USER, HSTRING, Type, Value};
-
 use async_stream::stream;
 use chrono::Local;
 use futures::channel::oneshot;
@@ -66,15 +64,17 @@ use tracing::info;
 use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::file_download::{self, download_view};
-use crate::rgui::components::modal::{modal_backdrop, ModalConfig};
-use crate::rgui::components::togglegroup::{togglegroup, ToggleOption};
+use crate::rgui::components::modal::{ModalConfig, ModalPosition, modal_backdrop};
+use crate::rgui::components::togglegroup::{ToggleGroupConfig, ToggleOption, togglegroup};
 use crate::rgui::components::update::{self, UpdateState, UpdateMessage, update_modal};
 use crate::scopefns::Also;
 use crate::websocket::{PortSource, start_websocket_server};
 use crate::worker::{self, archiver_worker};
 use crate::{LOG_BUFFER, LOG_NOTIFY, VEC_LAYER_HANDLE};
+use run_on_start::{RegistryError, registry_matches_settings, set_run_on_start};
 
 mod components;
+mod run_on_start;
 
 // Constants
 pub const PAD_SM: f32 = 4.0;
@@ -99,7 +99,7 @@ const TEXT_MUTED: Color = Color {
     r: 1.0,
     g: 1.0,
     b: 1.0,
-    a: 0.9,// 0.6,
+    a: 0.6,
 };
 const TEXT_COLOR: Color = Color {
     r: 1.0,
@@ -278,6 +278,7 @@ pub struct Settings {
     image_fit: ImageFit,
     background_opacity: f32,
     text_shadow_enabled: bool,
+    update_umprompted: bool,
     minimize_to_tray_on_close: bool,
     minimize_to_tray_on_minimize: bool,
     run_on_start: bool,
@@ -305,6 +306,7 @@ impl Default for Settings {
             image_fit: ImageFit::Cover,
             background_opacity: 0.12,
             text_shadow_enabled: false,
+            update_umprompted: false,
             minimize_to_tray_on_close: false,
             minimize_to_tray_on_minimize: false,
             run_on_start: false,
@@ -684,6 +686,7 @@ pub enum RootMessage {
     OpacityChanged(f32),
     OpacitySliderDrag(bool),
     TextShadowToggled(bool),
+    UpdateUnpromptedToggled(bool),
     MinimizeToTrayOnCloseToggled(bool),
     MinimizeToTrayOnMinimizeToggled(bool),
     RunOnStartToggled(bool),
@@ -1154,7 +1157,7 @@ struct WebsocketConfigState {
     port_input: u16,
 }
 
-fn websocket_section(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
     let config_state: Rc<RefCell<WebsocketConfigState>> = instance.use_state(|| { WebsocketConfigState {
         port_input: state.store.settings.ws_port,
@@ -1275,8 +1278,23 @@ fn websocket_section(state: &RootState, hook: &mut HookManager<RootMessage>) -> 
     .with_width(Sizing::grow())
 }
 
+#[derive(Clone, PartialEq)]
+enum SettingsModalPanel {
+    Graphics,
+    Update,
+    Misc
+}
+struct SettingsModalState {
+    active_panel: SettingsModalPanel
+}
+
 fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
+
+    let modal_state = instance.use_state(|| SettingsModalState {
+        active_panel: SettingsModalPanel::Graphics
+    });
+
     let opacity = use_animation(&mut instance, state.settings_open);
     let bg_opacity = use_animation(&mut instance, !state.opacity_slider_dragging);
     let opacity = opacity.interpolate(hook, 0.0, 1.0, Instant::now());
@@ -1382,6 +1400,7 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
         ],
         &state.store.settings.image_fit,
         |fit| Some(RootMessage::ImageFitChanged(fit)),
+        None
     )
     .with_width(Sizing::grow());
 
@@ -1459,6 +1478,51 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
     ]
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow());
+
+    let update_check_button = Button::new()
+        .with_click_handler(|_, s| {
+            s.publish(RootMessage::Update(UpdateMessage::PerformCheck));
+        })
+        .with_bg_color(PRIMARY_COLOR)
+        .as_element(
+            w_id!(),
+            Text::new("Check for updates")
+                .with_color(Color::WHITE)
+                .with_font_size(14.0)
+                .with_font_weight(FontWeight::Medium)
+                .as_element()
+                .with_axis_align_self(Alignment::Center)
+                .with_cross_align_self(Alignment::Center)
+                .with_padding(BoxAmount::all(8.0))
+        )
+        .with_height(Sizing::grow())
+        .with_border_radius(BORDER_RADIUS);
+
+    let update_unprompted_toggle = Toggle::new(state.store.settings.update_umprompted)
+        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
+        .with_toggle_handler(|enabled, _, shell| {
+            shell.publish(RootMessage::UpdateUnpromptedToggled(enabled));
+        })
+        .as_element(w_id!());
+
+    let update_unprompted_section = column![
+        row![
+            Text::new("Update Automatically")
+                .with_font_size(14.0)
+                .with_color(TEXT_COLOR)
+                .as_element(),
+            spacer(),
+            update_unprompted_toggle
+        ]
+        .with_width(Sizing::grow())
+        .with_cross_align_items(Alignment::Center),
+        Text::new("When an update is available, update automatically without waiting for confirmation")
+            .with_font_size(11.0)
+            .with_color(TEXT_MUTED)
+            .as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow());;
 
     // Minimize to tray on close section
     let minimize_on_close_toggle = Toggle::new(state.store.settings.minimize_to_tray_on_close)
@@ -1538,21 +1602,63 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
             .as_element(),
     ]
     .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow())
-    ;
+    .with_width(Sizing::grow());
 
-    let settings_content = column![
-        header_section,
+    let graphics_settings_content = column![
         bg_image_section,
         fit_mode_section,
         opacity_section,
-        text_shadow_section,
-        horizontal_rule(w_id!()),
-        websocket_section(state, hook),
+        text_shadow_section
+    ];
+
+    let update_settings_content = column![
+        update_unprompted_section,
+        update_check_button
+    ];
+
+    let misc_settings_content = column![
+        websocket_settings_section(state, hook),
         horizontal_rule(w_id!()),
         minimize_on_close_section,
         minimize_on_minimize_section,
         run_on_start_section
+    ];
+
+    let modal_state_clone = modal_state.clone();
+
+    let mut panel_toggles = togglegroup(
+        w_id!(),
+        vec![
+            ToggleOption::new(SettingsModalPanel::Graphics, "Graphics"),
+            ToggleOption::new(SettingsModalPanel::Update, "Update"),
+            ToggleOption::new(SettingsModalPanel::Misc, "Misc"),
+        ],
+        &modal_state_clone.borrow().active_panel,
+        move |e| {
+            modal_state.borrow_mut().active_panel = e;
+            None
+        },
+        Some(ToggleGroupConfig {
+            text_size: 20.0,
+            ..Default::default()
+        })
+    ).with_width(Sizing::grow());
+
+    panel_toggles.children = panel_toggles
+        .children
+        .into_iter()
+        .map(|mut child| child.with_width(Sizing::grow()))
+        .collect();
+
+    let settings_content = column![
+        header_section,
+        panel_toggles,
+        horizontal_rule(w_id!()),
+        match modal_state_clone.borrow().active_panel {
+            SettingsModalPanel::Graphics => graphics_settings_content,
+            SettingsModalPanel::Update => update_settings_content,
+            SettingsModalPanel::Misc => misc_settings_content
+        }.with_child_gap(SPACE_LG).with_width(Sizing::grow())
     ]
     .with_child_gap(SPACE_LG)
     .with_width(Sizing::fixed(400.0))
@@ -1564,78 +1670,15 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
         hook,
         Some(ModalConfig {
             backdrop_visible: !state.opacity_slider_dragging,
+            modal_position: ModalPosition {
+                top: Some(40.0),
+                ..Default::default()
+            },
             ..Default::default()
         }),
         Some(RootMessage::ToggleMenu),
         settings_content,
     )
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum RegistryError {
-    KeyCreationFailed,
-    PathUnobtainable,
-    AddFailed,
-    RemoveFailed,
-}
-
-const REGISTRY_KEY_NAME: &str = "reliquary-archiver";
-const REGISTRY_KEY_PATH: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-
-fn set_run_on_start(enabled: bool) -> Result<(), RegistryError> {
-    let key = CURRENT_USER.create(REGISTRY_KEY_PATH).map_err(|e| { RegistryError::KeyCreationFailed })?;
-
-    let path_to_exe = env::current_exe().map_err(|e| { RegistryError::PathUnobtainable })?;
-
-    let operation_successful = if enabled {
-        key.set_string(REGISTRY_KEY_NAME, path_to_exe.to_str().unwrap())
-            .map_err(|e| { RegistryError::AddFailed })
-    } else {
-        key.remove_value(REGISTRY_KEY_NAME).map_err(|e| { RegistryError::RemoveFailed })
-    };
-
-    operation_successful
-}
-
-fn registry_matches_settings(enabled: bool) -> Result<bool, RegistryError> {
-    let key = CURRENT_USER.create(REGISTRY_KEY_PATH);
-    if key.is_err() {
-        tracing::error!("Failed to get registry key handle");
-        return Err(RegistryError::KeyCreationFailed);
-    };
-    let key = key.unwrap();
-
-    let val = key.get_value(REGISTRY_KEY_NAME);
-    if val.is_err() {
-        if enabled {
-            tracing::warn!("Run on start enabled but no key set in registry! Disabling setting.");
-            return Ok(false);
-        } else {
-            return Ok(true);
-        }
-    }
-    let val = val.unwrap();
-
-    if val.ty() != Type::String {
-        tracing::error!("Key in registry set but is not of type string! Removing registry key");
-        key.remove_value(REGISTRY_KEY_NAME).unwrap();
-        return Ok(false);
-    }
-
-    let path_to_exe = env::current_exe().unwrap().to_str().unwrap().to_owned() + "\0";
-    let path_in_registry = HSTRING::from_wide(val.as_wide()).to_string_lossy();
-
-    let paths_match = path_to_exe == path_in_registry;
-
-    tracing::debug!("\npaths are:\n(exe): {:?}\nand\n(reg): {:?}", path_to_exe, path_in_registry);
-
-    let matches = enabled == paths_match;
-
-    if (!paths_match) {
-        tracing::info!("Path in registry does not match path to exe. Removing registry key");
-        key.remove_value(REGISTRY_KEY_NAME).unwrap();
-    }
-    Ok(matches)
 }
 
 // Main view function
@@ -1747,6 +1790,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         // &LevelFilter::INFO,
         &state.store.log_level,
         |value| Some(RootMessage::LogLevelChanged(value)),
+        None
     );
 
     let footer = column![
@@ -2047,6 +2091,11 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             save_settings(state)
         }
 
+        RootMessage::UpdateUnpromptedToggled(enabled) => {
+            state.store.settings.update_umprompted = enabled;
+            save_settings(state)
+        }
+
         RootMessage::MinimizeToTrayOnCloseToggled(enabled) => {
             state.store.settings.minimize_to_tray_on_close = enabled;
             save_settings(state)
@@ -2129,7 +2178,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         // Update messages
         RootMessage::Update(msg) => {
-            match update::handle_message(msg, &mut state.store.update_state) {
+            match update::handle_message(msg, &mut state.store.update_state, state.store.settings.update_umprompted) {
                 update::HandleResult::None => None,
                 update::HandleResult::Task(t) => Some(t.map(RootMessage::Update)),
                 update::HandleResult::ExitForRestart => return Some(task::exit_application()),
@@ -2225,6 +2274,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             task::get_local_app_data().and_then(|path| {
                 Task::done(RootMessage::LoadSettings(get_settings_path(path)))
             }),
+            // technically calling PerformCheck here is a data race (should be .chain() to RootMessage::ActivateSettings)
+            // however its a case of loading+parsing ~300 bytes of json vs a round trip web request
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
             Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
             Task::future(start_websocket_server(
