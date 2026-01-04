@@ -30,14 +30,14 @@ use tracing_subscriber::filter::Filtered;
 use tracing_subscriber::fmt::{MakeWriter, SubscriberBuilder};
 use tracing_subscriber::{prelude::*, reload, EnvFilter, Layer, Registry};
 
-#[cfg(windows)]
-use {self_update::cargo_crate_version, std::env, std::process::Command};
-
 #[cfg(feature = "stream")]
 mod websocket;
 
 #[cfg(feature = "gui")]
 mod rgui;
+
+#[cfg(windows)]
+mod update;
 
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
@@ -207,15 +207,16 @@ async fn main() {
 
 async fn capture(args: Args) {
     // Only self update on Windows, since that's the only platform we ship releases for
-    #[cfg(all(windows, not(feature = "gui")))]
+    // In GUI mode, the update check is handled by the GUI after it launches
+    #[cfg(windows)]
     {
         #[cfg(feature = "gui")]
         let gui_mode = !args.headless;
         #[cfg(not(feature = "gui"))]
         let gui_mode = false;
 
-        if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
-            if let Err(e) = update(args.auth_token.as_deref(), args.always_update, gui_mode) {
+        if !gui_mode && !args.no_update && !std::env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
+            if let Err(e) = update::update_interactive(args.auth_token.as_deref(), args.always_update) {
                 error!("Failed to update: {}", e);
             }
         }
@@ -263,6 +264,13 @@ async fn capture(args: Args) {
     #[cfg(feature = "gui")]
     if !args.headless {
         rgui::run().unwrap();
+        
+        // Check if we need to spawn the updated version after GUI exits
+        if update::should_spawn_after_exit() {
+            if let Err(e) = update::spawn_updated_version() {
+                error!("Failed to spawn updated version: {}", e);
+            }
+        }
         return;
     }
 
@@ -331,127 +339,6 @@ async fn capture(args: Args) {
             info!("wrote logs to {}", log_path.display());
         }
     }
-}
-
-#[cfg(windows)]
-fn update(auth_token: Option<&str>, no_confirm: bool, gui_mode: bool) -> Result<(), Box<dyn std::error::Error>> {
-    info!("checking for updates");
-
-    // First, check if an update is available by fetching the release list
-    let mut release_list_builder = self_update::backends::github::ReleaseList::configure();
-    release_list_builder
-        .repo_owner("IceDynamix")
-        .repo_name("reliquary-archiver");
-
-    if let Some(token) = auth_token {
-        release_list_builder.auth_token(token);
-    }
-
-    let releases = release_list_builder.build()?.fetch()?;
-
-    // Determine the identifier for our build
-    let identifier = if cfg!(feature = "pcap") {
-        Some("pcap")
-    } else if cfg!(feature = "pktmon") {
-        Some("pktmon")
-    } else {
-        None
-    };
-
-    // Find the latest release that has an asset for our target
-    let target = "x64";
-    let current_version = cargo_crate_version!();
-
-    let latest_release = releases.iter().find(|r| {
-        r.asset_for(target, identifier).is_some()
-    });
-
-    let latest_release = match latest_release {
-        Some(r) => r,
-        None => {
-            info!("no compatible release found");
-            return Ok(());
-        }
-    };
-
-    // Compare versions
-    let latest_version = &latest_release.version;
-    if !self_update::version::bump_is_greater(current_version, latest_version)? {
-        info!("already up-to-date (current: {}, latest: {})", current_version, latest_version);
-        return Ok(());
-    }
-
-    info!("update available: {} -> {}", current_version, latest_version);
-
-    // Determine if we should proceed with the update
-    let should_update = if no_confirm {
-        true
-    } else if gui_mode {
-        // In GUI mode, show a dialog to ask the user
-        use rfd::{MessageDialog, MessageButtons, MessageLevel, MessageDialogResult};
-
-        let result = MessageDialog::new()
-            .set_level(MessageLevel::Info)
-            .set_title("Update Available")
-            .set_description(format!(
-                "A new version of Reliquary Archiver is available!\n\nCurrent version: {}\nNew version: {}\n\nWould you like to update now?",
-                current_version, latest_version
-            ))
-            .set_buttons(MessageButtons::YesNo)
-            .show();
-
-        matches!(result, MessageDialogResult::Yes)
-    } else {
-        // Console mode - let self_update handle the prompt
-        // We'll set no_confirm to false and let it prompt
-        true // We'll let the update() call handle the prompt
-    };
-
-    if !should_update {
-        info!("update declined by user");
-        return Ok(());
-    }
-
-    // Now perform the actual update
-
-    let mut update_builder = self_update::backends::github::Update::configure();
-
-    update_builder
-        .repo_owner("IceDynamix")
-        .repo_name("reliquary-archiver")
-        .bin_name("reliquary-archiver")
-        .target(target)
-        .show_download_progress(!gui_mode) // Don't show console progress in GUI mode
-        .show_output(false)
-        .no_confirm(no_confirm || gui_mode) // Skip self_update's prompt if we already confirmed via GUI
-        .current_version(current_version);
-
-    if let Some(token) = auth_token {
-        update_builder.auth_token(token);
-    }
-
-    if let Some(id) = identifier {
-        update_builder.identifier(id);
-    }
-
-    let status = update_builder.build()?.update()?;
-
-    if status.updated() {
-        info!("updated to {}", status.version());
-
-        let current_exe = env::current_exe();
-        let mut command = Command::new(current_exe?);
-        command.args(env::args().skip(1)).env("NO_SELF_UPDATE", "1");
-
-        command.spawn().and_then(|mut c| c.wait())?;
-
-        // Stop running the old version
-        std::process::exit(0);
-    } else {
-        info!("already up-to-date");
-    }
-
-    Ok(())
 }
 
 struct VecWriter;

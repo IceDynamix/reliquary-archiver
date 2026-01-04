@@ -66,7 +66,9 @@ use tracing::info;
 use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::file_download::{self, download_view};
+use crate::rgui::components::modal::{modal_backdrop, ModalConfig};
 use crate::rgui::components::togglegroup::{togglegroup, ToggleOption};
+use crate::rgui::components::update::{self, UpdateState, UpdateMessage, update_modal};
 use crate::scopefns::Also;
 use crate::websocket::{PortSource, start_websocket_server};
 use crate::worker::{self, archiver_worker};
@@ -252,6 +254,7 @@ pub struct Store {
 
     log_level: LevelFilter,
     settings: Settings,
+    update_state: Option<UpdateState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Default)]
@@ -290,6 +293,7 @@ impl Default for Store {
             export_stats: ExportStats::default(),
             log_level: LevelFilter::INFO, // TODO: This is not right
             settings: Settings::default(),
+            update_state: None,
         }
     }
 }
@@ -693,6 +697,8 @@ pub enum RootMessage {
     LoadSettings(PathBuf),
     ActivateSettings(Settings),
     SaveSettings,
+    // Update messages
+    Update(UpdateMessage),
 }
 
 #[derive(Debug, Clone)]
@@ -1552,35 +1558,17 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
     .with_width(Sizing::fixed(400.0))
     .with_padding(BoxAmount::all(PAD_LG));
 
-    Element {
-        id: Some(w_id!()),
-        width: Sizing::percent(1.0),
-        height: Sizing::percent(1.0),
-        opacity: Some(opacity),
-        background_color: Some(Color::from_rgba(0.0, 0.0, 0.0, bg_opacity)),
-        floating: Some(FloatingConfig { ..Default::default() }),
-
-        content: widget(Button::new().clear().with_click_handler(|_, s| s.publish(RootMessage::ToggleMenu))),
-
-        children: vec![center(Element {
-            id: Some(w_id!()),
-            background_color: Some(OPAQUE_CARD_BACKGROUND),
-            border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
-            border: Some(Border {
-                width: 1.0,
-                color: BORDER_COLOR,
-                ..Default::default()
-            }),
-            drop_shadows: vec![SHADOW_XL],
-
-            content: widget(Button::new().clear()),
-
-            children: vec![settings_content],
+    modal_backdrop(
+        w_id!(),
+        state.settings_open,
+        hook,
+        Some(ModalConfig {
+            backdrop_visible: !state.opacity_slider_dragging,
             ..Default::default()
-        })],
-
-        ..Default::default()
-    }
+        }),
+        Some(RootMessage::ToggleMenu),
+        settings_content,
+    )
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -1778,9 +1766,24 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         log_view(hook),
         row![
             ws_status,
-            Element::default().with_width(Sizing::grow()), // spacer
-            connection_status,
+            if matches!(state.store.update_state, Some(UpdateState::Checking)) {
+                container(
+                    maybe_text_shadow(
+                        Text::new("Checking for updates...")
+                            .with_font_size(12.0)
+                            .with_color(TEXT_MUTED)
+                            .with_text_alignment(TextAlignment::Center),
+                        text_shadow_enabled,
+                    )
+                    .as_element()
+                ).with_axis_align_content(Alignment::Center)
+            } else {
+                Element::default()
+            },
+            container(connection_status).with_axis_align_content(Alignment::End),
         ]
+        .map_children(|e| e.with_width(Sizing::grow()))
+        .with_child_gap(SPACE_MD)
         .with_width(Sizing::grow())
         .with_cross_align_items(Alignment::End)
         .with_padding(PAD_MD)
@@ -1827,7 +1830,12 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
                 }),
                 ..Default::default()
             }),
-        settings_modal(state, hook)
+        settings_modal(state, hook),
+        update_modal(
+            state.store.update_state.as_ref(),
+            hook,
+            RootMessage::Update,
+        )
     ]
     .with_id(w_id!())
     .with_color(TEXT_COLOR)
@@ -2118,6 +2126,15 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             state.store.settings = settings;
             None
         }
+
+        // Update messages
+        RootMessage::Update(msg) => {
+            match update::handle_message(msg, &mut state.store.update_state) {
+                update::HandleResult::None => None,
+                update::HandleResult::Task(t) => Some(t.map(RootMessage::Update)),
+                update::HandleResult::ExitForRestart => return Some(task::exit_application()),
+            }
+        }
     }
     .also(|_| {
         // Handle connection transitions
@@ -2205,40 +2222,40 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let app = raxis::Application::new(state, view, update, move |state| {
 
         Some(Task::batch(vec![
-                task::get_local_app_data().and_then(|path| {
-                    Task::done(RootMessage::LoadSettings(get_settings_path(path)))
+            task::get_local_app_data().and_then(|path| {
+                Task::done(RootMessage::LoadSettings(get_settings_path(path)))
+            }),
+            Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
+            Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
+            Task::future(start_websocket_server(
+                PortSource::Dynamic(WatchStream::from_changes(port_rx.clone())),
+                exporter.clone(),
+                ))
+                .then(|e| match e {
+                    Err(e) => Task::done(RootMessage::WSStatus(WebSocketStatus::Failed { error: e })),
+                    Ok((port_stream, client_count_stream)) => {
+                        Task::done(RootMessage::WSStatus(WebSocketStatus::Running { port: 0, client_count: 0 }))
+                            .chain(Task::batch(vec![
+                                Task::stream(client_count_stream).map(move |client_count| {
+                                    RootMessage::WSClientCountChanged(client_count)
+                                }),
+                                Task::stream(port_stream).map(move |port| {
+                                    match port {
+                                        Ok(port) => RootMessage::WSPortChanged(port),
+                                        Err(e) => RootMessage::NotifyInvalidWSPort(e)
+                                    }
+                                })
+                            ]))
+                    },
                 }),
-                Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
-                Task::future(start_websocket_server(
-                    PortSource::Dynamic(WatchStream::from_changes(port_rx.clone())),
-                    exporter.clone(),
-                    ))
-                    .then(|e| match e {
-                        Err(e) => Task::done(RootMessage::WSStatus(WebSocketStatus::Failed { error: e })),
-                        Ok((port_stream, client_count_stream)) => {
-                            Task::done(RootMessage::WSStatus(WebSocketStatus::Running { port: 0, client_count: 0 }))
-                                .chain(Task::batch(vec![
-                                    Task::stream(client_count_stream).map(move |client_count| {
-                                        RootMessage::WSClientCountChanged(client_count)
-                                    }),
-                                    Task::stream(port_stream).map(move |port| {
-                                        match port {
-                                            Ok(port) => RootMessage::WSPortChanged(port),
-                                            Err(e) => RootMessage::NotifyInvalidWSPort(e)
-                                        }
-                                    })
-                                ]))
-                        },
-                    }),
-                Task::stream(stream! {
-                    loop {
-                        LOG_NOTIFY.notified().await;
-                        yield RootMessage::TriggerRender;
-                    }
-                }),
-            ])
-        )
-    })
+            Task::stream(stream! {
+                loop {
+                    LOG_NOTIFY.notified().await;
+                    yield RootMessage::TriggerRender;
+                }
+            }),
+        ])
+    )})
     .with_title("Reliquary Archiver")
     .with_icons(Some(1))
     .with_tray_icon(TrayIconConfig {

@@ -13,8 +13,6 @@ use futures::stream::FusedStream;
 use futures::FutureExt;
 use futures::Stream;
 use futures::StreamExt;
-// use iced::Subscription;
-// use iced::Task;
 use reliquary::network::command::command_id::PlayerLoginFinishScRsp;
 use reliquary::network::command::command_id::PlayerLoginScRsp;
 use reliquary::network::command::GameCommand;
@@ -53,32 +51,6 @@ pub enum WorkerCommand {
 
 pub type WorkerHandle = mpsc::Sender<WorkerCommand>;
 
-// pub fn archiver_subscription(exporter: Arc<Mutex<OptimizerExporter>>) -> Subscription<WorkerEvent> {
-//     Subscription::run(move || archiver_worker(exporter))
-// }
-
-struct AbortOnDrop(Arc<AtomicBool>, Option<tokio::task::JoinHandle<()>>);
-
-impl AbortOnDrop {
-    pub fn new(f: impl FnOnce(Arc<AtomicBool>) -> tokio::task::JoinHandle<()>) -> Self {
-        let abort_signal = Arc::new(AtomicBool::new(false));
-        Self(abort_signal.clone(), Some(f(abort_signal)))
-    }
-
-    pub fn abort(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-}
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.abort();
-        if let Some(handle) = self.1.take() {
-            block_on(handle).ok();
-        }
-    }
-}
-
 struct MappedSender<Output, Intermediate> {
     sender: mpsc::Sender<Output>,
     f: fn(Intermediate) -> Output,
@@ -93,40 +65,6 @@ impl<Output, Intermediate> MappedSender<Output, Intermediate> {
         self.sender.send((self.f)(item))
     }
 }
-
-// trait MapSender {
-//     type Item;
-
-//     fn map<F, O>(self, f: F) -> Map<Self, F, O>
-//     where
-//         Self: Sized,
-//         F: Fn(Self::Item) -> O + 'static;
-// }
-
-// struct Map<S, F, O> {
-//     sender: S,
-//     f: Box<dyn Fn(S::Item) -> O>,
-// }
-
-// impl<T> MapSender for mpsc::Sender<T> {
-//     type Item = T;
-
-//     fn map<F, O>(self, f: F) -> Map<Self, F, O>
-//     where
-//         F: Fn(Self::Item) -> O + 'static,
-//     {
-//         Map {
-//             sender: self,
-//             f: Box::new(f),
-//         }
-//     }
-// }
-
-// impl<S: MapSender, F, O> Map<S, F, O> {
-//     async fn send(&self, item: S::Item) -> Result<(), mpsc::SendError<O>> {
-//         self.sender.send((self.f)(item)).await
-//     }
-// }
 
 /// Creates a new [`Stream`] that produces the items sent from a [`Future`]
 /// to the [`mpsc::Sender`] provided to the closure.
@@ -145,28 +83,17 @@ pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> i
 #[instrument(skip_all)]
 pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<Item = WorkerEvent> {
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
-        // Create channel
         let (sender, mut receiver) = mpsc::channel(100);
 
         let sniffer = GameSniffer::new().set_initial_keys(get_database().keys.clone());
-        // let exporter = OptimizerExporter::new();
 
         let (_, mut rx) = exporter.lock().await.subscribe();
 
         let (mut recorded_tx, recorded_rx) = mpsc::channel(100);
-        // let (metric_tx, mut metric_rx) = mpsc::channel(100);
 
         let abort_signal = {
-            // Need to spawn a real thread since the packet capture is blocking
             let exporter = exporter.clone();
             let output = output.clone();
-
-            // let lc = Box::pin(live_capture(
-            //     exporter,
-            //     sniffer,
-            //     MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
-            //     recorded_rx
-            // ));
 
             tokio::spawn(live_capture(
                 exporter,
@@ -202,10 +129,6 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
                         }
                     }
                 }
-
-                // metric = metric_rx.select_next_some() => {
-                //     output.send(WorkerEvent::Metric(metric)).await.ok();
-                // }
 
                 event = rx.recv() => {
                     match event {
