@@ -6,7 +6,7 @@ use raxis::layout::helpers::center;
 use raxis::layout::model::{Border, BorderRadius, Color, Element, FloatingConfig, Sizing};
 use raxis::widgets::button::Button;
 use raxis::widgets::widget;
-use raxis::util::unique::WidgetId;
+use raxis::util::unique::{WidgetId, combine_id};
 use raxis::{use_animation, w_id, HookManager};
 
 use super::super::{BORDER_COLOR, BORDER_RADIUS, OPAQUE_CARD_BACKGROUND, SHADOW_XL};
@@ -70,7 +70,7 @@ pub fn modal_backdrop<M: Clone + Send + 'static>(
     };
 
     Element {
-        id: Some(w_id!()),
+        id: Some(combine_id(id, w_id!())),
         width: Sizing::percent(1.0),
         height: Sizing::percent(1.0),
         opacity: Some(opacity),
@@ -80,7 +80,7 @@ pub fn modal_backdrop<M: Clone + Send + 'static>(
         content: widget(backdrop_button),
 
         children: vec![center(Element {
-            id: Some(w_id!()),
+            id: Some(combine_id(id, w_id!())),
             background_color: Some(OPAQUE_CARD_BACKGROUND),
             border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
             border: Some(Border {
