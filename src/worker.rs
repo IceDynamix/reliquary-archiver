@@ -35,7 +35,6 @@ use tracing::instrument;
 use tracing::warn;
 
 use crate::capture;
-use crate::websocket::start_websocket_server;
 
 #[derive(Debug, Clone)]
 pub enum WorkerEvent {

@@ -107,15 +107,6 @@ struct Args {
     headless: bool,
 }
 
-#[cfg(feature = "gui")]
-impl From<Args> for rgui::Args {
-    fn from(args: Args) -> Self {
-        Self {
-            websocket_port: args.websocket_port,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 enum CaptureMode {
     Live,
@@ -271,7 +262,7 @@ async fn capture(args: Args) {
 
     #[cfg(feature = "gui")]
     if !args.headless {
-        rgui::run(args.into()).unwrap();
+        rgui::run().unwrap();
         return;
     }
 
@@ -692,7 +683,8 @@ async fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer)
 where
     E: Exporter,
 {
-    use crate::websocket::start_websocket_server;
+    #[cfg(feature = "stream")]
+    use crate::websocket::{start_websocket_server, PortSource};
 
     let exporter = Arc::new(FuturesMutex::new(exporter));
 
@@ -705,7 +697,7 @@ where
     if streaming {
         let port = args.websocket_port;
 
-        let ws_server = start_websocket_server(port, exporter.clone()).await;
+        let ws_server = start_websocket_server(PortSource::Fixed(port), exporter.clone()).await;
 
         info!("WebSocket server running on ws://localhost:{}/ws", port);
         info!("You can connect to this WebSocket server to receive real-time relic updates");

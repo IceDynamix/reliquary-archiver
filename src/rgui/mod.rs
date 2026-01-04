@@ -20,7 +20,7 @@ use raxis::layout::model::{
     Alignment2D, Color, DropShadow, FloatingConfig, ScrollBarSize, ScrollConfig, StrokeLineCap, StrokeLineJoin, TextShadow,
     ScrollbarStyle,
 };
-use raxis::runtime::font_manager::FontIdentifier;
+use raxis::runtime::font_manager::{FontIdentifier, FontWeight};
 use raxis::runtime::scroll::ScrollPosition;
 use raxis::runtime::task::{hide_window, show_window, ClipboardAction, WindowMode};
 use raxis::runtime::vkey::VKey;
@@ -34,6 +34,7 @@ use raxis::widgets::slider::Slider;
 use raxis::widgets::svg::Svg;
 use raxis::widgets::svg_path::ColorChoice;
 use raxis::widgets::text::TextAlignment;
+use raxis::widgets::text_input::TextInput;
 use raxis::widgets::toggle::Toggle;
 use raxis::widgets::titlebar_controls::titlebar_controls;
 use raxis::widgets::Widget;
@@ -59,14 +60,15 @@ use raxis::{
     svg, svg_path, use_animation, ContextMenuItem, SvgPathCommands, SystemCommand, SystemCommandResponse, TrayEvent, TrayIconConfig,
 };
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
-use tokio::sync::broadcast;
+use tokio::sync::watch::{self, Sender};
+use tokio_stream::wrappers::WatchStream;
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::file_download::{self, download_view};
 use crate::rgui::components::togglegroup::{togglegroup, ToggleOption};
 use crate::scopefns::Also;
-use crate::websocket::start_websocket_server;
+use crate::websocket::{PortSource, start_websocket_server};
 use crate::worker::{self, archiver_worker};
 use crate::{LOG_BUFFER, LOG_NOTIFY, VEC_LAYER_HANDLE};
 
@@ -275,7 +277,8 @@ pub struct Settings {
     text_shadow_enabled: bool,
     minimize_to_tray_on_close: bool,
     minimize_to_tray_on_minimize: bool,
-    run_on_start: bool
+    run_on_start: bool,
+    ws_port: u16
 }
 
 impl Default for Store {
@@ -301,6 +304,7 @@ impl Default for Settings {
             minimize_to_tray_on_close: false,
             minimize_to_tray_on_minimize: false,
             run_on_start: false,
+            ws_port: 23313
         }
     }
 }
@@ -345,6 +349,16 @@ pub struct RootState {
     screen: Screen,
     settings_open: bool,
     opacity_slider_dragging: bool,
+    ws_port_sender: Option<Sender<u16>>,
+}
+
+impl RootState {
+    pub fn with_port_sender(self: Self, port_sender: Sender<u16>) -> Self {
+        Self {
+            ws_port_sender: Some(port_sender),
+            ..self
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -648,6 +662,10 @@ pub enum RootMessage {
     WorkerEvent(worker::WorkerEvent),
     GoToLink(String),
     WSStatus(WebSocketStatus),
+    SendWSPort(u16),
+    NotifyInvalidWSPort(String),
+    WSPortChanged(u16),
+    WSClientCountChanged(usize),
     CheckConnection(Instant),
     ActiveScreen(ActiveMessage),
     WaitingScreen(WaitingMessage),
@@ -1125,6 +1143,132 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     }
 }
 
+#[derive(Default, Clone)]
+struct WebsocketConfigState {
+    port_input: u16,
+}
+
+fn websocket_section(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+    let mut instance = hook.instance(w_id!());
+    let config_state: Rc<RefCell<WebsocketConfigState>> = instance.use_state(|| { WebsocketConfigState {
+        port_input: state.store.settings.ws_port,
+    } });
+
+    let text_input = row![
+        Text::new("ws://0.0.0.0:")
+            .as_element()
+            .with_padding(BoxAmount::new(2.0, 2.0, 0.0, 0.0)),
+        Element {
+            id: Some(w_id!()),
+            // 40 px wide = scrollbar
+            width: Sizing::Fixed { px: 41.0 },
+            height: Sizing::Fixed { px: 25.0 },
+            background_color: Some(OPAQUE_CARD_BACKGROUND.deviate(0.1)),
+            border_radius: Some(BorderRadius::all(8.0)),
+            border: Some(Border {
+                width: 1.0,
+                color: OPAQUE_CARD_BACKGROUND.deviate(0.4),
+                ..Default::default()
+            }),
+            color: Some(Color::WHITE),
+            scroll: Some(ScrollConfig {
+                horizontal: Some(true),
+                sticky_right: Some(true),
+                scrollbar_style: Some(ScrollbarStyle {
+                    thumb_color: SCROLLBAR_THUMB_COLOR.lighten(0.3),
+                    track_color: SCROLLBAR_TRACK_COLOR.lighten(0.3),
+                    size: ScrollBarSize::ThinThick(4.0, 8.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            children: vec![
+                Element {
+                    id: Some(w_id!()),
+                    width: Sizing::grow(),
+                    height: Sizing::grow(),
+                    padding: BoxAmount::new(2.0, 4.0, 2.0, 4.0),
+                    content: widget(TextInput::new()
+                        .with_font_size(12.0)
+                        .with_paragraph_alignment(ParagraphAlignment::Center)
+                        .with_text(config_state.borrow_mut().port_input.to_string())
+                        .with_text_input_handler({
+                            let config_state = config_state.clone();
+                            let ws_status = state.store.connection_stats.ws_status.clone();
+                            move |text, shell| {
+                                if let Ok(port) = text.parse::<u16>() {
+                                    config_state.borrow_mut().port_input = port;
+                                }
+                            }
+                        })
+                    ),
+                    wrap: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        }.with_axis_align_content(Alignment::Center).with_cross_align_content(Alignment::Center),
+        Text::new("/ws")
+            .as_element()
+            .with_padding(BoxAmount::new(2.0, 0.0 , 0.0, 2.0)),
+    ];
+    let header: Element<RootMessage> = Text::new("Configure Websocket port")
+        .with_font_size(14.0)
+        .as_element();
+
+    let explainer_text = Text::new("Setting port to 0 will make windows assing you a port of its choosing.")
+        .with_font_size(12.0)
+        .with_color(TEXT_MUTED)
+        .as_element()
+        .with_padding(BoxAmount::top(5.0));
+
+    let button = Button::new()
+        .with_click_handler({
+            let requested_port = config_state.borrow().port_input;
+            let ws_status = state.store.connection_stats.ws_status.clone();
+            move |_, s| {
+                match ws_status {
+                    WebSocketStatus::Running { port, client_count: _ } => {
+                        if port == requested_port {
+                            info!("Websocket server already running on requested port");
+                        } else {
+                            s.publish(RootMessage::SendWSPort(requested_port));
+                        }
+                    }
+                    _ => s.publish(RootMessage::SendWSPort(requested_port)),
+                }
+            }
+        })
+        .with_bg_color(PRIMARY_COLOR)
+        .as_element(
+            w_id!(),
+            Text::new("Restart server")
+                .with_color(Color::WHITE)
+                .with_font_size(16.0)
+                .with_font_weight(FontWeight::Medium)
+                .as_element()
+                .with_axis_align_self(Alignment::Center)
+                .with_cross_align_self(Alignment::Center)
+                .with_padding(BoxAmount::horizontal(5.0))
+        )
+        .with_height(Sizing::grow())
+        .with_border_radius(BORDER_RADIUS);
+
+    column![
+        row![
+            column![
+                header,
+                text_input,
+            ],
+            spacer(),
+            button
+        ]
+        .with_width(Sizing::grow()),
+        explainer_text
+    ]
+    .with_width(Sizing::grow())
+}
+
 fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
     let opacity = use_animation(&mut instance, state.settings_open);
@@ -1397,6 +1541,8 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
         fit_mode_section,
         opacity_section,
         text_shadow_section,
+        horizontal_rule(w_id!()),
+        websocket_section(state, hook),
         horizontal_rule(w_id!()),
         minimize_on_close_section,
         minimize_on_minimize_section,
@@ -1787,6 +1933,32 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             None
         }
 
+        RootMessage::SendWSPort(port) => {
+            if let Some(ref sender) = state.ws_port_sender {
+                sender.send(port);
+            };
+            // modify settings but don't save yet to minimise odds of saving on a bad port
+            state.store.settings.ws_port = port;
+            None
+        }
+        // Save settings when we hear the update rather than when we request a change to avoid saving a bad port
+        RootMessage::WSPortChanged(port) => {
+            state.store.connection_stats.ws_status = WebSocketStatus::Running { port, client_count: 0 };
+            Some(Task::done(RootMessage::SaveSettings))
+        },
+
+        RootMessage::WSClientCountChanged(client_count) => {
+            if let WebSocketStatus::Running { port, client_count: old_client_count } = state.store.connection_stats.ws_status {
+                state.store.connection_stats.ws_status = WebSocketStatus::Running { port, client_count };
+            }
+            None
+        },
+
+        RootMessage::NotifyInvalidWSPort(err) => {
+            tracing::info!("Unable to start websocket server on desired port. e={}", err);
+            None
+        },
+
         RootMessage::WaitingScreen(message) => handle_screen!(Waiting, WaitingScreen, message),
         RootMessage::ActiveScreen(message) => handle_screen!(Active, ActiveScreen, message),
 
@@ -1895,8 +2067,6 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
                     state.store.settings.run_on_start = false;
                     tracing::warn!("Failed to remove registry key!");
                 },
-                // not reachable in set_run_on_start
-                _ => {},
             }
             save_settings(state)
         },
@@ -1921,7 +2091,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         RootMessage::LoadSettings(path) => {
             info!("Loading settings from {}", path.display());
             if path.exists() {
-                Some(Task::future(tokio::fs::read_to_string(path)).and_then(|content| {
+                Some(Task::future(tokio::fs::read_to_string(path)).and_then(move |content| {
                     let mut settings: Settings = serde_json::from_str(&content).unwrap_or_default();
                     let run_on_start = settings.run_on_start;
                     let test = match registry_matches_settings(run_on_start) {
@@ -1932,7 +2102,10 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
                         Ok(true) => {},
                         _ => {},
                     };
-                    Task::done(RootMessage::ActivateSettings(settings))
+                    Task::batch(vec![
+                        Task::done(RootMessage::SendWSPort(settings.ws_port)),
+                        Task::done(RootMessage::ActivateSettings(settings))
+                    ])
                 }))
             } else {
                 None
@@ -2024,33 +2197,47 @@ fn handle_sniffer_metric(state: &mut RootState, metric: worker::SnifferMetric) {
     }
 }
 
-pub struct Args {
-    pub websocket_port: u16,
-}
-
-pub fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
-    let state = RootState::default();
+pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let (port_tx, port_rx) = watch::channel::<u16>(0);
+    let state = RootState::default().with_port_sender(port_tx);
     let exporter = state.exporter.clone();
 
     let app = raxis::Application::new(state, view, update, move |state| {
 
         Some(Task::batch(vec![
-            task::get_local_app_data().and_then(|path| {Task::done(RootMessage::LoadSettings(get_settings_path(path)))}),
-            Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
-            Task::future(start_websocket_server(args.websocket_port, exporter.clone()))
-                .then(|e| match e {
-                    Err(e) => Task::done(WebSocketStatus::Failed { error: e }),
-                    Ok((port, client_count_stream)) => Task::done(WebSocketStatus::Running { port, client_count: 0 })
-                        .chain(Task::stream(client_count_stream).map(move |client_count| WebSocketStatus::Running { port, client_count })),
-                })
-                .map(|e| RootMessage::WSStatus(e)),
-            Task::stream(stream! {
-                loop {
-                    LOG_NOTIFY.notified().await;
-                    yield RootMessage::TriggerRender;
-                }
-            }),
-        ]))
+                task::get_local_app_data().and_then(|path| {
+                    Task::done(RootMessage::LoadSettings(get_settings_path(path)))
+                }),
+                Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
+                Task::future(start_websocket_server(
+                    PortSource::Dynamic(WatchStream::from_changes(port_rx.clone())),
+                    exporter.clone(),
+                    ))
+                    .then(|e| match e {
+                        Err(e) => Task::done(RootMessage::WSStatus(WebSocketStatus::Failed { error: e })),
+                        Ok((port_stream, client_count_stream)) => {
+                            Task::done(RootMessage::WSStatus(WebSocketStatus::Running { port: 0, client_count: 0 }))
+                                .chain(Task::batch(vec![
+                                    Task::stream(client_count_stream).map(move |client_count| {
+                                        RootMessage::WSClientCountChanged(client_count)
+                                    }),
+                                    Task::stream(port_stream).map(move |port| {
+                                        match port {
+                                            Ok(port) => RootMessage::WSPortChanged(port),
+                                            Err(e) => RootMessage::NotifyInvalidWSPort(e)
+                                        }
+                                    })
+                                ]))
+                        },
+                    }),
+                Task::stream(stream! {
+                    loop {
+                        LOG_NOTIFY.notified().await;
+                        yield RootMessage::TriggerRender;
+                    }
+                }),
+            ])
+        )
     })
     .with_title("Reliquary Archiver")
     .with_icons(Some(1))

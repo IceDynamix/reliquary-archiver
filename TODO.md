@@ -2,8 +2,15 @@
 
 - [X] toggle in GUI settings
 - [X] regedit setting
-- [ ] Registry error handling
-- [ ] Desync handling
+- [x] Registry error handling
+- [x] Desync handling
+
+## Websocket server
+- [x] server port in settings
+- [x] change server port without restarting
+- [x] button with colours :)
+- [x] port stream to allow port 0
+- [x] explain special value of port 0
 
 ## Self Update
 

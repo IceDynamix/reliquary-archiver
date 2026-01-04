@@ -35,8 +35,8 @@ rfd = "0.15.3"
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
-#raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "8b15dc50936f94fc28353fa33917267eb6c8ceed", features = ["tokio"] }
-raxis = { optional = true, git= "https://github.com/FI00ds/raxis", rev = "1dddf2526a9834fcfc863cebf3409aea3d519f3a", features = ["tokio"]}
+raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "e11d528d78c950acc0e2af9c844d071b62e3e3a3", features = ["tokio"] }
+#raxis = { optional = true, git= "https://github.com/FI00ds/raxis", rev = "e8fd369a6d6e3d4ccce33a85cc3c7e46705107ec", features = ["tokio"]}
 #raxis = { optional = true, path = "../raxis", features = ["tokio"]}
 
 [target.'cfg(windows)'.dependencies]
