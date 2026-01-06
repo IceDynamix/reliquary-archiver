@@ -22,6 +22,7 @@ use raxis::runtime::font_manager::{FontIdentifier, FontWeight};
 use raxis::runtime::scroll::ScrollPosition;
 use raxis::runtime::task::{hide_window, show_window, ClipboardAction, WindowMode};
 use raxis::runtime::vkey::VKey;
+use raxis::runtime::window::builder::InitialDisplay;
 use raxis::runtime::{task, Backdrop};
 use raxis::util::str::StableString;
 use raxis::util::unique::combine_id;
@@ -282,6 +283,7 @@ pub struct Settings {
     minimize_to_tray_on_close: bool,
     minimize_to_tray_on_minimize: bool,
     run_on_start: bool,
+    start_minimized: bool,
     ws_port: u16
 }
 
@@ -310,6 +312,7 @@ impl Default for Settings {
             minimize_to_tray_on_close: false,
             minimize_to_tray_on_minimize: false,
             run_on_start: false,
+            start_minimized: false,
             ws_port: 23313
         }
     }
@@ -690,7 +693,7 @@ pub enum RootMessage {
     MinimizeToTrayOnCloseToggled(bool),
     MinimizeToTrayOnMinimizeToggled(bool),
     RunOnStartToggled(bool),
-    SetRunOnStart(bool),
+    StartminimizedToggled(bool),
     HideWindow,
     ShowWindow,
     ContextMenuShow,
@@ -1604,6 +1607,32 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow());
 
+    let start_minimized_toggle = Toggle::new(state.store.settings.start_minimized)
+        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
+        .with_toggle_handler(|enabled, _, shell| {
+            shell.publish(RootMessage::StartminimizedToggled(enabled));
+        })
+        .as_element(w_id!());
+
+    let start_minimized_section = column![
+        row![
+            Text::new("Start minimized")
+                .with_font_size(14.0)
+                .with_color(TEXT_COLOR)
+                .as_element(),
+            spacer(),
+            start_minimized_toggle
+        ]
+        .with_width(Sizing::grow())
+        .with_cross_align_items(Alignment::Center),
+        Text::new("The app will launch already minimized to the taskbar/system tray")
+            .with_font_size(11.0)
+            .with_color(TEXT_MUTED)
+            .as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow());
+
     let graphics_settings_content = column![
         bg_image_section,
         fit_mode_section,
@@ -1621,7 +1650,8 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
         horizontal_rule(w_id!()),
         minimize_on_close_section,
         minimize_on_minimize_section,
-        run_on_start_section
+        run_on_start_section,
+        start_minimized_section
     ];
 
     let modal_state_clone = modal_state.clone();
@@ -1989,7 +2019,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             if let Some(ref sender) = state.ws_port_sender {
                 sender.send(port);
             };
-            // modify settings but don't save yet to minimise odds of saving on a bad port
+            // modify settings but don't save yet to minimize odds of saving on a bad port
             state.store.settings.ws_port = port;
             None
         }
@@ -2128,10 +2158,10 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             save_settings(state)
         },
 
-        RootMessage::SetRunOnStart(enabled) => {
-            state.store.settings.run_on_start = enabled;
+        RootMessage::StartminimizedToggled(enabled) => {
+            state.store.settings.start_minimized = enabled;
             save_settings(state)
-        },
+        }
 
         RootMessage::HideWindow => Some(task::hide_window()),
 
@@ -2159,7 +2189,19 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
                         Ok(true) => {},
                         _ => {},
                     };
+                    // want to avoid having the app briefly flash up if set to start minimized 
+                    // the app will therefore always start minimized and update display mode here as necessary
+                    let display_task = if settings.start_minimized {
+                        if settings.minimize_to_tray_on_minimize || settings.minimize_to_tray_on_close {
+                            Task::none()
+                        } else {
+                            task::minimize_window()
+                        }
+                    } else {
+                        task::show_window()
+                    };
                     Task::batch(vec![
+                        display_task,
                         Task::done(RootMessage::SendWSPort(settings.ws_port)),
                         Task::done(RootMessage::ActivateSettings(settings))
                     ])
@@ -2313,8 +2355,21 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         icon_resource: Some(1),
         tooltip: Some("Reliquary Archiver".to_string()),
     })
-    .with_tray_event_handler(|_state, event| match event {
-        TrayEvent::LeftClick | TrayEvent::LeftDoubleClick => Some(task::show_window()),
+    .with_tray_event_handler(|state, event| match event {
+        TrayEvent::LeftClick | TrayEvent::LeftDoubleClick => Some(task::get_window_mode().then({
+            let minimize_to_tray = state.store.settings.minimize_to_tray_on_close;
+            move |mode| {
+                match mode {
+                    WindowMode::Hidden => task::show_window(),
+                    WindowMode::Windowed => if minimize_to_tray {
+                        task::hide_window()
+                    } else {
+                        task::minimize_window()
+                    },
+                    WindowMode::Minimized => task::restore_window()
+                }
+            }
+        })),
         TrayEvent::RightClick => Some(task::get_window_mode().then(|mode| {
             task::show_context_menu(
                 vec![
@@ -2348,7 +2403,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .replace_titlebar()
     .with_backdrop(Backdrop::MicaAlt)
-    .with_window_size(960, 760);
+    .with_window_size(960, 760)
+    .with_initial_display(InitialDisplay::Hidden);
 
     app.run()?;
 
