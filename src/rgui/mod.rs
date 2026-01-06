@@ -2178,7 +2178,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         RootMessage::LoadSettings(path) => {
             info!("Loading settings from {}", path.display());
             if path.exists() {
-                Some(Task::future(tokio::fs::read_to_string(path)).and_then(move |content| {
+                Some(Task::future(tokio::fs::read_to_string(path)).and_then(|content| {
                     let mut settings: Settings = serde_json::from_str(&content).unwrap_or_default();
                     let run_on_start = settings.run_on_start;
                     let test = match registry_matches_settings(run_on_start) {
