@@ -279,7 +279,7 @@ pub struct Settings {
     image_fit: ImageFit,
     background_opacity: f32,
     text_shadow_enabled: bool,
-    update_umprompted: bool,
+    always_update: bool,
     minimize_to_tray_on_close: bool,
     minimize_to_tray_on_minimize: bool,
     run_on_start: bool,
@@ -308,7 +308,7 @@ impl Default for Settings {
             image_fit: ImageFit::Cover,
             background_opacity: 0.12,
             text_shadow_enabled: false,
-            update_umprompted: false,
+            always_update: false,
             minimize_to_tray_on_close: false,
             minimize_to_tray_on_minimize: false,
             run_on_start: false,
@@ -689,7 +689,7 @@ pub enum RootMessage {
     OpacityChanged(f32),
     OpacitySliderDrag(bool),
     TextShadowToggled(bool),
-    UpdateUnpromptedToggled(bool),
+    AlwaysUpdateToggled(bool),
     MinimizeToTrayOnCloseToggled(bool),
     MinimizeToTrayOnMinimizeToggled(bool),
     RunOnStartToggled(bool),
@@ -1501,10 +1501,10 @@ fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Ele
         .with_height(Sizing::grow())
         .with_border_radius(BORDER_RADIUS);
 
-    let update_unprompted_toggle = Toggle::new(state.store.settings.update_umprompted)
+    let update_unprompted_toggle = Toggle::new(state.store.settings.always_update)
         .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
         .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::UpdateUnpromptedToggled(enabled));
+            shell.publish(RootMessage::AlwaysUpdateToggled(enabled));
         })
         .as_element(w_id!());
 
@@ -2121,8 +2121,8 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             save_settings(state)
         }
 
-        RootMessage::UpdateUnpromptedToggled(enabled) => {
-            state.store.settings.update_umprompted = enabled;
+        RootMessage::AlwaysUpdateToggled(enabled) => {
+            state.store.settings.always_update = enabled;
             save_settings(state)
         }
 
@@ -2192,7 +2192,8 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
                     // want to avoid having the app briefly flash up if set to start minimized 
                     // the app will therefore always start minimized and update display mode here as necessary
                     let display_task = if settings.start_minimized {
-                        if settings.minimize_to_tray_on_minimize || settings.minimize_to_tray_on_close {
+                        // TODO: Does this make sense or should it also consider onClose preference
+                        if settings.minimize_to_tray_on_minimize {
                             Task::none()
                         } else {
                             task::minimize_window()
@@ -2220,7 +2221,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         // Update messages
         RootMessage::Update(msg) => {
-            match update::handle_message(msg, &mut state.store.update_state, state.store.settings.update_umprompted) {
+            match update::handle_message(msg, &mut state.store.update_state, state.store.settings.always_update) {
                 update::HandleResult::None => None,
                 update::HandleResult::Task(t) => Some(t.map(RootMessage::Update)),
                 update::HandleResult::ExitForRestart => return Some(task::exit_application()),
@@ -2357,7 +2358,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     })
     .with_tray_event_handler(|state, event| match event {
         TrayEvent::LeftClick | TrayEvent::LeftDoubleClick => Some(task::get_window_mode().then({
-            let minimize_to_tray = state.store.settings.minimize_to_tray_on_close;
+            // TODO: Does this make sense or should it also consider onClose preference (re)
+            let minimize_to_tray = state.store.settings.minimize_to_tray_on_minimize;
             move |mode| {
                 match mode {
                     WindowMode::Hidden => task::show_window(),
