@@ -127,7 +127,7 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
 
         WebSocketMessage::InvalidPort(err) => {
             tracing::info!("Unable to start websocket server on desired port. e={}", err);
-            state.store.connection_stats.ws_status = WebSocketStatus::Failed { error: err };
+            // Don't update the status to failed - the old server is still running on the previous port
             None
         }
     }
