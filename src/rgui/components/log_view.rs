@@ -193,10 +193,7 @@ pub fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                         if matches!(key, VKey::C | VKey::X) && modifiers.ctrl {
                             if let Some(selection_range) = selection_state.borrow_mut().take() {
                                 let lines = LOG_BUFFER.lock().unwrap();
-                                let selected_lines = lines[selection_range.start..selection_range.end]
-                                    .iter()
-                                    .map(|line| line.clone())
-                                    .collect::<Vec<_>>();
+                                let selected_lines = lines[selection_range.start..selection_range.end].to_vec();
 
                                 return Some(task::effect(task::Action::Clipboard(ClipboardAction::Set(
                                     selected_lines.join("\n"),

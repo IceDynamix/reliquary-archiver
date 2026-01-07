@@ -84,7 +84,7 @@ pub fn handle_message(msg: UpdateMessage, current_state: &mut Option<UpdateState
         UpdateMessage::Confirm => {
             *current_state = Some(UpdateState::Updating);
             HandleResult::Task(Task::future(async move {
-                let result = tokio::task::spawn_blocking(|| crate::update::update_noninteractive()).await;
+                let result = tokio::task::spawn_blocking(crate::update::update_noninteractive).await;
 
                 match result {
                     Ok(Ok(true)) => UpdateMessage::Complete(Ok(())),

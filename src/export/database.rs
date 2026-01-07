@@ -27,7 +27,13 @@ pub struct Database {
 
 pub fn get_database() -> &'static Database {
     static DATABASE: OnceLock<Database> = OnceLock::new();
-    DATABASE.get_or_init(|| Database::new())
+    DATABASE.get_or_init(Database::new)
+}
+
+impl Default for Database {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Database {

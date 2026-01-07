@@ -291,7 +291,7 @@ impl Exporter for OptimizerExporter {
                 uid: self.uid,
                 trailblazer: self.trailblazer,
             },
-            gacha: self.gacha.clone(),
+            gacha: self.gacha,
             materials: self.materials.values().cloned().collect(),
             light_cones: self.light_cones.values().cloned().collect(),
             relics: self.relics.values().cloned().collect(),

@@ -212,7 +212,7 @@ async fn capture(args: Args) {
         #[cfg(not(feature = "gui"))]
         let gui_mode = false;
 
-        if !gui_mode && !args.no_update && !std::env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
+        if !gui_mode && !args.no_update && !std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1") {
             if let Err(e) = update::update_interactive(args.auth_token.as_deref(), args.always_update) {
                 error!("Failed to update: {}", e);
             }
@@ -344,7 +344,7 @@ impl VecWriter {
 }
 
 pub static LOG_BUFFER: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-pub static LOG_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(|| tokio::sync::Notify::new());
+pub static LOG_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
 
 type VecLayerHandle = Box<dyn Fn(LevelFilter) + Send>;
 pub static VEC_LAYER_HANDLE: LazyLock<Mutex<Option<VecLayerHandle>>> = LazyLock::new(|| Mutex::new(None));
@@ -487,29 +487,26 @@ where
 {
     if let Ok(packets) = sniffer.receive_packet(payload) {
         for packet in packets {
-            match packet {
-                GamePacket::Commands(command) => match command {
-                    Ok(command) => {
-                        exporter.read_command(command);
+            if let GamePacket::Commands(command) = packet { match command {
+                Ok(command) => {
+                    exporter.read_command(command);
 
-                        if exporter.is_initialized() {
-                            info!("finished capturing");
-                            return ProcessResult::Stop;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(%e);
-                        if matches!(e, GameCommandError::VersionMismatch { .. }) {
-                            // Client packet was misordered from server packet
-                            // This will be reprocessed after we receive the new session key
-                            return ProcessResult::Continue;
-                        }
-
+                    if exporter.is_initialized() {
+                        info!("finished capturing");
                         return ProcessResult::Stop;
                     }
-                },
-                _ => {}
-            }
+                }
+                Err(e) => {
+                    warn!(%e);
+                    if matches!(e, GameCommandError::VersionMismatch) {
+                        // Client packet was misordered from server packet
+                        // This will be reprocessed after we receive the new session key
+                        return ProcessResult::Continue;
+                    }
+
+                    return ProcessResult::Stop;
+                }
+            } }
         }
     }
 
@@ -695,7 +692,7 @@ where
                                     }
                                     Err(e) => {
                                         warn!(%e);
-                                        if matches!(e, GameCommandError::VersionMismatch { .. }) {
+                                        if matches!(e, GameCommandError::VersionMismatch) {
                                             // Client packet was misordered from server packet
                                             // This will be reprocessed after we receive the new session key
                                         } else {

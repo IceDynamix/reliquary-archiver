@@ -83,7 +83,7 @@ pub fn archiver_worker(exporter: Arc<Mutex<OptimizerExporter>>) -> impl Stream<I
             tokio::spawn(live_capture(
                 exporter,
                 sniffer,
-                MappedSender::new(output, |metric| WorkerEvent::Metric(metric)),
+                MappedSender::new(output, WorkerEvent::Metric),
                 recorded_rx,
             ))
         };

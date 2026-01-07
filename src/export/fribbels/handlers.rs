@@ -30,7 +30,7 @@ impl OptimizerExporter {
         let relics: Vec<Relic> = bag
             .relic_list
             .iter()
-            .filter_map(|r| export_proto_relic(&self.database, r))
+            .filter_map(|r| export_proto_relic(self.database, r))
             .collect();
 
         info!(num = relics.len(), "found relics");
@@ -41,7 +41,7 @@ impl OptimizerExporter {
         let light_cones: Vec<LightCone> = bag
             .equipment_list
             .iter()
-            .filter_map(|equip| export_proto_light_cone(&self.database, equip))
+            .filter_map(|equip| export_proto_light_cone(self.database, equip))
             .collect();
 
         info!(num = light_cones.len(), "found light cones");
@@ -52,7 +52,7 @@ impl OptimizerExporter {
         let materials: Vec<Material> = bag
             .material_list
             .iter()
-            .filter_map(|m| export_proto_material(&self.database, m))
+            .filter_map(|m| export_proto_material(self.database, m))
             .collect();
 
         info!(num = materials.len(), "found materials");
@@ -62,7 +62,7 @@ impl OptimizerExporter {
     }
 
     pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) -> Option<Character> {
-        let Some(character) = export_proto_character(&self.database, proto_character) else {
+        let Some(character) = export_proto_character(self.database, proto_character) else {
             warn!(uid = &proto_character.base_avatar_id, "character config not found, skipping");
             return None;
         };
@@ -76,7 +76,7 @@ impl OptimizerExporter {
                 self.resolve_multipath_character(*unresolved_avatar_id);
             }
 
-            return None;
+            None
         } else {
             // Only emit character data here if it's not a multipath character.
             // For multipath characters, we need to wait for the multipath packet
@@ -84,12 +84,12 @@ impl OptimizerExporter {
 
             self.characters.insert(character.id, character.clone());
 
-            return Some(character);
+            Some(character)
         }
     }
 
     pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarInfo) -> Option<Character> {
-        let Some(character) = export_proto_multipath_character(&self.database, proto_multipath_character) else {
+        let Some(character) = export_proto_multipath_character(self.database, proto_multipath_character) else {
             warn!(
                 uid = &proto_multipath_character.avatar_id.value(),
                 "multipath character config not found, skipping"
@@ -105,12 +105,12 @@ impl OptimizerExporter {
         }
 
         if let Some(character) = self.resolve_multipath_character(character.id) {
-            return Some(character);
+            Some(character)
         } else {
             debug!(uid = &character.id, "multipath character not resolved");
             self.unresolved_multipath_characters.insert(character.id);
 
-            return None;
+            None
         }
     }
 
@@ -150,7 +150,7 @@ impl OptimizerExporter {
             return Some(character.clone());
         }
 
-        return None;
+        None
     }
 
     pub fn handle_player_sync(&mut self, sync: PlayerSyncScNotify) -> Vec<OptimizerEvent> {
@@ -159,7 +159,7 @@ impl OptimizerExporter {
         let relics: Vec<Relic> = sync
             .relic_list
             .iter()
-            .filter_map(|r| export_proto_relic(&self.database, r))
+            .filter_map(|r| export_proto_relic(self.database, r))
             .collect();
 
         if !relics.is_empty() {
@@ -174,7 +174,7 @@ impl OptimizerExporter {
         let light_cones: Vec<LightCone> = sync
             .equipment_list
             .iter()
-            .filter_map(|equip| export_proto_light_cone(&self.database, equip))
+            .filter_map(|equip| export_proto_light_cone(self.database, equip))
             .collect();
 
         if !light_cones.is_empty() {
@@ -189,7 +189,7 @@ impl OptimizerExporter {
         let materials: Vec<Material> = sync
             .material_list
             .iter()
-            .filter_map(|m| export_proto_material(&self.database, m))
+            .filter_map(|m| export_proto_material(self.database, m))
             .collect();
 
         if !materials.is_empty() {
@@ -205,7 +205,7 @@ impl OptimizerExporter {
             self.gacha.oneric_shards = basic_info.oneric_shard_count;
             self.gacha.stellar_jade = basic_info.stellar_jade_count;
 
-            events.push(OptimizerEvent::UpdateGachaFunds(self.gacha.clone()));
+            events.push(OptimizerEvent::UpdateGachaFunds(self.gacha));
         }
 
         if !sync.del_relic_list.is_empty() {
@@ -343,10 +343,10 @@ impl OptimizerExporter {
                 }
             }
 
-            return Some(OptimizerEvent::GachaResult(gacha_result));
+            Some(OptimizerEvent::GachaResult(gacha_result))
         } else {
             warn!(gacha_id = &gacha.gacha_id, "gacha info not found");
-            return None;
+            None
         }
     }
 }

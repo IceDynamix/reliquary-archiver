@@ -16,7 +16,7 @@ use crate::export::fribbels::utils::*;
 pub fn export_proto_material(db: &Database, proto: &ProtoMaterial) -> Option<Material> {
     let cfg = db.item_config.get(&proto.tid)?;
     let id = cfg.ID;
-    let name = cfg.ItemName.map(|hash| db.text_map.get(&hash)).flatten().map(|s| s.to_string())?;
+    let name = cfg.ItemName.and_then(|hash| db.text_map.get(&hash)).map(|s| s.to_string())?;
     let count = proto.num;
 
     debug!(material = name, count, "detected");

@@ -214,7 +214,7 @@ pub struct RootState {
 }
 
 impl RootState {
-    pub fn with_port_sender(self: Self, port_sender: Sender<u16>) -> Self {
+    pub fn with_port_sender(self, port_sender: Sender<u16>) -> Self {
         Self {
             ws_port_sender: Some(port_sender),
             ..self

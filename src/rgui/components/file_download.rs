@@ -87,7 +87,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         .with_border(1.0, Color::from(0x00000033))
         .enabled(file.is_some())
         .with_click_handler({
-            let file = file.map(|f| f.clone());
+            let file = file.cloned();
             move |_, shell| {
                 if let Some(ref file) = file {
                     shell.dispatch_task(
@@ -100,7 +100,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
                         .and_consume({
                             let file = file.clone();
                             move |picked_file| {
-                                if let Err(e) = std::fs::write(&picked_file.path().to_path_buf(), &file.content) {
+                                if let Err(e) = std::fs::write(picked_file.path(), &file.content) {
                                     eprintln!("Failed to save file: {}", e);
                                 }
                             }
@@ -154,7 +154,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     Element {
         id: Some(w_id!()),
         width: Sizing::fixed(400.0),
-        background_color: Some(Color::from(CARD_BACKGROUND)),
+        background_color: Some(CARD_BACKGROUND),
         backdrop_filter: Some(BackdropFilter::blur(10.0)),
         border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
         border: Some(Border {

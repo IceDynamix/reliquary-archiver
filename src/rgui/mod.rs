@@ -141,7 +141,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             // technically calling PerformCheck here is a data race (should be .chain() to SettingsMessage::Activate)
             // however its a case of loading+parsing ~300 bytes of json vs a round trip web request
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
-            Task::run(archiver_worker(exporter.clone()), |e| RootMessage::WorkerEvent(e)),
+            Task::run(archiver_worker(exporter.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(
                 PortSource::Dynamic(WatchStream::from_changes(port_rx.clone())),
                 exporter.clone(),
@@ -150,7 +150,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Err(e) => Task::done(RootMessage::ws_status(WebSocketStatus::Failed { error: e })),
                 Ok((port_stream, client_count_stream)) => {
                     Task::done(RootMessage::ws_status(WebSocketStatus::Running { port: 0, client_count: 0 })).chain(Task::batch(vec![
-                        Task::stream(client_count_stream).map(|client_count| RootMessage::ws_client_count_changed(client_count)),
+                        Task::stream(client_count_stream).map(RootMessage::ws_client_count_changed),
                         Task::stream(port_stream).map(|port| match port {
                             Ok(port) => RootMessage::ws_port_changed(port),
                             Err(e) => RootMessage::ws_invalid_port(e),
