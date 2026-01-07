@@ -273,6 +273,7 @@ pub enum ImageFit {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Settings {
     background_image: String,
     image_fit: ImageFit,
@@ -499,22 +500,18 @@ pub struct ActiveScreen {
 }
 
 fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> Element<RootMessage> {
-    row![
-        maybe_text_shadow(Text::new(label).with_font_size(16.0), text_shadow_enabled),
-        Rule::horizontal()
-            .with_custom_dashes(&[5.0, 5.0], 0.0)
-            .with_color(BORDER_COLOR)
-            .as_element(combine_id(w_id!(), label)),
+    column![
+        maybe_text_shadow(Text::new(label).with_font_size(16.0).with_color(TEXT_MUTED), text_shadow_enabled),
         maybe_text_shadow(
             Text::new(value.to_string())
-                .with_font_size(16.0)
+                .with_font_size(24.0)
                 .with_assisted_id(combine_id(w_id!(), label)),
             text_shadow_enabled
         )
     ]
     .with_child_gap(SPACE_MD)
-    .with_width(Sizing::grow())
     .with_cross_align_items(Alignment::Center)
+    .with_width(Sizing::grow())
 }
 
 fn refresh_icon<M>() -> Element<M> {
@@ -597,14 +594,14 @@ impl ActiveScreen {
     fn active_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         let text_shadow_enabled = store.settings.text_shadow_enabled;
 
-        let stats_display = column![
+        let stats_display = row![
             stat_line("Relics", store.export_stats.relics, text_shadow_enabled),
             stat_line("Characters", store.export_stats.characters, text_shadow_enabled),
             stat_line("Light Cones", store.export_stats.light_cones, text_shadow_enabled),
             stat_line("Materials", store.export_stats.materials, text_shadow_enabled),
         ]
         .with_width(Sizing::grow())
-        .with_child_gap(SPACE_MD);
+        .with_child_gap(SPACE_LG);
 
         let refresh_button = Button::new()
             .with_bg_color(SUCCESS_COLOR)
@@ -615,12 +612,9 @@ impl ActiveScreen {
             })
             .as_element(
                 w_id!(),
-                // Text::new("Refresh Export")
-                //     .with_font_size(16.0)
-                //     .as_element()
-                //     .with_padding(BoxAmount::all(PAD_MD)),
                 refresh_icon(),
             )
+            .with_backdrop_filter(BackdropFilter::blur(10.0))
             .with_snap(true);
 
         let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook).with_drop_shadow(SHADOW_SM);
@@ -634,13 +628,17 @@ impl ActiveScreen {
             maybe_text_shadow(
                 Text::new("Connected!")
                     .with_font_size(24.0)
-                    .with_color(SUCCESS_COLOR)
+                    .with_color(TEXT_COLOR)
                     .with_paragraph_alignment(ParagraphAlignment::Center),
                 text_shadow_enabled
             )
             .as_element()
             .with_padding(BoxAmount::all(PAD_MD)),
             stats_display,
+            Rule::horizontal()
+                .with_color(BORDER_COLOR)
+                .as_element(w_id!())
+                .with_padding(BoxAmount::vertical(PAD_LG)),
             action_bar,
         ]
         .with_child_gap(SPACE_LG)
@@ -1229,7 +1227,7 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
         .with_font_size(14.0)
         .as_element();
 
-    let explainer_text = Text::new("Setting port to 0 will make windows assing you a port of its choosing.")
+    let explainer_text = Text::new("Setting port to 0 will make windows assign you a port of its choosing.")
         .with_font_size(12.0)
         .with_color(TEXT_MUTED)
         .as_element()
@@ -1262,7 +1260,7 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
                 .as_element()
                 .with_axis_align_self(Alignment::Center)
                 .with_cross_align_self(Alignment::Center)
-                .with_padding(BoxAmount::horizontal(5.0))
+                .with_padding(BoxAmount::horizontal(PAD_MD))
         )
         .with_height(Sizing::grow())
         .with_border_radius(BORDER_RADIUS);
