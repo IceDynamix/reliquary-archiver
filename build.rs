@@ -82,18 +82,23 @@ fn main() {
     // for the export
     let mut text_hashes: HashSet<TextMapEntry> = HashSet::new();
 
-    download_config_and_store_text_hashes!(AvatarConfigMap, AvatarName, text_hashes, [
-        &resource_url::<AvatarConfigMap>(),
-        &resource_url_of("AvatarConfigLD.json"),
-    ]);
+    download_config_and_store_text_hashes!(
+        AvatarConfigMap,
+        AvatarName,
+        text_hashes,
+        [&resource_url::<AvatarConfigMap>(), &resource_url_of("AvatarConfigLD.json"),]
+    );
     download_config_and_store_text_hashes!(EquipmentConfigMap, EquipmentName, text_hashes);
     download_config_and_store_text_hashes!(RelicSetConfigMap, SetName, text_hashes);
     download_config_and_store_partial_text_hashes!(ItemConfigMap, ItemName, text_hashes);
 
-    download_config!(AvatarSkillTreeConfigMap, [
-        &resource_url::<AvatarSkillTreeConfigMap>(),
-        &resource_url_of("AvatarSkillTreeConfigLD.json"),
-    ]);
+    download_config!(
+        AvatarSkillTreeConfigMap,
+        [
+            &resource_url::<AvatarSkillTreeConfigMap>(),
+            &resource_url_of("AvatarSkillTreeConfigLD.json"),
+        ]
+    );
     download_config!(MultiplePathAvatarConfigMap);
     download_config!(RelicConfigMap);
     download_config!(RelicMainAffixConfigMap);

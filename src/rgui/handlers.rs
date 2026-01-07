@@ -16,6 +16,7 @@ use tracing::info;
 
 use crate::rgui::messages::{ExportMessage, LogMessage, RootMessage, ScreenAction, WebSocketMessage, WebSocketStatus, WindowMessage};
 use crate::rgui::state::{ActiveScreen, ExportStats, FileContainer, FileExtensions, RootState, Screen, WaitingScreen};
+use crate::websocket::PortCommand;
 use crate::{worker, LOG_BUFFER, VEC_LAYER_HANDLE};
 
 // ============================================================================
@@ -104,11 +105,18 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
 
         WebSocketMessage::SendPort(port) => {
             if let Some(ref sender) = state.ws_port_sender {
-                let _ = sender.send(port);
+                let _ = sender.send(PortCommand::Open(port));
             }
 
             // Modify settings but don't save yet to minimize odds of saving on a bad port
             state.store.settings.ws_port = port;
+            None
+        }
+
+        WebSocketMessage::Close => {
+            if let Some(ref sender) = state.ws_port_sender {
+                let _ = sender.send(PortCommand::Close);
+            }
             None
         }
 
@@ -129,7 +137,7 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
             // If server is already running, don't update status as it will continue running on the previous port
             // If the server is not yet running then update the status with the relevant error message
             if matches!(state.store.connection_stats.ws_status, WebSocketStatus::Pending) {
-                state.store.connection_stats.ws_status = WebSocketStatus::Failed { error: err };
+                state.store.connection_stats.ws_status = WebSocketStatus::Failed { error: err.clone() };
             }
             tracing::info!("Unable to start websocket server on desired port. e={}", err);
             None
