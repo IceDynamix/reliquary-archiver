@@ -3,14 +3,13 @@
 //! Provides reusable icon elements built from SVG paths.
 
 use raxis::layout::model::{BoxAmount, Color, Element, StrokeLineCap, StrokeLineJoin};
-use raxis::widgets::svg::Svg;
-use raxis::widgets::svg::ViewBox;
-use raxis::widgets::svg_path::{ColorChoice, SvgPath};
 use raxis::widgets::button::Button;
+use raxis::widgets::svg::{Svg, ViewBox};
+use raxis::widgets::svg_path::{ColorChoice, SvgPath};
 use raxis::{svg, svg_path, w_id, SvgPathCommands};
 
-use crate::rgui::theme::{BORDER_RADIUS, PAD_MD};
 use crate::rgui::messages::RootMessage;
+use crate::rgui::theme::{BORDER_RADIUS, PAD_MD};
 
 /// Creates a refresh/reload icon (circular arrows).
 pub fn refresh_icon<M>() -> Element<M> {

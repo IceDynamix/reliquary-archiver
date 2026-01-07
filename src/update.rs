@@ -79,10 +79,7 @@ pub fn update_interactive(auth_token: Option<&str>, no_confirm: bool) -> Result<
 /// Returns true if the update was successful and the app should restart
 pub fn update_noninteractive() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let mut update_builder = configure_builder();
-    update_builder
-        .show_download_progress(false)
-        .show_output(false)
-        .no_confirm(true);
+    update_builder.show_download_progress(false).show_output(false).no_confirm(true);
 
     let status = update_builder.build()?.update()?;
 
@@ -105,7 +102,7 @@ pub struct UpdateInfo {
 /// Check if an update is available without prompting or downloading
 pub fn check_for_update() -> Result<Option<UpdateInfo>, Box<dyn std::error::Error + Send + Sync>> {
     use self_update::backends::github::ReleaseList;
-    
+
     let releases = ReleaseList::configure()
         .repo_owner(REPO_OWNER)
         .repo_name(REPO_NAME)
@@ -115,9 +112,7 @@ pub fn check_for_update() -> Result<Option<UpdateInfo>, Box<dyn std::error::Erro
     let identifier = identifier();
     let current_version = cargo_crate_version!();
 
-    let latest_release = releases.iter().find(|r| {
-        r.asset_for(TARGET, identifier).is_some()
-    });
+    let latest_release = releases.iter().find(|r| r.asset_for(TARGET, identifier).is_some());
 
     let latest_release = match latest_release {
         Some(r) => r,

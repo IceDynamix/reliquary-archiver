@@ -3,21 +3,20 @@
 //! Displayed when actively connected to the game and capturing data.
 //! Shows capture statistics and provides export functionality.
 
-use raxis::layout::model::{Alignment, BorderRadius, BoxAmount, Color, Element, Sizing};
+use raxis::layout::model::{Alignment, BackdropFilter, BorderRadius, BoxAmount, Color, Element, Sizing};
+use raxis::util::unique::combine_id;
 use raxis::widgets::button::Button;
 use raxis::widgets::rule::Rule;
 use raxis::widgets::text::{ParagraphAlignment, Text};
-use raxis::layout::model::BackdropFilter;
 use raxis::{column, row, w_id, HookManager};
-use raxis::util::unique::combine_id;
 
+use crate::rgui::components::file_download::download_view;
+use crate::rgui::kit::icons::refresh_icon;
+use crate::rgui::messages::{ActiveMessage, ExportMessage, RootMessage, ScreenAction};
+use crate::rgui::state::{ActiveScreen, Store};
 use crate::rgui::theme::{
     maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, SHADOW_SM, SPACE_LG, SPACE_MD, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
 };
-use crate::rgui::state::{ActiveScreen, Store};
-use crate::rgui::messages::{ActiveMessage, ExportMessage, RootMessage, ScreenAction};
-use crate::rgui::components::file_download::download_view;
-use crate::rgui::kit::icons::refresh_icon;
 
 /// Renders a single statistic line (label + value).
 fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> Element<RootMessage> {
@@ -66,10 +65,7 @@ impl ActiveScreen {
             .with_click_handler(move |_, shell| {
                 shell.publish(RootMessage::Export(ExportMessage::Refresh));
             })
-            .as_element(
-                w_id!(),
-                refresh_icon(),
-            )
+            .as_element(w_id!(), refresh_icon())
             .with_backdrop_filter(BackdropFilter::blur(10.0))
             .with_snap(true);
 

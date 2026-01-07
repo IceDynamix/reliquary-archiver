@@ -1,11 +1,11 @@
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc};
+use std::sync::Arc;
 
+use futures::{Stream, StreamExt};
 use tokio::pin;
 use tokio::sync::mpsc;
-use futures::{Stream, StreamExt};
 use tokio_stream::StreamMap;
 use tracing::instrument;
 
@@ -93,16 +93,14 @@ pub trait CaptureBackend {
 
 /// Start capturing packets from all available devices using the specified backend
 #[instrument(skip_all)]
-pub fn listen_on_all<B: CaptureBackend + 'static>(
-    backend: B,
-) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
+pub fn listen_on_all<B: CaptureBackend + 'static>(backend: B) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
     let devices = backend.list_devices()?;
     let mut merged_stream = StreamMap::new();
 
     if devices.is_empty() {
         tracing::warn!("Could not find any network devices");
     }
-    
+
     for device in devices {
         tracing::debug!("Creating capture for device: {}", device.name());
 
@@ -115,7 +113,7 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(
         };
 
         let device_name = device.name().to_owned();
-        
+
         match capture.capture_packets() {
             Ok(stream) => {
                 merged_stream.insert(device_name, stream);

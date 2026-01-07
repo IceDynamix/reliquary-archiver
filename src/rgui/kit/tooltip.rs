@@ -4,18 +4,14 @@
 //! Supports multiple visual themes (warning, info, error, success) and
 //! configurable positioning.
 
-use std::{cell::RefCell, rc::Rc};
+use std::cell::RefCell;
+use std::rc::Rc;
 
-use raxis::{
-    layout::model::{Alignment, Alignment2D, Color, Element, FloatingConfig, Offset2D},
-    util::unique::combine_id,
-    w_id,
-    widgets::{
-        mouse_area::{MouseArea, MouseAreaEvent},
-        text::{ParagraphAlignment, Text},
-    },
-    HookManager,
-};
+use raxis::layout::model::{Alignment, Alignment2D, Color, Element, FloatingConfig, Offset2D};
+use raxis::util::unique::combine_id;
+use raxis::widgets::mouse_area::{MouseArea, MouseAreaEvent};
+use raxis::widgets::text::{ParagraphAlignment, Text};
+use raxis::{w_id, HookManager};
 
 use crate::rgui::theme::{BORDER_RADIUS, PAD_SM};
 

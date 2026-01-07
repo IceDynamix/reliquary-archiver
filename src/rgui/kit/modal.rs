@@ -3,9 +3,9 @@
 use std::time::Instant;
 
 use raxis::layout::model::{Alignment, Border, BorderRadius, BoxAmount, Color, Direction, Element, FloatingConfig, Sizing};
+use raxis::util::unique::{combine_id, WidgetId};
 use raxis::widgets::button::Button;
 use raxis::widgets::widget;
-use raxis::util::unique::{WidgetId, combine_id};
 use raxis::{use_animation, w_id, HookManager};
 
 use crate::rgui::theme::{BORDER_COLOR, BORDER_RADIUS, OPAQUE_CARD_BACKGROUND, SHADOW_XL};
@@ -32,7 +32,7 @@ impl Default for ModalConfig {
         Self {
             bg_opacity_target: 0.5,
             backdrop_visible: true,
-            modal_position: ModalPosition::default()
+            modal_position: ModalPosition::default(),
         }
     }
 }
@@ -87,22 +87,25 @@ pub fn modal_backdrop<M: Clone + Send + 'static>(
 
         content: widget(backdrop_button),
 
-        children: vec![position(Element {
-            id: Some(combine_id(id, w_id!())),
-            background_color: Some(OPAQUE_CARD_BACKGROUND),
-            border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
-            border: Some(Border {
-                width: 1.0,
-                color: BORDER_COLOR,
+        children: vec![position(
+            Element {
+                id: Some(combine_id(id, w_id!())),
+                background_color: Some(OPAQUE_CARD_BACKGROUND),
+                border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
+                border: Some(Border {
+                    width: 1.0,
+                    color: BORDER_COLOR,
+                    ..Default::default()
+                }),
+                drop_shadows: vec![SHADOW_XL],
+
+                content: widget(Button::new().clear()),
+
+                children: vec![content],
                 ..Default::default()
-            }),
-            drop_shadows: vec![SHADOW_XL],
-
-            content: widget(Button::new().clear()),
-
-            children: vec![content],
-            ..Default::default()
-        }, config.modal_position)],
+            },
+            config.modal_position,
+        )],
 
         ..Default::default()
     }
@@ -116,13 +119,29 @@ fn position<Message>(content: impl Into<Element<Message>>, position: ModalPositi
             direction: Direction::LeftToRight,
             children: vec![content.into()],
             axis_align_content: Alignment::Center,
-            width: if let Some(left) = position.left { Sizing::default() } else { Sizing::grow() },
-            padding: if let Some(left) = position.left { BoxAmount::left(left) } else { BoxAmount::default() },
+            width: if let Some(left) = position.left {
+                Sizing::default()
+            } else {
+                Sizing::grow()
+            },
+            padding: if let Some(left) = position.left {
+                BoxAmount::left(left)
+            } else {
+                BoxAmount::default()
+            },
             ..Default::default()
         }],
         axis_align_content: Alignment::Center,
-        height: if let Some(top) = position.top { Sizing::default() } else { Sizing::grow() },
-        padding: if let Some(top) = position.top { BoxAmount::top(top) } else { BoxAmount::default() },
+        height: if let Some(top) = position.top {
+            Sizing::default()
+        } else {
+            Sizing::grow()
+        },
+        padding: if let Some(top) = position.top {
+            BoxAmount::top(top)
+        } else {
+            BoxAmount::default()
+        },
         ..Default::default()
     }
 }

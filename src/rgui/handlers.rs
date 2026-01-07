@@ -11,13 +11,12 @@ use chrono::Local;
 use futures::channel::oneshot;
 use futures::sink::SinkExt;
 use raxis::runtime::task::{self, Task};
+use reliquary_archiver::export::fribbels::OptimizerEvent;
 use tracing::info;
 
-use crate::worker;
-use crate::rgui::state::{ExportStats, FileContainer, FileExtensions, RootState, Screen, ActiveScreen, WaitingScreen};
 use crate::rgui::messages::{ExportMessage, LogMessage, RootMessage, ScreenAction, WebSocketMessage, WebSocketStatus, WindowMessage};
-use crate::{LOG_BUFFER, VEC_LAYER_HANDLE};
-use reliquary_archiver::export::fribbels::OptimizerEvent;
+use crate::rgui::state::{ActiveScreen, ExportStats, FileContainer, FileExtensions, RootState, Screen, WaitingScreen};
+use crate::{worker, LOG_BUFFER, VEC_LAYER_HANDLE};
 
 // ============================================================================
 // Settings Path Helper
@@ -54,10 +53,7 @@ pub fn save_settings(state: &RootState) -> Option<Task<RootMessage>> {
 /// Handles export-related messages.
 ///
 /// Manages export statistics updates, new export creation, and refresh requests.
-pub fn handle_export_message(
-    state: &mut RootState,
-    message: ExportMessage,
-) -> Option<Task<RootMessage>> {
+pub fn handle_export_message(state: &mut RootState, message: ExportMessage) -> Option<Task<RootMessage>> {
     match message {
         ExportMessage::Stats(stats) => {
             state.store.export_stats = stats;
@@ -99,10 +95,7 @@ pub fn handle_export_message(
 /// Handles WebSocket server messages.
 ///
 /// Manages server status updates, port changes, and client connections.
-pub fn handle_websocket_message(
-    state: &mut RootState,
-    message: WebSocketMessage,
-) -> Option<Task<RootMessage>> {
+pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage) -> Option<Task<RootMessage>> {
     match message {
         WebSocketMessage::Status(status) => {
             state.store.connection_stats.ws_status = status;
@@ -147,10 +140,7 @@ pub fn handle_websocket_message(
 /// Handles log viewer messages.
 ///
 /// Manages log level filtering and log export functionality.
-pub fn handle_log_message(
-    state: &mut RootState,
-    message: LogMessage,
-) -> Option<Task<RootMessage>> {
+pub fn handle_log_message(state: &mut RootState, message: LogMessage) -> Option<Task<RootMessage>> {
     match message {
         LogMessage::LevelChanged(level) => {
             state.store.log_level = level;
@@ -182,10 +172,7 @@ pub fn handle_log_message(
 /// Handles window management messages.
 ///
 /// Manages window visibility, settings modal, and tray context menu actions.
-pub fn handle_window_message(
-    state: &mut RootState,
-    message: WindowMessage,
-) -> Option<Task<RootMessage>> {
+pub fn handle_window_message(state: &mut RootState, message: WindowMessage) -> Option<Task<RootMessage>> {
     match message {
         WindowMessage::Hide => Some(task::hide_window()),
         WindowMessage::Show => Some(task::show_window()),
@@ -344,10 +331,8 @@ impl<Message: Send + 'static> ScreenAction<Message> {
             #[cfg(feature = "pcap")]
             Self::ProcessCapture(path) => Task::future(async move {
                 use reliquary::network::GameSniffer;
-                use reliquary_archiver::export::{
-                    database::{get_database, Database},
-                    Exporter,
-                };
+                use reliquary_archiver::export::database::{get_database, Database};
+                use reliquary_archiver::export::Exporter;
 
                 use crate::capture_from_pcap;
 

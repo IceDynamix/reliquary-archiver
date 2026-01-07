@@ -15,12 +15,12 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use raxis::runtime::task::Task;
-use tracing::level_filters::LevelFilter;
 use reliquary_archiver::export::fribbels::Export;
+use tracing::level_filters::LevelFilter;
 
-use crate::worker;
-use crate::rgui::state::{ExportStats, ImageFit, Settings};
 use crate::rgui::components::update::UpdateMessage;
+use crate::rgui::state::{ExportStats, ImageFit, Settings};
+use crate::worker;
 
 // ============================================================================
 // WebSocket Messages
@@ -84,7 +84,7 @@ pub enum SettingsMessage {
     Activate(Settings),
     /// Persist current settings to disk
     Save,
-    
+
     // Graphics settings
     /// User selected a new background image
     BackgroundImageSelected(Option<PathBuf>),
@@ -98,11 +98,11 @@ pub enum SettingsMessage {
     OpacitySliderDrag(bool),
     /// Toggle text shadow effect
     TextShadowToggled(bool),
-    
+
     // Update settings
     /// Toggle automatic updates
     AlwaysUpdateToggled(bool),
-    
+
     // Window behavior settings
     /// Toggle minimize to tray on close
     MinimizeToTrayOnCloseToggled(bool),
@@ -198,13 +198,13 @@ pub enum RootMessage {
     TriggerRender,
     /// Open a URL in the default browser
     GoToLink(String),
-    
+
     // Worker/connection events
     /// Event from the background worker
     WorkerEvent(worker::WorkerEvent),
     /// Periodic connection status check
     CheckConnection(Instant),
-    
+
     // Grouped messages
     /// Export-related messages
     Export(ExportMessage),
@@ -218,7 +218,7 @@ pub enum RootMessage {
     Log(LogMessage),
     /// Update checker messages
     Update(UpdateMessage),
-    
+
     // Screen messages
     /// Messages for the waiting screen
     WaitingScreen(WaitingMessage),
@@ -235,27 +235,27 @@ impl RootMessage {
     pub fn ws_status(status: WebSocketStatus) -> Self {
         Self::WebSocket(WebSocketMessage::Status(status))
     }
-    
+
     /// Create a WebSocket port changed message.
     pub fn ws_port_changed(port: u16) -> Self {
         Self::WebSocket(WebSocketMessage::PortChanged(port))
     }
-    
+
     /// Create a WebSocket client count changed message.
     pub fn ws_client_count_changed(count: usize) -> Self {
         Self::WebSocket(WebSocketMessage::ClientCountChanged(count))
     }
-    
+
     /// Create a WebSocket invalid port error message.
     pub fn ws_invalid_port(err: String) -> Self {
         Self::WebSocket(WebSocketMessage::InvalidPort(err))
     }
-    
+
     /// Create a new export message.
     pub fn new_export(export: Export) -> Self {
         Self::Export(ExportMessage::New(export))
     }
-    
+
     /// Create an export stats update message.
     pub fn export_stats(stats: ExportStats) -> Self {
         Self::Export(ExportMessage::Stats(stats))

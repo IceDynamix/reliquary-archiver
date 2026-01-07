@@ -5,27 +5,24 @@
 
 use std::path::PathBuf;
 
-use raxis::{
-    HookManager, layout::{
-        helpers::{center, row},
-        model::{Alignment, BackdropFilter, Border, BorderRadius, BoxAmount, Color, Direction, Element, Sizing, StrokeLineCap, StrokeLineJoin},
-    }, runtime::task::Task, svg, svg_path, w_id, widgets::{
-        button::Button,
-        svg::ViewBox,
-        svg_path::SvgPath,
-        text::{ParagraphAlignment, Text, TextAlignment},
-        widget,
-    }
+use raxis::layout::helpers::{center, row};
+use raxis::layout::model::{
+    Alignment, BackdropFilter, Border, BorderRadius, BoxAmount, Color, Direction, Element, Sizing, StrokeLineCap, StrokeLineJoin,
 };
+use raxis::runtime::task::Task;
+use raxis::widgets::button::Button;
+use raxis::widgets::svg::ViewBox;
+use raxis::widgets::svg_path::SvgPath;
+use raxis::widgets::text::{ParagraphAlignment, Text, TextAlignment};
+use raxis::widgets::widget;
+use raxis::{svg, svg_path, w_id, HookManager};
 
-use crate::{
-    rgui::{
-        kit::tooltip::{error_tooltip, info_tooltip, success_tooltip, warning_tooltip},
-        state::{FileContainer, FileExtensions},
-        theme::{BORDER_COLOR, BORDER_RADIUS, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_MUTED},
-    },
-    scopefns::Also,
+use crate::rgui::kit::tooltip::{error_tooltip, info_tooltip, success_tooltip, warning_tooltip};
+use crate::rgui::state::{FileContainer, FileExtensions};
+use crate::rgui::theme::{
+    BORDER_COLOR, BORDER_RADIUS, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_MUTED,
 };
+use crate::scopefns::Also;
 
 /// Messages for file download operations.
 #[derive(Debug, Clone)]

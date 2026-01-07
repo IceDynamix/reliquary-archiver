@@ -25,18 +25,18 @@ use raxis::widgets::widget;
 use raxis::{column, row, use_animation, w_id, HookManager};
 use tracing::info;
 
-use crate::rgui::theme::{
-    BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, OPAQUE_CARD_BACKGROUND, PAD_LG, PAD_MD, PAD_SM, PRIMARY_COLOR,
-    SCROLLBAR_THUMB_COLOR, SCROLLBAR_TRACK_COLOR, SPACE_LG, SPACE_SM, TEXT_COLOR, TEXT_MUTED,
-};
-use crate::rgui::state::{ImageFit, RootState};
-use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketMessage, WebSocketStatus, WindowMessage};
+use crate::rgui::components::update::UpdateMessage;
+use crate::rgui::handlers::save_settings;
+use crate::rgui::kit::icons::x_icon;
 use crate::rgui::kit::modal::{modal_backdrop, ModalConfig, ModalPosition};
 use crate::rgui::kit::togglegroup::{togglegroup, ToggleGroupConfig, ToggleOption};
-use crate::rgui::kit::icons::x_icon;
-use crate::rgui::components::update::UpdateMessage;
-use crate::rgui::run_on_start::{RegistryError, set_run_on_start};
-use crate::rgui::handlers::save_settings;
+use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketMessage, WebSocketStatus, WindowMessage};
+use crate::rgui::run_on_start::{set_run_on_start, RegistryError};
+use crate::rgui::state::{ImageFit, RootState};
+use crate::rgui::theme::{
+    BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, OPAQUE_CARD_BACKGROUND, PAD_LG, PAD_MD, PAD_SM, PRIMARY_COLOR, SCROLLBAR_THUMB_COLOR,
+    SCROLLBAR_TRACK_COLOR, SPACE_LG, SPACE_SM, TEXT_COLOR, TEXT_MUTED,
+};
 
 /// Internal state for the WebSocket port configuration UI.
 #[derive(Default, Clone)]
@@ -47,9 +47,9 @@ struct WebsocketConfigState {
 /// Renders the WebSocket port configuration section.
 fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
-    let config_state: Rc<RefCell<WebsocketConfigState>> = instance.use_state(|| { WebsocketConfigState {
+    let config_state: Rc<RefCell<WebsocketConfigState>> = instance.use_state(|| WebsocketConfigState {
         port_input: state.store.settings.ws_port,
-    } });
+    });
 
     let text_input = row![
         Text::new("ws://0.0.0.0:")
@@ -79,13 +79,13 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
                 }),
                 ..Default::default()
             }),
-            children: vec![
-                Element {
-                    id: Some(w_id!()),
-                    width: Sizing::grow(),
-                    height: Sizing::grow(),
-                    padding: BoxAmount::new(2.0, 4.0, 2.0, 4.0),
-                    content: widget(TextInput::new()
+            children: vec![Element {
+                id: Some(w_id!()),
+                width: Sizing::grow(),
+                height: Sizing::grow(),
+                padding: BoxAmount::new(2.0, 4.0, 2.0, 4.0),
+                content: widget(
+                    TextInput::new()
                         .with_font_size(12.0)
                         .with_paragraph_alignment(raxis::widgets::text::ParagraphAlignment::Center)
                         .with_text(config_state.borrow_mut().port_input.to_string())
@@ -98,20 +98,17 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
                                 }
                             }
                         })
-                    ),
-                    wrap: true,
-                    ..Default::default()
-                },
-            ],
+                ),
+                wrap: true,
+                ..Default::default()
+            },],
             ..Default::default()
-        }.with_axis_align_content(Alignment::Center).with_cross_align_content(Alignment::Center),
-        Text::new("/ws")
-            .as_element()
-            .with_padding(BoxAmount::new(2.0, 0.0 , 0.0, 2.0)),
+        }
+        .with_axis_align_content(Alignment::Center)
+        .with_cross_align_content(Alignment::Center),
+        Text::new("/ws").as_element().with_padding(BoxAmount::new(2.0, 0.0, 0.0, 2.0)),
     ];
-    let header: Element<RootMessage> = Text::new("Configure Websocket port")
-        .with_font_size(14.0)
-        .as_element();
+    let header: Element<RootMessage> = Text::new("Configure Websocket port").with_font_size(14.0).as_element();
 
     let explainer_text = Text::new("Setting port to 0 will make windows assign you a port of its choosing.")
         .with_font_size(12.0)
@@ -123,17 +120,15 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
         .with_click_handler({
             let requested_port = config_state.borrow().port_input;
             let ws_status = state.store.connection_stats.ws_status.clone();
-            move |_, s| {
-                match ws_status {
-                    WebSocketStatus::Running { port, client_count: _ } => {
-                        if port == requested_port {
-                            info!("Websocket server already running on requested port");
-                        } else {
-                            s.publish(RootMessage::WebSocket(WebSocketMessage::SendPort(requested_port)));
-                        }
+            move |_, s| match ws_status {
+                WebSocketStatus::Running { port, client_count: _ } => {
+                    if port == requested_port {
+                        info!("Websocket server already running on requested port");
+                    } else {
+                        s.publish(RootMessage::WebSocket(WebSocketMessage::SendPort(requested_port)));
                     }
-                    _ => s.publish(RootMessage::WebSocket(WebSocketMessage::SendPort(requested_port))),
                 }
+                _ => s.publish(RootMessage::WebSocket(WebSocketMessage::SendPort(requested_port))),
             }
         })
         .with_bg_color(PRIMARY_COLOR)
@@ -146,21 +141,13 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
                 .as_element()
                 .with_axis_align_self(Alignment::Center)
                 .with_cross_align_self(Alignment::Center)
-                .with_padding(BoxAmount::horizontal(PAD_MD))
+                .with_padding(BoxAmount::horizontal(PAD_MD)),
         )
         .with_height(Sizing::grow())
         .with_border_radius(BORDER_RADIUS);
 
     column![
-        row![
-            column![
-                header,
-                text_input,
-            ],
-            spacer(),
-            button
-        ]
-        .with_width(Sizing::grow()),
+        row![column![header, text_input,], spacer(), button].with_width(Sizing::grow()),
         explainer_text
     ]
     .with_width(Sizing::grow())
@@ -174,12 +161,12 @@ enum SettingsModalPanel {
     /// Application update settings
     Update,
     /// Miscellaneous settings (WebSocket, window behavior)
-    Misc
+    Misc,
 }
 
 /// Internal state for the settings modal.
 struct SettingsModalState {
-    active_panel: SettingsModalPanel
+    active_panel: SettingsModalPanel,
 }
 
 /// Renders the settings modal with tabbed panels.
@@ -190,7 +177,7 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
     let mut instance = hook.instance(w_id!());
 
     let modal_state = instance.use_state(|| SettingsModalState {
-        active_panel: SettingsModalPanel::Graphics
+        active_panel: SettingsModalPanel::Graphics,
     });
 
     let opacity = use_animation(&mut instance, state.settings_open);
@@ -298,7 +285,7 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
         ],
         &state.store.settings.image_fit,
         |fit| Some(RootMessage::Settings(SettingsMessage::ImageFitChanged(fit))),
-        None
+        None,
     )
     .with_width(Sizing::grow());
 
@@ -391,7 +378,7 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
                 .as_element()
                 .with_axis_align_self(Alignment::Center)
                 .with_cross_align_self(Alignment::Center)
-                .with_padding(BoxAmount::all(8.0))
+                .with_padding(BoxAmount::all(8.0)),
         )
         .with_height(Sizing::grow())
         .with_border_radius(BORDER_RADIUS);
@@ -485,10 +472,7 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
 
     let run_on_start_section = column![
         row![
-            Text::new("Run on startup")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
+            Text::new("Run on startup").with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
             spacer(),
             run_on_start_toggle
         ]
@@ -528,17 +512,9 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow());
 
-    let graphics_settings_content = column![
-        bg_image_section,
-        fit_mode_section,
-        opacity_section,
-        text_shadow_section
-    ];
+    let graphics_settings_content = column![bg_image_section, fit_mode_section, opacity_section, text_shadow_section];
 
-    let update_settings_content = column![
-        update_unprompted_section,
-        update_check_button
-    ];
+    let update_settings_content = column![update_unprompted_section, update_check_button];
 
     let misc_settings_content = column![
         websocket_settings_section(state, hook),
@@ -566,8 +542,9 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
         Some(ToggleGroupConfig {
             text_size: 20.0,
             ..Default::default()
-        })
-    ).with_width(Sizing::grow());
+        }),
+    )
+    .with_width(Sizing::grow());
 
     panel_toggles.children = panel_toggles
         .children
@@ -582,8 +559,10 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
         match modal_state_clone.borrow().active_panel {
             SettingsModalPanel::Graphics => graphics_settings_content,
             SettingsModalPanel::Update => update_settings_content,
-            SettingsModalPanel::Misc => misc_settings_content
-        }.with_child_gap(SPACE_LG).with_width(Sizing::grow())
+            SettingsModalPanel::Misc => misc_settings_content,
+        }
+        .with_child_gap(SPACE_LG)
+        .with_width(Sizing::grow())
     ]
     .with_child_gap(SPACE_LG)
     .with_width(Sizing::fixed(400.0))
@@ -611,21 +590,18 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
 // ============================================================================
 
 /// Handle settings-related messages
-pub fn handle_settings_message(
-    state: &mut RootState,
-    message: SettingsMessage,
-) -> Option<Task<RootMessage>> {
+pub fn handle_settings_message(state: &mut RootState, message: SettingsMessage) -> Option<Task<RootMessage>> {
     match message {
         SettingsMessage::Load(path) => {
             use raxis::runtime::task::{self, Task};
-            use tracing::{info, error};
-            
+            use tracing::{error, info};
+
             info!("Loading settings from {}", path.display());
             if path.exists() {
                 Some(Task::future(tokio::fs::read_to_string(path)).and_then(move |content| {
-                    use crate::rgui::state::Settings;
                     use crate::rgui::run_on_start::registry_matches_settings;
-                    
+                    use crate::rgui::state::Settings;
+
                     let mut settings: Settings = match serde_json::from_str::<Settings>(&content) {
                         Ok(s) => s,
                         Err(e) => {
@@ -640,11 +616,11 @@ pub fn handle_settings_message(
                         // e.g. user moves the exe after enabling/disabling run on start
                         // in case of mismatch, update the settings and delete registry key if appropriate
                         Ok(false) => settings.run_on_start = !run_on_start,
-                        Ok(true) => {},
-                        _ => {},
+                        Ok(true) => {}
+                        _ => {}
                     };
-                    
-                    // want to avoid having the app briefly flash up if set to start minimized 
+
+                    // want to avoid having the app briefly flash up if set to start minimized
                     // the app will therefore always start minimized and update display mode here as necessary
                     let display_task = if settings.start_minimized {
                         // TODO: Does this make sense or should it also consider onClose preference
@@ -656,11 +632,11 @@ pub fn handle_settings_message(
                     } else {
                         task::show_window()
                     };
-                    
+
                     Task::batch(vec![
                         display_task,
                         Task::done(RootMessage::WebSocket(WebSocketMessage::SendPort(settings.ws_port))),
-                        Task::done(RootMessage::Settings(SettingsMessage::Activate(settings)))
+                        Task::done(RootMessage::Settings(SettingsMessage::Activate(settings))),
                     ])
                 }))
             } else {
@@ -729,20 +705,20 @@ pub fn handle_settings_message(
             match set_run_on_start(enabled) {
                 Ok(()) => {
                     state.store.settings.run_on_start = enabled;
-                },
+                }
                 Err(RegistryError::KeyCreationFailed) => {
                     tracing::warn!("Unable to create registry key!");
-                },
+                }
                 Err(RegistryError::PathUnobtainable) => {
                     tracing::warn!("Unable to get current exe path!");
-                },
+                }
                 Err(RegistryError::AddFailed) => {
                     tracing::warn!("Failed to add registry key!");
-                },
+                }
                 Err(RegistryError::RemoveFailed) => {
                     state.store.settings.run_on_start = false;
                     tracing::warn!("Failed to remove registry key!");
-                },
+                }
             }
             save_settings(state)
         }

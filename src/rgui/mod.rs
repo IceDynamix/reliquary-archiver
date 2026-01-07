@@ -33,31 +33,29 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
 use crate::scopefns::Also;
-use crate::websocket::{PortSource, start_websocket_server};
+use crate::websocket::{start_websocket_server, PortSource};
 use crate::worker::archiver_worker;
 use crate::LOG_NOTIFY;
 
 // Module declarations
-pub mod theme;
-pub mod state;
-pub mod messages;
-pub mod handlers;
-pub mod view;
-pub mod kit;
 pub mod components;
-pub mod screens;
+pub mod handlers;
+pub mod kit;
+pub mod messages;
 pub mod run_on_start;
+pub mod screens;
+pub mod state;
+pub mod theme;
+pub mod view;
 
 // Re-exports for public API
-pub use theme::*;
-pub use state::*;
-pub use messages::*;
 pub use handlers::{
-    get_settings_path, save_settings, 
-    handle_worker_event, handle_sniffer_metric, handle_screen_transitions,
-    handle_export_message, handle_websocket_message, handle_log_message, 
-    handle_window_message, handle_connection_check,
+    get_settings_path, handle_connection_check, handle_export_message, handle_log_message, handle_screen_transitions,
+    handle_sniffer_metric, handle_websocket_message, handle_window_message, handle_worker_event, save_settings,
 };
+pub use messages::*;
+pub use state::*;
+pub use theme::*;
 pub use view::view;
 
 /// Main update function that processes messages and modifies application state.
@@ -81,7 +79,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
     match message {
         // Simple triggers
         RootMessage::TriggerRender => None,
-        
+
         RootMessage::GoToLink(link) => {
             if let Err(e) = open::that(link) {
                 tracing::error!("Failed to open link: {}", e);
@@ -132,16 +130,14 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 /// Returns an error if the GUI framework fails to initialize.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use crate::rgui::components::update;
-    
+
     let (port_tx, port_rx) = watch::channel::<u16>(0);
     let state = RootState::default().with_port_sender(port_tx);
     let exporter = state.exporter.clone();
 
     let app = raxis::Application::new(state, view, update, move |_state| {
         Some(Task::batch(vec![
-            task::get_local_app_data().and_then(|path| {
-                Task::done(RootMessage::Settings(SettingsMessage::Load(get_settings_path(path))))
-            }),
+            task::get_local_app_data().and_then(|path| Task::done(RootMessage::Settings(SettingsMessage::Load(get_settings_path(path))))),
             // technically calling PerformCheck here is a data race (should be .chain() to SettingsMessage::Activate)
             // however its a case of loading+parsing ~300 bytes of json vs a round trip web request
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
@@ -153,19 +149,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .then(|e| match e {
                 Err(e) => Task::done(RootMessage::ws_status(WebSocketStatus::Failed { error: e })),
                 Ok((port_stream, client_count_stream)) => {
-                    Task::done(RootMessage::ws_status(WebSocketStatus::Running { port: 0, client_count: 0 }))
-                        .chain(Task::batch(vec![
-                            Task::stream(client_count_stream).map(|client_count| {
-                                RootMessage::ws_client_count_changed(client_count)
-                            }),
-                            Task::stream(port_stream).map(|port| {
-                                match port {
-                                    Ok(port) => RootMessage::ws_port_changed(port),
-                                    Err(e) => RootMessage::ws_invalid_port(e)
-                                }
-                            })
-                        ]))
-                },
+                    Task::done(RootMessage::ws_status(WebSocketStatus::Running { port: 0, client_count: 0 })).chain(Task::batch(vec![
+                        Task::stream(client_count_stream).map(|client_count| RootMessage::ws_client_count_changed(client_count)),
+                        Task::stream(port_stream).map(|port| match port {
+                            Ok(port) => RootMessage::ws_port_changed(port),
+                            Err(e) => RootMessage::ws_invalid_port(e),
+                        }),
+                    ]))
+                }
             }),
             Task::stream(stream! {
                 loop {
@@ -189,12 +180,14 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
                 use raxis::runtime::task::WindowMode;
                 match mode {
                     WindowMode::Hidden => task::show_window(),
-                    WindowMode::Windowed => if minimize_to_tray {
-                        task::hide_window()
-                    } else {
-                        task::minimize_window()
-                    },
-                    WindowMode::Minimized => task::restore_window()
+                    WindowMode::Windowed => {
+                        if minimize_to_tray {
+                            task::hide_window()
+                        } else {
+                            task::minimize_window()
+                        }
+                    }
+                    WindowMode::Minimized => task::restore_window(),
                 }
             }
         })),

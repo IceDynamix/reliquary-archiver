@@ -3,16 +3,12 @@
 //! Provides a row of buttons where only one can be active at a time,
 //! similar to radio buttons but with a segmented control appearance.
 
-use raxis::{
-    layout::model::{Alignment, Border, BorderRadius, Color, Direction::LeftToRight, Element, Sizing},
-    util::unique::combine_id,
-    w_id,
-    widgets::{
-        button::Button,
-        text::{Text, TextAlignment},
-    },
-    HookManager,
-};
+use raxis::layout::model::Direction::LeftToRight;
+use raxis::layout::model::{Alignment, Border, BorderRadius, Color, Element, Sizing};
+use raxis::util::unique::combine_id;
+use raxis::widgets::button::Button;
+use raxis::widgets::text::{Text, TextAlignment};
+use raxis::{w_id, HookManager};
 
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_SM, TEXT_COLOR, TEXT_MUTED,
@@ -93,7 +89,7 @@ pub fn togglegroup<T, PMsg, F>(
     options: Vec<ToggleOption<T>>,
     active_value: &T,
     on_change: F,
-    config: Option<ToggleGroupConfig>
+    config: Option<ToggleGroupConfig>,
 ) -> Element<PMsg>
 where
     T: Clone + PartialEq + 'static,

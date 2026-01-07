@@ -1,13 +1,14 @@
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap,
-    RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
+    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap, RelicConfigMap,
+    RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::text_map::TextMap;
 use serde::de::DeserializeOwned;
-use std::collections::HashMap;
-use std::sync::OnceLock;
 use tracing::{info, instrument};
 
 pub struct Database {
@@ -41,42 +42,15 @@ impl Database {
         // but concat!() only takes string literals. it doesn't even take `&'static str`!!
         // https://github.com/rust-lang/rust/issues/53749
         Database {
-            avatar_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/AvatarConfig.json"
-            ))),
-            avatar_skill_tree_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/AvatarSkillTreeConfig.json"
-            ))),
-            equipment_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/EquipmentConfig.json"
-            ))),
-            item_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/ItemConfig.json"
-            ))),
-            multipath_avatar_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/MultiplePathAvatarConfig.json"
-            ))),
-            relic_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/RelicConfig.json"
-            ))),
-            relic_set_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/RelicSetConfig.json"
-            ))),
-            relic_main_affix_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/RelicMainAffixConfig.json"
-            ))),
-            relic_sub_affix_config: Self::parse_json(include_str!(concat!(
-                env!("OUT_DIR"),
-                "/RelicSubAffixConfig.json"
-            ))),
+            avatar_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/AvatarConfig.json"))),
+            avatar_skill_tree_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/AvatarSkillTreeConfig.json"))),
+            equipment_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/EquipmentConfig.json"))),
+            item_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/ItemConfig.json"))),
+            multipath_avatar_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/MultiplePathAvatarConfig.json"))),
+            relic_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicConfig.json"))),
+            relic_set_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicSetConfig.json"))),
+            relic_main_affix_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicMainAffixConfig.json"))),
+            relic_sub_affix_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicSubAffixConfig.json"))),
             text_map: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/TextMapEN.json"))),
             keys: Self::load_local_keys(),
         }
@@ -87,8 +61,7 @@ impl Database {
     }
 
     fn load_local_keys() -> HashMap<u32, Vec<u8>> {
-        let keys: HashMap<u32, String> =
-            Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/keys.json")));
+        let keys: HashMap<u32, String> = Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/keys.json")));
         let mut keys_bytes = HashMap::new();
 
         for (k, v) in keys {

@@ -5,20 +5,17 @@
 
 use std::path::PathBuf;
 
-use raxis::layout::model::{Alignment, BorderRadius, BoxAmount, Element, Sizing};
+use raxis::layout::model::{Alignment, BackdropFilter, BorderRadius, BoxAmount, Element, Sizing};
+use raxis::runtime::task::Task;
 use raxis::widgets::button::Button;
 use raxis::widgets::rule::Rule;
 use raxis::widgets::text::{ParagraphAlignment, Text};
-use raxis::layout::model::BackdropFilter;
 use raxis::{column, row, w_id, HookManager};
-use raxis::runtime::task::Task;
 
-use crate::rgui::theme::{
-    maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PRIMARY_COLOR, SPACE_MD, SPACE_SM, TEXT_MUTED,
-};
-use crate::rgui::state::{Store, WaitingScreen};
-use crate::rgui::messages::{RootMessage, WaitingMessage, ScreenAction};
 use crate::rgui::components::file_download::download_view;
+use crate::rgui::messages::{RootMessage, ScreenAction, WaitingMessage};
+use crate::rgui::state::{Store, WaitingScreen};
+use crate::rgui::theme::{maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PRIMARY_COLOR, SPACE_MD, SPACE_SM, TEXT_MUTED};
 
 impl WaitingScreen {
     /// Renders the waiting screen view.

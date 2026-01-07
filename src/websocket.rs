@@ -1,23 +1,20 @@
-use axum::{
-    extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
-    routing::get,
-    Extension, Router,
-};
-use futures::{
-    lock::Mutex,
-    sink::SinkExt,
-    stream::{SplitSink, Stream, StreamExt},
-};
+use std::error::Error;
+use std::io;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
+
+use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
+use axum::routing::get;
+use axum::{Extension, Router};
+use futures::lock::Mutex;
+use futures::sink::SinkExt;
+use futures::stream::{SplitSink, Stream, StreamExt};
 use reliquary_archiver::export::Exporter;
 use serde::Serialize;
+use tokio::sync::watch;
+use tokio::task::AbortHandle;
 use tokio_stream::wrappers::WatchStream;
-use std::{
-    error::Error,
-    io,
-    net::SocketAddr,
-    sync::{Arc, RwLock, atomic::{AtomicU16, AtomicUsize, Ordering}}
-};
-use tokio::{sync::watch, task::AbortHandle};
 use tracing::{debug, info, warn};
 
 struct WebSocketServerState<E: Exporter> {
@@ -29,7 +26,7 @@ struct WebSocketServerState<E: Exporter> {
 }
 
 impl<E: Exporter> WebSocketServerState<E> {
-    pub fn set_service_handle(&self, handle: AbortHandle, port: u16) -> Result<(),()> {
+    pub fn set_service_handle(&self, handle: AbortHandle, port: u16) -> Result<(), ()> {
         self.active_port.store(port, Ordering::Relaxed);
         if let Ok(mut w) = self.service_handle.write() {
             *w = Some(handle);
@@ -38,11 +35,11 @@ impl<E: Exporter> WebSocketServerState<E> {
         Err(())
     }
 
-    pub fn abort_service(&self) -> Result<(),()> {
+    pub fn abort_service(&self) -> Result<(), ()> {
         if let Ok(r) = self.service_handle.read() {
             if let Some(handle) = r.as_ref() {
                 let current_port = self.active_port.load(Ordering::Relaxed);
-            info!("Terminating WebSocket server on 0.0.0.0:{}", current_port);
+                info!("Terminating WebSocket server on 0.0.0.0:{}", current_port);
                 handle.abort();
             }
             return Ok(());
@@ -53,17 +50,16 @@ impl<E: Exporter> WebSocketServerState<E> {
 
 pub enum PortSource {
     Fixed(u16),
-    Dynamic(WatchStream<u16>)
+    Dynamic(WatchStream<u16>),
 }
 
 pub async fn start_websocket_server<E: Exporter>(
     mut port_source: PortSource,
     exporter: Arc<Mutex<E>>,
-) -> Result<(impl Stream<Item = Result<u16, String>>, impl Stream<Item = usize>),String>
-{
+) -> Result<(impl Stream<Item = Result<u16, String>>, impl Stream<Item = usize>), String> {
     let initial_port = match port_source {
         PortSource::Fixed(ref port) => *port,
-        PortSource::Dynamic(_) => 0
+        PortSource::Dynamic(_) => 0,
     };
 
     let (client_count_tx, client_count_rx) = watch::channel(0);
@@ -103,12 +99,12 @@ pub async fn start_websocket_server<E: Exporter>(
 
             let addr = server_addr.parse::<std::net::SocketAddr>().unwrap();
 
-            let listener = tokio::net::TcpListener::bind(addr)
-                .await
-                .map_err(|e| match e.kind() {
-                    io::ErrorKind::AddrInUse => "Address already in use, please close any other instances of the application or try another address".to_string(),
-                    _ => e.to_string(),
-                });
+            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| match e.kind() {
+                io::ErrorKind::AddrInUse => {
+                    "Address already in use, please close any other instances of the application or try another address".to_string()
+                }
+                _ => e.to_string(),
+            });
 
             match listener {
                 Ok(listener) => {
@@ -120,11 +116,12 @@ pub async fn start_websocket_server<E: Exporter>(
                             info!("Starting WebSocket server on {}", local_addr);
                             debug!("Listening on {}", local_addr);
                             axum::serve(listener, service).await.unwrap();
-                        }).abort_handle(),
-                        port
+                        })
+                        .abort_handle(),
+                        port,
                     );
                     port_tx.send(Ok(port));
-                },
+                }
                 Err(e) => {
                     port_tx.send(Err(e));
                 }

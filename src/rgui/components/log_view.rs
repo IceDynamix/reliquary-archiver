@@ -15,21 +15,22 @@ use std::time::Instant;
 use raxis::layout::model::{
     BackdropFilter, Border, BorderRadius, BoxAmount, Color, Direction, Element, ScrollBarSize, ScrollConfig, ScrollbarStyle, Sizing,
 };
+use raxis::runtime::font_manager::FontIdentifier;
 use raxis::runtime::scroll::ScrollPosition;
+use raxis::runtime::task;
 use raxis::runtime::task::{ClipboardAction, Task};
 use raxis::runtime::vkey::VKey;
-use raxis::runtime::font_manager::FontIdentifier;
+use raxis::util::unique::combine_id;
 use raxis::widgets::button::Button;
 use raxis::widgets::mouse_area::{MouseArea, MouseAreaEvent};
 use raxis::widgets::text::{ParagraphAlignment, Text};
 use raxis::widgets::{widget, Widget};
-use raxis::util::unique::combine_id;
-use raxis::{runtime::task, w_id, HookManager};
+use raxis::{w_id, HookManager};
 
+use crate::rgui::messages::RootMessage;
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS_SM, CARD_BACKGROUND, SCROLLBAR_THUMB_COLOR, SCROLLBAR_TRACK_COLOR, SELECTION_COLOR, TEXT_ON_LIGHT_COLOR,
 };
-use crate::rgui::messages::RootMessage;
 use crate::{LOG_BUFFER, LOG_NOTIFY};
 
 /// Formats a byte size to a human-readable string (B, KB, MB).

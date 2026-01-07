@@ -4,9 +4,7 @@
 //! application UI based on the current state.
 
 use raxis::layout::helpers::{center, container, spacer};
-use raxis::layout::model::{
-    Alignment, BorderRadius, BoxAmount, Element, ScrollBarSize, ScrollConfig, ScrollbarStyle, Sizing,
-};
+use raxis::layout::model::{Alignment, BorderRadius, BoxAmount, Element, ScrollBarSize, ScrollConfig, ScrollbarStyle, Sizing};
 use raxis::widgets::button::Button;
 use raxis::widgets::image::Image;
 use raxis::widgets::rule::Rule;
@@ -15,17 +13,17 @@ use raxis::widgets::titlebar_controls::titlebar_controls;
 use raxis::{column, row, w_id, HookManager};
 use tracing::level_filters::LevelFilter;
 
+use crate::rgui::components::log_view::log_view;
+use crate::rgui::components::settings_modal::settings_modal;
+use crate::rgui::components::update::{update_modal, UpdateState};
+use crate::rgui::kit::icons::{cog_icon, discord_button, github_button};
+use crate::rgui::kit::togglegroup::{togglegroup, ToggleOption};
+use crate::rgui::messages::{LogMessage, RootMessage, WebSocketStatus, WindowMessage};
+use crate::rgui::state::{ImageFit, RootState, Screen};
 use crate::rgui::theme::{
     maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, DANGER_COLOR, PAD_LG, PAD_MD, PAD_SM,
     SCROLLBAR_THUMB_COLOR, SCROLLBAR_TRACK_COLOR, SPACE_MD, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
 };
-use crate::rgui::state::{ImageFit, RootState, Screen};
-use crate::rgui::messages::{LogMessage, RootMessage, WebSocketStatus, WindowMessage};
-use crate::rgui::kit::icons::{cog_icon, discord_button, github_button};
-use crate::rgui::kit::togglegroup::{togglegroup, ToggleOption};
-use crate::rgui::components::log_view::log_view;
-use crate::rgui::components::settings_modal::settings_modal;
-use crate::rgui::components::update::{update_modal, UpdateState};
 use crate::scopefns::Also;
 
 /// Main view function that renders the entire application UI.
@@ -64,10 +62,8 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     let header = row![
         header,
         spacer(),
-        column![
-            titlebar_controls(hook),
-            container(menu_button).with_padding(BoxAmount::all(PAD_MD)),
-        ].with_cross_align_items(Alignment::End)
+        column![titlebar_controls(hook), container(menu_button).with_padding(BoxAmount::all(PAD_MD)),]
+            .with_cross_align_items(Alignment::End)
     ]
     .with_width(Sizing::grow());
 
@@ -134,7 +130,7 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
         ],
         &state.store.log_level,
         |value| Some(RootMessage::Log(LogMessage::LevelChanged(value))),
-        None
+        None,
     );
 
     let footer = column![
@@ -163,8 +159,9 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
                             .with_text_alignment(TextAlignment::Center),
                         text_shadow_enabled,
                     )
-                    .as_element()
-                ).with_axis_align_content(Alignment::Center)
+                    .as_element(),
+                )
+                .with_axis_align_content(Alignment::Center)
             } else {
                 Element::default()
             },
@@ -196,16 +193,12 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
                     track_color: SCROLLBAR_TRACK_COLOR,
                     track_radius: BorderRadius::all(4.0),
                     size: ScrollBarSize::ThinThick(8.0, 12.0),
-                ..Default::default()
+                    ..Default::default()
                 }),
                 ..Default::default()
             }),
         settings_modal(state, hook),
-        update_modal(
-            state.store.update_state.as_ref(),
-            hook,
-            RootMessage::Update,
-        )
+        update_modal(state.store.update_state.as_ref(), hook, RootMessage::Update,)
     ]
     .with_id(w_id!())
     .with_color(TEXT_COLOR)

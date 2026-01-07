@@ -69,13 +69,8 @@ pub struct GachaResult {
 #[derive(Serialize, Debug, Clone, Copy)]
 #[serde(tag = "kind")]
 pub enum PityUpdate {
-    AddPity {
-        amount: u32,
-    },
-    ResetPity {
-        amount: u32,
-        set_guarantee: bool,
-    },
+    AddPity { amount: u32 },
+    ResetPity { amount: u32, set_guarantee: bool },
 }
 
 impl PityUpdate {
@@ -188,7 +183,7 @@ pub struct Traces {
     pub stat_8: bool,
     pub stat_9: bool,
     pub stat_10: bool,
-    pub special: bool
+    pub special: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -205,4 +200,4 @@ impl Memosprite {
             Some(self)
         }
     }
-} 
+}

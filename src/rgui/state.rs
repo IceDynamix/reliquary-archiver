@@ -11,13 +11,13 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::lock::Mutex;
+use reliquary_archiver::export::fribbels::OptimizerExporter;
 use tokio::sync::watch::Sender;
 use tracing::level_filters::LevelFilter;
-use reliquary_archiver::export::fribbels::OptimizerExporter;
 
-use crate::worker;
-use crate::rgui::messages::WebSocketStatus;
 use crate::rgui::components::update::UpdateState;
+use crate::rgui::messages::WebSocketStatus;
+use crate::worker;
 
 /// File extension filter configuration for save dialogs.
 #[derive(Debug, Clone)]
@@ -107,7 +107,7 @@ pub struct Settings {
     /// Start the application minimized/hidden
     pub start_minimized: bool,
     /// Port for the WebSocket server (0 = auto-assign)
-    pub ws_port: u16
+    pub ws_port: u16,
 }
 
 impl Default for Store {
@@ -136,7 +136,7 @@ impl Default for Settings {
             minimize_to_tray_on_minimize: false,
             run_on_start: false,
             start_minimized: false,
-            ws_port: 23313
+            ws_port: 23313,
         }
     }
 }

@@ -1,36 +1,21 @@
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::channel::{mpsc, oneshot};
 use futures::executor::block_on;
 use futures::lock::Mutex;
-use futures::select;
 use futures::sink::SinkExt;
-use futures::stream;
 use futures::stream::FusedStream;
-use futures::FutureExt;
-use futures::Stream;
-use futures::StreamExt;
-use reliquary::network::command::command_id::PlayerLoginFinishScRsp;
-use reliquary::network::command::command_id::PlayerLoginScRsp;
-use reliquary::network::command::GameCommand;
-use reliquary::network::command::GameCommandError;
-use reliquary::network::ConnectionPacket;
-use reliquary::network::GamePacket;
-use reliquary::network::GameSniffer;
-use reliquary::network::NetworkError;
-use reliquary_archiver::export::database::get_database;
-use reliquary_archiver::export::database::Database;
-use reliquary_archiver::export::fribbels::Export;
-use reliquary_archiver::export::fribbels::OptimizerEvent;
-use reliquary_archiver::export::fribbels::OptimizerExporter;
+use futures::{select, stream, FutureExt, Stream, StreamExt};
+use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::{GameCommand, GameCommandError};
+use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
+use reliquary_archiver::export::database::{get_database, Database};
+use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use reliquary_archiver::export::Exporter;
 use tokio::pin;
-use tracing::info;
-use tracing::instrument;
-use tracing::warn;
+use tracing::{info, instrument, warn};
 
 use crate::capture;
 

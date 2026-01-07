@@ -10,9 +10,7 @@ use tracing::info;
 
 use crate::rgui::kit::modal::modal_backdrop;
 use crate::rgui::theme::{
-    BORDER_RADIUS, CARD_BACKGROUND,
-    PAD_LG, PAD_MD, SPACE_LG, SPACE_MD, SPACE_SM,
-    SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED, BORDER_COLOR,
+    BORDER_COLOR, BORDER_RADIUS, CARD_BACKGROUND, PAD_LG, PAD_MD, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
 };
 
 /// Update state for the GUI
@@ -50,11 +48,7 @@ pub enum HandleResult {
 }
 
 /// Handle update messages and return the new state and optional task
-pub fn handle_message(
-    msg: UpdateMessage,
-    current_state: &mut Option<UpdateState>,
-    skip_consent: bool
-) -> HandleResult {
+pub fn handle_message(msg: UpdateMessage, current_state: &mut Option<UpdateState>, skip_consent: bool) -> HandleResult {
     match msg {
         UpdateMessage::PerformCheck => {
             *current_state = Some(UpdateState::Checking);
@@ -90,10 +84,8 @@ pub fn handle_message(
         UpdateMessage::Confirm => {
             *current_state = Some(UpdateState::Updating);
             HandleResult::Task(Task::future(async move {
-                let result = tokio::task::spawn_blocking(|| {
-                    crate::update::update_noninteractive()
-                }).await;
-                
+                let result = tokio::task::spawn_blocking(|| crate::update::update_noninteractive()).await;
+
                 match result {
                     Ok(Ok(true)) => UpdateMessage::Complete(Ok(())),
                     Ok(Ok(false)) => UpdateMessage::Complete(Err("Update reported no changes".to_string())),
@@ -108,20 +100,18 @@ pub fn handle_message(
             HandleResult::None
         }
 
-        UpdateMessage::Complete(result) => {
-            match result {
-                Ok(()) => {
-                    info!("Update completed successfully, restarting...");
-                    crate::update::request_spawn_after_exit();
-                    HandleResult::ExitForRestart
-                }
-                Err(e) => {
-                    tracing::error!("Update failed: {}", e);
-                    *current_state = Some(UpdateState::Failed(e));
-                    HandleResult::None
-                }
+        UpdateMessage::Complete(result) => match result {
+            Ok(()) => {
+                info!("Update completed successfully, restarting...");
+                crate::update::request_spawn_after_exit();
+                HandleResult::ExitForRestart
             }
-        }
+            Err(e) => {
+                tracing::error!("Update failed: {}", e);
+                *current_state = Some(UpdateState::Failed(e));
+                HandleResult::None
+            }
+        },
     }
 }
 
@@ -132,8 +122,9 @@ pub fn check_for_updates_task() -> Task<UpdateMessage> {
             crate::update::check_for_update()
                 .map(|opt| opt.map(|info| (info.current_version, info.latest_version)))
                 .map_err(|e| e.to_string())
-        }).await;
-        
+        })
+        .await;
+
         match result {
             Ok(inner) => UpdateMessage::CheckResult(inner),
             Err(e) => UpdateMessage::CheckResult(Err(e.to_string())),
@@ -154,7 +145,10 @@ pub fn update_modal<M: Clone + Send + 'static>(
 
     // Only show modal for Available or Updating state
     let (current_version, latest_version, is_updating) = match update_state {
-        UpdateState::Available { current_version, latest_version } => (current_version.clone(), latest_version.clone(), false),
+        UpdateState::Available {
+            current_version,
+            latest_version,
+        } => (current_version.clone(), latest_version.clone(), false),
         UpdateState::Updating => (String::new(), String::new(), true),
         _ => return Element::default(),
     };
@@ -205,10 +199,7 @@ pub fn update_modal<M: Clone + Send + 'static>(
             ]
             .with_width(Sizing::grow()),
             row![
-                Text::new("New version:")
-                    .with_font_size(14.0)
-                    .with_color(TEXT_MUTED)
-                    .as_element(),
+                Text::new("New version:").with_font_size(14.0).with_color(TEXT_MUTED).as_element(),
                 spacer(),
                 Text::new(latest_version.clone())
                     .with_font_size(14.0)
@@ -273,16 +264,9 @@ pub fn update_modal<M: Clone + Send + 'static>(
     };
 
     let modal_content = if is_updating {
-        column![
-            header_section,
-            version_info,
-        ]
+        column![header_section, version_info,]
     } else {
-        column![
-            header_section,
-            version_info,
-            buttons,
-        ]
+        column![header_section, version_info, buttons,]
     }
     .with_child_gap(SPACE_LG)
     .with_width(Sizing::fixed(350.0))

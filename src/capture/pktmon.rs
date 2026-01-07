@@ -1,8 +1,12 @@
-use std::{sync::atomic::Ordering, time::Duration};
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+
+use ::pktmon::filter::{PktMonFilter, TransportProtocol};
+use ::pktmon::{Capture, PacketPayload};
+use futures::executor::block_on;
+use futures::SinkExt;
 
 use super::*;
-use futures::{executor::block_on, SinkExt};
-use ::pktmon::{filter::{PktMonFilter, TransportProtocol}, Capture, PacketPayload};
 
 pub struct PktmonBackend;
 
@@ -15,7 +19,7 @@ pub struct PktmonCapture {
 
 impl CaptureBackend for PktmonBackend {
     type Device = PktmonCaptureDevice;
-    
+
     fn list_devices(&self) -> Result<Vec<Self::Device>> {
         // PktMon doesn't need device selection - it captures all interfaces
         Ok(vec![PktmonCaptureDevice])
@@ -28,10 +32,12 @@ impl CaptureDevice for PktmonCaptureDevice {
     fn name(&self) -> &str {
         "pktmon"
     }
-    
+
     fn create_capture(&self) -> Result<Self::Capture> {
-        let mut capture = Capture::new()
-            .map_err(|e| CaptureError::CaptureError { has_captured: false, error: Box::new(e) })?;
+        let mut capture = Capture::new().map_err(|e| CaptureError::CaptureError {
+            has_captured: false,
+            error: Box::new(e),
+        })?;
 
         let filter = PktMonFilter {
             name: "UDP Filter".to_string(),
@@ -39,9 +45,8 @@ impl CaptureDevice for PktmonCaptureDevice {
             port: PORT_RANGE.0.into(),
             ..PktMonFilter::default()
         };
-        
-        capture.add_filter(filter)
-            .map_err(|e| CaptureError::FilterError(Box::new(e)))?;
+
+        capture.add_filter(filter).map_err(|e| CaptureError::FilterError(Box::new(e)))?;
 
         let filter = PktMonFilter {
             name: "UDP Filter".to_string(),
@@ -49,10 +54,9 @@ impl CaptureDevice for PktmonCaptureDevice {
             port: PORT_RANGE.1.into(),
             ..PktMonFilter::default()
         };
-        
-        capture.add_filter(filter)
-            .map_err(|e| CaptureError::FilterError(Box::new(e)))?;
-            
+
+        capture.add_filter(filter).map_err(|e| CaptureError::FilterError(Box::new(e)))?;
+
         Ok(PktmonCapture { capture })
     }
 }
@@ -60,20 +64,27 @@ impl CaptureDevice for PktmonCaptureDevice {
 impl PacketCapture for PktmonCapture {
     #[instrument(skip_all)]
     fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
-        self.capture.start()
-            .map_err(|e| CaptureError::CaptureError { has_captured: false, error: Box::new(e) })?;
+        self.capture.start().map_err(|e| CaptureError::CaptureError {
+            has_captured: false,
+            error: Box::new(e),
+        })?;
 
         return match self.capture.stream() {
-            Ok(stream) => Ok(stream.filter_map(|packet| Box::pin(async move {
-                match packet.payload {
-                    PacketPayload::Ethernet(payload) => Some(Ok(Packet { 
-                        source_id: packet.component_id as u64,
-                        data: payload,
-                    })),
-                    _ => None,
-                }
-            }))),
-            Err(e) => Err(CaptureError::CaptureError { has_captured: false, error: Box::new(e) }),
-        }
+            Ok(stream) => Ok(stream.filter_map(|packet| {
+                Box::pin(async move {
+                    match packet.payload {
+                        PacketPayload::Ethernet(payload) => Some(Ok(Packet {
+                            source_id: packet.component_id as u64,
+                            data: payload,
+                        })),
+                        _ => None,
+                    }
+                })
+            })),
+            Err(e) => Err(CaptureError::CaptureError {
+                has_captured: false,
+                error: Box::new(e),
+            }),
+        };
     }
 }

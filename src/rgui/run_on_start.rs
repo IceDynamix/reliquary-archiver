@@ -5,8 +5,9 @@
 //!
 //! When enabled, the application will automatically launch when Windows starts.
 
-use windows_registry::{CURRENT_USER, HSTRING, Type};
 use std::env::current_exe;
+
+use windows_registry::{Type, CURRENT_USER, HSTRING};
 
 /// Errors that can occur during registry operations.
 #[derive(Debug, Eq, PartialEq)]
@@ -34,15 +35,17 @@ const REGISTRY_KEY_PATH: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\R
 /// # Errors
 /// Returns a [`RegistryError`] if the registry operation fails.
 pub fn set_run_on_start(enabled: bool) -> Result<(), RegistryError> {
-    let key = CURRENT_USER.create(REGISTRY_KEY_PATH).map_err(|e| { RegistryError::KeyCreationFailed })?;
+    let key = CURRENT_USER
+        .create(REGISTRY_KEY_PATH)
+        .map_err(|e| RegistryError::KeyCreationFailed)?;
 
-    let path_to_exe = current_exe().map_err(|e| { RegistryError::PathUnobtainable })?;
+    let path_to_exe = current_exe().map_err(|e| RegistryError::PathUnobtainable)?;
 
     let operation_successful = if enabled {
         key.set_string(REGISTRY_KEY_NAME, path_to_exe.to_str().unwrap())
-            .map_err(|e| { RegistryError::AddFailed })
+            .map_err(|e| RegistryError::AddFailed)
     } else {
-        key.remove_value(REGISTRY_KEY_NAME).map_err(|e| { RegistryError::RemoveFailed })
+        key.remove_value(REGISTRY_KEY_NAME).map_err(|e| RegistryError::RemoveFailed)
     };
 
     operation_successful
@@ -96,4 +99,4 @@ pub fn registry_matches_settings(enabled: bool) -> Result<bool, RegistryError> {
         key.remove_value(REGISTRY_KEY_NAME).unwrap();
     }
     Ok(matches)
-}    
+}

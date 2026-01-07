@@ -3,21 +3,20 @@
 
 use std::collections::HashSet;
 use std::fs::File;
+use std::io;
 use std::io::Write;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, LazyLock, LockResult, Mutex, TryLockResult};
-use futures::lock::Mutex as FuturesMutex;
 use std::time::Duration;
-use std::io;
-use std::panic::AssertUnwindSafe;
 
 #[cfg(feature = "pcap")]
 use capture::PCAP_FILTER;
-
 use chrono::Local;
 use clap::Parser;
+use futures::lock::Mutex as FuturesMutex;
 use futures::{future, select, FutureExt, StreamExt};
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::command::GameCommandError;
@@ -28,7 +27,8 @@ use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, instrument, warn};
 use tracing_subscriber::filter::Filtered;
 use tracing_subscriber::fmt::{MakeWriter, SubscriberBuilder};
-use tracing_subscriber::{prelude::*, reload, EnvFilter, Layer, Registry};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{reload, EnvFilter, Layer, Registry};
 
 #[cfg(feature = "stream")]
 mod websocket;
@@ -156,11 +156,8 @@ async fn main() {
     // This is needed for --help output and headless mode to be visible
     // AttachConsole fails if no parent console exists (e.g. double-clicked from Explorer)
     #[cfg(all(windows, feature = "gui"))]
-    let has_console = unsafe {
-        windows::Win32::System::Console::AttachConsole(
-            windows::Win32::System::Console::ATTACH_PARENT_PROCESS
-        ).is_ok()
-    };
+    let has_console =
+        unsafe { windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS).is_ok() };
 
     let args = Args::parse();
 
@@ -264,7 +261,7 @@ async fn capture(args: Args) {
     #[cfg(feature = "gui")]
     if !args.headless {
         rgui::run().unwrap();
-        
+
         // Check if we need to spawn the updated version after GUI exits
         if update::should_spawn_after_exit() {
             if let Err(e) = update::spawn_updated_version() {
@@ -320,10 +317,7 @@ async fn capture(args: Args) {
                             error!("Failed to write to {}: {}", output_file.display(), e);
                             pick_file!();
                         }
-                        info!(
-                            "wrote output to {}",
-                            output_file.canonicalize().unwrap().display()
-                        );
+                        info!("wrote output to {}", output_file.canonicalize().unwrap().display());
                         break;
                     }
                     Err(e) => {
@@ -763,8 +757,8 @@ where
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
 fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::windows::ffi::OsStrExt;
-    use windows::core::w;
-    use windows::core::PCWSTR;
+
+    use windows::core::{w, PCWSTR};
     use windows::Win32::System::Console::GetConsoleWindow;
     use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW};
     use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER, SW_SHOWNORMAL};

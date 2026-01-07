@@ -4,8 +4,8 @@
 //! - [`WaitingScreen`]: Displayed when waiting for a game connection
 //! - [`ActiveScreen`]: Displayed when actively connected and capturing data
 
-mod waiting;
 mod active;
+mod waiting;
 
-pub use waiting::*;
 pub use active::*;
+pub use waiting::*;
