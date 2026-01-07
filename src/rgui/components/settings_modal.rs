@@ -1,3 +1,10 @@
+//! Settings modal component.
+//!
+//! Provides a tabbed settings panel with sections for:
+//! - **Graphics**: Background image, opacity, text shadow
+//! - **Update**: Automatic update settings
+//! - **Misc**: WebSocket port, window behavior, startup options
+
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::Instant;
@@ -31,11 +38,13 @@ use crate::rgui::components::update::UpdateMessage;
 use crate::rgui::run_on_start::{RegistryError, set_run_on_start};
 use crate::rgui::handlers::save_settings;
 
+/// Internal state for the WebSocket port configuration UI.
 #[derive(Default, Clone)]
 struct WebsocketConfigState {
     port_input: u16,
 }
 
+/// Renders the WebSocket port configuration section.
 fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
     let config_state: Rc<RefCell<WebsocketConfigState>> = instance.use_state(|| { WebsocketConfigState {
@@ -157,17 +166,26 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
     .with_width(Sizing::grow())
 }
 
+/// Settings modal panel tabs.
 #[derive(Clone, PartialEq)]
 enum SettingsModalPanel {
+    /// Visual customization options
     Graphics,
+    /// Application update settings
     Update,
+    /// Miscellaneous settings (WebSocket, window behavior)
     Misc
 }
 
+/// Internal state for the settings modal.
 struct SettingsModalState {
     active_panel: SettingsModalPanel
 }
 
+/// Renders the settings modal with tabbed panels.
+///
+/// The modal slides in from the right side of the screen with a
+/// semi-transparent backdrop.
 pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let mut instance = hook.instance(w_id!());
 

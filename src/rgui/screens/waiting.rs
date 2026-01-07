@@ -1,3 +1,8 @@
+//! Waiting screen implementation.
+//!
+//! Displayed when the application is waiting for a game connection.
+//! Shows instructions and optionally allows importing a pcap file.
+
 use std::path::PathBuf;
 
 use raxis::layout::model::{Alignment, BorderRadius, BoxAmount, Element, Sizing};
@@ -16,10 +21,12 @@ use crate::rgui::messages::{RootMessage, WaitingMessage, ScreenAction};
 use crate::rgui::components::file_download::download_view;
 
 impl WaitingScreen {
+    /// Renders the waiting screen view.
     pub fn view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         self.waiting_view(store, hook)
     }
 
+    /// Handles waiting screen messages.
     pub fn update(&mut self, message: WaitingMessage) -> ScreenAction<WaitingMessage> {
         match message {
             WaitingMessage::PcapFileSelected(Some(path)) => {
@@ -41,6 +48,7 @@ impl WaitingScreen {
         }
     }
 
+    /// Renders the main waiting view content with instructions and pcap upload option.
     fn waiting_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         let text_shadow_enabled = store.settings.text_shadow_enabled;
 

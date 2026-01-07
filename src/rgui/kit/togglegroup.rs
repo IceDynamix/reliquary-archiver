@@ -1,3 +1,8 @@
+//! Toggle group widget for exclusive selection.
+//!
+//! Provides a row of buttons where only one can be active at a time,
+//! similar to radio buttons but with a segmented control appearance.
+
 use raxis::{
     layout::model::{Alignment, Border, BorderRadius, Color, Direction::LeftToRight, Element, Sizing},
     util::unique::combine_id,
@@ -13,7 +18,7 @@ use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_SM, TEXT_COLOR, TEXT_MUTED,
 };
 
-/// Configuration for a single toggle button in the group
+/// Configuration for a single toggle button in the group.
 #[derive(Debug, Clone)]
 pub struct ToggleOption<T: Clone> {
     pub value: T,
@@ -29,7 +34,7 @@ impl<T: Clone> ToggleOption<T> {
     }
 }
 
-/// Configuration for the toggle group appearance
+/// Configuration for the toggle group's visual appearance.
 #[derive(Debug, Clone)]
 pub struct ToggleGroupConfig {
     pub active_color: Color,

@@ -1,3 +1,27 @@
+//! # Reliquary Archiver GUI Module
+//!
+//! This module provides the graphical user interface.
+//!
+//! ## Architecture
+//!
+//! The GUI follows the Model-View-Update (MVU) pattern:
+//! - **State** ([`RootState`]): The application's data model
+//! - **Messages** ([`RootMessage`]): Events that trigger state changes
+//! - **Update** ([`update`]): Processes messages and updates state
+//! - **View** ([`view`]): Renders the UI based on current state
+//!
+//! ## Module Structure
+//!
+//! - [`state`]: Application state types and data structures
+//! - [`messages`]: Message types for event handling
+//! - [`handlers`]: Message handler implementations
+//! - [`view`]: Main view rendering function
+//! - [`theme`]: UI theming constants and helpers
+//! - [`components`]: Reusable UI components (settings modal, log view, etc.)
+//! - [`screens`]: Screen-specific views (waiting, active)
+//! - [`kit`]: Low-level UI building blocks (icons, modals, toggles, tooltips)
+//! - [`run_on_start`]: Windows startup registry integration
+
 use std::time::Instant;
 
 use async_stream::stream;
@@ -36,6 +60,13 @@ pub use handlers::{
 };
 pub use view::view;
 
+/// Main update function that processes messages and modifies application state.
+///
+/// This is the core of the Elm architecture - all state changes flow through here.
+/// Messages are dispatched to appropriate handlers based on their type.
+///
+/// # Returns
+/// An optional [`Task`] to be executed asynchronously (e.g., I/O operations, timers).
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
     macro_rules! handle_screen {
         ($screen:ident, $screen_message:ident, $message:ident) => {
@@ -88,6 +119,17 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
     })
 }
 
+/// Initializes and runs the application GUI.
+///
+/// This function sets up the raxis application with:
+/// - Window configuration (size, title, backdrop effects)
+/// - System tray integration with context menu
+/// - WebSocket server for external tool integration
+/// - Background worker for packet capture processing
+/// - Update checking on startup
+///
+/// # Errors
+/// Returns an error if the GUI framework fails to initialize.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use crate::rgui::components::update;
     

@@ -1,3 +1,11 @@
+//! Log viewer component.
+//!
+//! Provides a virtualized, scrollable view of application logs with:
+//! - Line selection (click, Ctrl+click, Shift+click, drag)
+//! - Copy to clipboard (Ctrl+C)
+//! - Truncation of very long lines with "Show more" button
+//! - Sticky-bottom auto-scrolling for new log entries
+
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::ops::Range;
@@ -24,6 +32,7 @@ use crate::rgui::theme::{
 use crate::rgui::messages::RootMessage;
 use crate::{LOG_BUFFER, LOG_NOTIFY};
 
+/// Formats a byte size to a human-readable string (B, KB, MB).
 pub fn short_size(size: usize) -> String {
     let size_f = size as f64;
     if size < 1024 {
@@ -97,6 +106,11 @@ impl<Message, E: Fn(&raxis::widgets::Event, &mut raxis::Shell<Message>) -> Optio
     }
 }
 
+/// Renders the virtualized log viewer component.
+///
+/// Uses viewport-based rendering to efficiently display thousands of log lines
+/// without performance degradation. Only visible lines are rendered, with
+/// spacer elements for scrolling.
 pub fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let container_id = w_id!();
 

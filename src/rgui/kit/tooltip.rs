@@ -1,3 +1,9 @@
+//! Tooltip components with theme support.
+//!
+//! Provides hover-activated tooltips that can be attached to any element.
+//! Supports multiple visual themes (warning, info, error, success) and
+//! configurable positioning.
+
 use std::{cell::RefCell, rc::Rc};
 
 use raxis::{
@@ -13,7 +19,7 @@ use raxis::{
 
 use crate::rgui::theme::{BORDER_RADIUS, PAD_SM};
 
-/// Tooltip theme for different visual styles
+/// Visual theme variants for tooltips.
 #[derive(Debug, Clone)]
 pub enum TooltipTheme {
     Warning,
@@ -59,7 +65,7 @@ impl TooltipTheme {
     }
 }
 
-/// Tooltip positioning configuration
+/// Controls where the tooltip appears relative to its anchor element.
 #[derive(Debug, Clone)]
 pub struct TooltipPosition {
     pub offset: Offset2D,
@@ -86,7 +92,7 @@ impl Default for TooltipPosition {
     }
 }
 
-/// Configuration for tooltip behavior and appearance
+/// Full configuration for tooltip behavior and appearance.
 #[derive(Debug, Clone)]
 pub struct TooltipConfig {
     pub theme: TooltipTheme,
@@ -106,7 +112,10 @@ impl Default for TooltipConfig {
     }
 }
 
-/// Creates a tooltip-enabled wrapper around an element
+/// Wraps an element with hover-activated tooltip functionality.
+///
+/// The tooltip appears when the user hovers over the content and
+/// disappears when they move away.
 pub fn tooltip_wrapper<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     content: Element<PMsg>,
     tooltip_text: String,
@@ -151,7 +160,7 @@ pub fn tooltip_wrapper<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     }
 }
 
-/// Creates a standalone tooltip element
+/// Creates a floating tooltip element for use in custom layouts.
 pub fn create_tooltip<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     text: String,
     anchor_id: u64,

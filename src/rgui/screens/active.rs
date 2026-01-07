@@ -1,3 +1,8 @@
+//! Active screen implementation.
+//!
+//! Displayed when actively connected to the game and capturing data.
+//! Shows capture statistics and provides export functionality.
+
 use raxis::layout::model::{Alignment, BorderRadius, BoxAmount, Color, Element, Sizing};
 use raxis::widgets::button::Button;
 use raxis::widgets::rule::Rule;
@@ -14,6 +19,7 @@ use crate::rgui::messages::{ActiveMessage, ExportMessage, RootMessage, ScreenAct
 use crate::rgui::components::file_download::download_view;
 use crate::rgui::kit::icons::refresh_icon;
 
+/// Renders a single statistic line (label + value).
 fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> Element<RootMessage> {
     column![
         maybe_text_shadow(Text::new(label).with_font_size(16.0).with_color(TEXT_MUTED), text_shadow_enabled),
@@ -30,14 +36,17 @@ fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> El
 }
 
 impl ActiveScreen {
+    /// Renders the active screen view.
     pub fn view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         self.active_view(store, hook)
     }
 
+    /// Handles active screen messages.
     pub fn update(&mut self, _message: ActiveMessage) -> ScreenAction<ActiveMessage> {
         ScreenAction::None
     }
 
+    /// Renders the main active view content with stats and export controls.
     fn active_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         let text_shadow_enabled = store.settings.text_shadow_enabled;
 

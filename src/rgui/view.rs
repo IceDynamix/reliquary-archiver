@@ -1,3 +1,8 @@
+//! Main view function and UI layout.
+//!
+//! This module contains the top-level view function that renders the entire
+//! application UI based on the current state.
+
 use raxis::layout::helpers::{center, container, spacer};
 use raxis::layout::model::{
     Alignment, BorderRadius, BoxAmount, Element, ScrollBarSize, ScrollConfig, ScrollbarStyle, Sizing,
@@ -23,7 +28,14 @@ use crate::rgui::components::settings_modal::settings_modal;
 use crate::rgui::components::update::{update_modal, UpdateState};
 use crate::scopefns::Also;
 
-// Main view function
+/// Main view function that renders the entire application UI.
+///
+/// Composes the following sections:
+/// - Header with social links and settings button
+/// - Main content area (switches between waiting/active screens)
+/// - Footer with log viewer, WebSocket status, and connection status
+/// - Modal overlays (settings, update notifications)
+/// - Optional background image
 pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let text_shadow_enabled = state.store.settings.text_shadow_enabled;
 

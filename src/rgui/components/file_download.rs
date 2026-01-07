@@ -1,3 +1,8 @@
+//! File download component.
+//!
+//! Provides a download button card that displays file information and
+//! allows the user to save the export to disk.
+
 use std::path::PathBuf;
 
 use raxis::{
@@ -22,18 +27,23 @@ use crate::{
     scopefns::Also,
 };
 
+/// Messages for file download operations.
 #[derive(Debug, Clone)]
 pub enum Message {
     PickPathForFile(FileContainer),
     SaveFile(FileContainer, PathBuf),
 }
 
+/// Result of processing a file download message.
 #[derive(Debug)]
 pub enum Action {
+    /// No action needed
     None,
+    /// Run an async task
     Run(Task<Message>),
 }
 
+/// Formats a file size in bytes to a human-readable string.
 fn format_file_size(size: usize) -> String {
     let size_f = size as f64;
     if size < 1024 {
@@ -45,7 +55,7 @@ fn format_file_size(size: usize) -> String {
     }
 }
 
-// Download arrow icon SVG path
+/// Creates a download arrow icon with the specified stroke color.
 fn download_arrow_icon<M>(stroke: Color) -> Element<M> {
     SvgPath::new(
         svg![svg_path!("M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5")],
@@ -60,6 +70,15 @@ fn download_arrow_icon<M>(stroke: Color) -> Element<M> {
     .with_padding(PAD_MD)
 }
 
+/// Renders the file download card component.
+///
+/// Displays a download button and file information. Shows a warning tooltip
+/// if the export is out of date.
+///
+/// # Arguments
+/// * `file` - The file container with export data, or None if not ready
+/// * `out_of_date` - Whether the export needs to be refreshed
+/// * `hook` - The hook manager for widget state
 pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     file: Option<&FileContainer>,
     out_of_date: bool,

@@ -1,3 +1,7 @@
+//! SVG icon components.
+//!
+//! Provides reusable icon elements built from SVG paths.
+
 use raxis::layout::model::{BoxAmount, Color, Element, StrokeLineCap, StrokeLineJoin};
 use raxis::widgets::svg::Svg;
 use raxis::widgets::svg::ViewBox;
@@ -8,6 +12,7 @@ use raxis::{svg, svg_path, w_id, SvgPathCommands};
 use crate::rgui::theme::{BORDER_RADIUS, PAD_MD};
 use crate::rgui::messages::RootMessage;
 
+/// Creates a refresh/reload icon (circular arrows).
 pub fn refresh_icon<M>() -> Element<M> {
     SvgPath::new(
         svg![svg_path!(
@@ -24,6 +29,7 @@ pub fn refresh_icon<M>() -> Element<M> {
     .with_padding(PAD_MD)
 }
 
+/// Creates a close/X icon.
 pub fn x_icon<M>() -> Element<M> {
     SvgPath::new(svg![svg_path!("M18 6 6 18"), svg_path!("m6 6 12 12"),], ViewBox::new(24.0, 24.0))
         .with_size(16.0, 16.0)
@@ -35,6 +41,7 @@ pub fn x_icon<M>() -> Element<M> {
         .with_padding(PAD_MD)
 }
 
+/// Creates a settings/cog icon.
 pub fn cog_icon<M>() -> Element<M> {
     SvgPath::new(
         svg![
@@ -72,6 +79,7 @@ pub fn cog_icon<M>() -> Element<M> {
     .with_padding(PAD_MD)
 }
 
+/// Creates a GitHub social button that opens the project repository.
 pub fn github_button() -> Element<RootMessage> {
     Button::new()
         .with_bg_color(Color::from(0x181717FF))
@@ -91,6 +99,7 @@ pub fn github_button() -> Element<RootMessage> {
         .with_padding(PAD_MD)
 }
 
+/// Creates a Discord social button that opens the Discord server invite.
 pub fn discord_button() -> Element<RootMessage> {
     Button::new()
         .with_bg_color(Color::from(0x5865F2FF))

@@ -1,3 +1,9 @@
+//! Message handlers for processing GUI events.
+//!
+//! This module contains the handler functions that are called by the main
+//! update function to process different message types. Each handler is
+//! responsible for updating state and returning optional async tasks.
+
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -17,10 +23,14 @@ use reliquary_archiver::export::fribbels::OptimizerEvent;
 // Settings Path Helper
 // ============================================================================
 
+/// Returns the path to the settings file within the app data directory.
 pub fn get_settings_path(appdata: PathBuf) -> PathBuf {
     appdata.join("reliquary-archiver").join("settings.json")
 }
 
+/// Persists the current settings to disk asynchronously.
+///
+/// Settings are saved to the user's local app data folder as JSON.
 pub fn save_settings(state: &RootState) -> Option<Task<RootMessage>> {
     let settings = state.store.settings.clone();
     Some(
@@ -41,6 +51,9 @@ pub fn save_settings(state: &RootState) -> Option<Task<RootMessage>> {
 // Export Message Handler
 // ============================================================================
 
+/// Handles export-related messages.
+///
+/// Manages export statistics updates, new export creation, and refresh requests.
 pub fn handle_export_message(
     state: &mut RootState,
     message: ExportMessage,
@@ -83,6 +96,9 @@ pub fn handle_export_message(
 // WebSocket Message Handler
 // ============================================================================
 
+/// Handles WebSocket server messages.
+///
+/// Manages server status updates, port changes, and client connections.
 pub fn handle_websocket_message(
     state: &mut RootState,
     message: WebSocketMessage,
@@ -128,6 +144,9 @@ pub fn handle_websocket_message(
 // Log Message Handler
 // ============================================================================
 
+/// Handles log viewer messages.
+///
+/// Manages log level filtering and log export functionality.
 pub fn handle_log_message(
     state: &mut RootState,
     message: LogMessage,
@@ -160,6 +179,9 @@ pub fn handle_log_message(
 // Window Message Handler
 // ============================================================================
 
+/// Handles window management messages.
+///
+/// Manages window visibility, settings modal, and tray context menu actions.
 pub fn handle_window_message(
     state: &mut RootState,
     message: WindowMessage,
@@ -182,6 +204,9 @@ pub fn handle_window_message(
 // Connection Check Handler
 // ============================================================================
 
+/// Checks for stale connections and updates connection status.
+///
+/// Marks connections as inactive if no packets/commands received for 60 seconds.
 pub fn handle_connection_check(state: &mut RootState, now: Instant) -> Option<Task<RootMessage>> {
     if let Some(last_packet_time) = state.store.connection_stats.last_packet_time {
         if now.duration_since(last_packet_time) > Duration::from_secs(60) {
@@ -205,6 +230,9 @@ pub fn handle_connection_check(state: &mut RootState, now: Instant) -> Option<Ta
 // Worker Event Handler
 // ============================================================================
 
+/// Handles events from the background worker thread.
+///
+/// Processes worker readiness, sniffer metrics, and export events.
 pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) -> Task<RootMessage> {
     match event {
         worker::WorkerEvent::Ready(sender) => {
@@ -236,6 +264,9 @@ pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) ->
     Task::none()
 }
 
+/// Updates connection statistics based on sniffer metrics.
+///
+/// Tracks connection state, packet counts, and error conditions.
 pub fn handle_sniffer_metric(state: &mut RootState, metric: worker::SnifferMetric) {
     let stats = &mut state.store.connection_stats;
 
@@ -275,6 +306,9 @@ pub fn handle_sniffer_metric(state: &mut RootState, metric: worker::SnifferMetri
 // Screen Transitions
 // ============================================================================
 
+/// Manages automatic screen transitions based on connection state.
+///
+/// Switches between Waiting and Active screens when connection status changes.
 pub fn handle_screen_transitions(state: &mut RootState) {
     let is_connected = state.store.connection_stats.connection_active;
     let is_waiting = matches!(&state.screen, Screen::Waiting(_));
