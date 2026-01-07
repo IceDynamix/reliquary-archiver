@@ -8,8 +8,8 @@ use raxis::widgets::text::{ParagraphAlignment, Text, TextAlignment};
 use raxis::{column, row, w_id, HookManager};
 use tracing::info;
 
-use super::modal::modal_backdrop;
-use super::super::{
+use crate::rgui::kit::modal::modal_backdrop;
+use crate::rgui::theme::{
     BORDER_RADIUS, CARD_BACKGROUND,
     PAD_LG, PAD_MD, SPACE_LG, SPACE_MD, SPACE_SM,
     SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED, BORDER_COLOR,

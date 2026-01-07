@@ -8,7 +8,7 @@ use raxis::widgets::widget;
 use raxis::util::unique::{WidgetId, combine_id};
 use raxis::{use_animation, w_id, HookManager};
 
-use super::super::{BORDER_COLOR, BORDER_RADIUS, OPAQUE_CARD_BACKGROUND, SHADOW_XL};
+use crate::rgui::theme::{BORDER_COLOR, BORDER_RADIUS, OPAQUE_CARD_BACKGROUND, SHADOW_XL};
 
 /// Configuration for the modal backdrop
 pub struct ModalConfig {

@@ -11,7 +11,7 @@ use raxis::{
     HookManager,
 };
 
-use crate::rgui::{BORDER_RADIUS, PAD_SM};
+use crate::rgui::theme::{BORDER_RADIUS, PAD_SM};
 
 /// Tooltip theme for different visual styles
 #[derive(Debug, Clone)]

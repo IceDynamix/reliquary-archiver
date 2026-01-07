@@ -9,7 +9,7 @@ use raxis::{
     HookManager,
 };
 
-use crate::rgui::{
+use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_SM, TEXT_COLOR, TEXT_MUTED,
 };
 

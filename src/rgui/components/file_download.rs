@@ -15,9 +15,9 @@ use raxis::{
 
 use crate::{
     rgui::{
-        components::tooltip::{error_tooltip, info_tooltip, success_tooltip, warning_tooltip},
-        FileContainer, FileExtensions, BORDER_COLOR, BORDER_RADIUS, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_MD, SPACE_SM,
-        SUCCESS_COLOR, TEXT_MUTED,
+        kit::tooltip::{error_tooltip, info_tooltip, success_tooltip, warning_tooltip},
+        state::{FileContainer, FileExtensions},
+        theme::{BORDER_COLOR, BORDER_RADIUS, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_MUTED},
     },
     scopefns::Also,
 };
