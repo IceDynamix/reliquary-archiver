@@ -70,10 +70,7 @@ pub fn sub_stat_to_export(s: &str) -> &'static str {
 }
 
 /// Converts avatar base type to path for characters
-pub fn avatar_path_lookup(
-    db: &crate::export::database::Database,
-    avatar_id: u32
-) -> Option<&'static str> {
+pub fn avatar_path_lookup(db: &crate::export::database::Database, avatar_id: u32) -> Option<&'static str> {
     let hero_config = db.avatar_config.get(&avatar_id);
     let avatar_base_type = hero_config.unwrap().AvatarBaseType.as_str();
     match avatar_base_type {
@@ -90,4 +87,4 @@ pub fn avatar_path_lookup(
             None
         }
     }
-} 
+}

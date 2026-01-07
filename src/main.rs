@@ -1,78 +1,110 @@
+#![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
+#![allow(unused)]
+
 use std::collections::HashSet;
 use std::fs::File;
-use std::panic;
+use std::io;
+use std::io::Write;
+use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, LockResult, Mutex, TryLockResult};
 use std::time::Duration;
 
 #[cfg(feature = "pcap")]
 use capture::PCAP_FILTER;
-
 use chrono::Local;
 use clap::Parser;
+use futures::lock::Mutex as FuturesMutex;
+use futures::{future, select, FutureExt, StreamExt};
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::command::GameCommandError;
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
+use tokio::pin;
+use tracing::instrument::WithSubscriber;
+use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, instrument, warn};
-use tracing_subscriber::{prelude::*, EnvFilter, Layer, Registry};
-
-#[cfg(windows)]
-use {self_update::cargo_crate_version, std::env, std::process::Command};
+use tracing_subscriber::filter::Filtered;
+use tracing_subscriber::fmt::{MakeWriter, SubscriberBuilder};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{reload, EnvFilter, Layer, Registry};
 
 #[cfg(feature = "stream")]
 mod websocket;
+
+#[cfg(feature = "gui")]
+mod rgui;
+
+#[cfg(windows)]
+mod update;
 
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 
 mod capture;
+mod scopefns;
+mod worker;
 
 #[derive(Parser, Debug, Clone)]
 struct Args {
     #[arg()]
     /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
     output: Option<PathBuf>,
+
     /// Read packets from .pcap file instead of capturing live packets
     #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,
+
     /// Read packets from .etl file instead of capturing live packets
     #[cfg(feature = "pktmon")]
     #[arg(long)]
     etl: Option<PathBuf>,
+
     /// How long to wait in seconds until timeout is triggered for live captures
     #[arg(long, default_value_t = 120)]
     timeout: u64,
+
     /// Host a websocket server to stream relic/lc updates in real-time.
     /// This also disables the timeout
     #[cfg(feature = "stream")]
     #[arg(short, long)]
     stream: bool,
+
     /// Port to listen on for the websocket server, defaults to 23313
     #[cfg(feature = "stream")]
     #[arg(short = 'p', long, default_value_t = 23313)]
     websocket_port: u16,
+
     /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+
     /// Path to output log to
     #[arg(short, long)]
     log_path: Option<PathBuf>,
+
     /// Don't check for updates, only applicable on Windows
     #[arg(long)]
     no_update: bool,
+
     /// Update without asking for confirmation, only applicable on Windows
     #[arg(long)]
     always_update: bool,
+
     /// Github Auth token to use when checking for updates, only applicable on Windows
     #[arg(long)]
     auth_token: Option<String>,
+
     /// Don't wait for enter to be pressed after capturing
     #[arg(short, long)]
     exit_after_capture: bool,
+    /// Run in headless mode (no GUI), only applicable when GUI feature is enabled
+    #[cfg(feature = "gui")]
+    #[arg(long, short = 'H', visible_alias = "cli", visible_alias = "nogui")]
+    headless: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -100,9 +132,40 @@ impl CaptureMode {
     }
 }
 
-fn main() {
+#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
+compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
+
+#[cfg(all(not(windows), feature = "gui"))]
+compile_error!("GUI is only available on windows");
+
+#[cfg(all(not(windows), feature = "pktmon"))]
+compile_error!("The \"pktmon\" capture backend is only available on windows");
+
+#[tokio::main]
+async fn main() {
     color_eyre::install().unwrap();
+
+    let old_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |panic_info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        old_hook(panic_info);
+        error!("Backtrace: {:#?}", backtrace);
+    }));
+
+    // Attach to parent console on Windows GUI builds
+    // This is needed for --help output and headless mode to be visible
+    // AttachConsole fails if no parent console exists (e.g. double-clicked from Explorer)
+    #[cfg(all(windows, feature = "gui"))]
+    let has_console =
+        unsafe { windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS).is_ok() };
+
     let args = Args::parse();
+
+    // Allocate a console for headless mode if AttachConsole didn't work
+    #[cfg(all(windows, feature = "gui"))]
+    if args.headless && !has_console {
+        unsafe { windows::Win32::System::Console::AllocConsole().ok() };
+    }
 
     // Copy the exit_after_capture flag to a local variable before args is moved into the closure
     let exit_after_capture = args.exit_after_capture;
@@ -111,55 +174,123 @@ fn main() {
 
     debug!(?args);
 
-    if let Err(_) = panic::catch_unwind(move || {
-        // Only self update on Windows, since that's the only platform we ship releases for
-        #[cfg(windows)]
-        {
-            if !args.no_update && !env::var("NO_SELF_UPDATE").map_or(false, |v| v == "1") {
-                if let Err(e) = update(args.auth_token.as_deref(), args.always_update) {
-                    error!("Failed to update: {}", e);
-                }
+    // AssertUnwindSafe is justified as all we do is write a crash log before ending the program and therefore there is no risk posed by potential broken invariants
+    if let Err(payload) = AssertUnwindSafe(capture(args)).catch_unwind().await {
+        error!("the application panicked, this is a bug, please report it on GitHub or Discord");
+
+        // Write crashlog
+        if let Ok(mut file) = File::create("crashlog.txt") {
+            if let TryLockResult::Ok(buffer) = LOG_BUFFER.try_lock() {
+                let lines = buffer.join("\n");
+                file.write_all(lines.as_bytes()).unwrap();
+            } else {
+                file.write_all("failed to lock log buffer".as_bytes()).unwrap();
+            }
+            file.write_all("\n\n".as_bytes()).unwrap();
+            if let Some(s) = payload.downcast_ref::<&str>() {
+                file.write_all(s.as_bytes()).unwrap();
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                file.write_all(s.as_bytes()).unwrap();
+            } else {
+                file.write_all("panic: unknown payload type".as_bytes()).unwrap();
+            }
+            info!("wrote crashlog to crashlog.txt");
+        }
+
+        info!("press enter to close");
+        std::io::stdin().read_line(&mut String::new()).unwrap();
+    }
+}
+
+async fn capture(args: Args) {
+    // Only self update on Windows, since that's the only platform we ship releases for
+    // In GUI mode, the update check is handled by the GUI after it launches
+    #[cfg(windows)]
+    {
+        #[cfg(feature = "gui")]
+        let gui_mode = !args.headless;
+        #[cfg(not(feature = "gui"))]
+        let gui_mode = false;
+
+        if !gui_mode && !args.no_update && !std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1") {
+            if let Err(e) = update::update_interactive(args.auth_token.as_deref(), args.always_update) {
+                error!("Failed to update: {}", e);
+            }
+        }
+    }
+
+    #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+    if !unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
+        fn confirm(msg: &str) -> bool {
+            use std::io::Write;
+
+            print!("{}", msg);
+            if std::io::stdout().flush().is_err() {
+                return false;
+            }
+
+            let mut input = String::new();
+            if std::io::stdin().read_line(&mut input).is_err() {
+                return false;
+            }
+
+            input = input.trim().to_lowercase();
+            input.starts_with("y") || input.is_empty()
+        }
+
+        println!();
+        println!("===========================================================================================================");
+        println!("                       Administrative privileges are required to capture packets");
+        println!("===========================================================================================================");
+        println!();
+        println!("Reliquary Archiver now uses PacketMonitor (pktmon) to capture the game traffic instead of npcap on Windows");
+        println!("Due to the way pktmon works, it requires running the application as an administrator");
+        println!();
+        println!("If you don't feel comfortable running the application as an administrator, you can download the pcap");
+        println!("version of Reliquary Archiver from the GitHub releases page.");
+        println!();
+        if confirm("Would you like to restart the application with elevated privileges? (Y/n): ") {
+            if let Err(e) = escalate_to_admin() {
+                error!("Failed to escalate privileges: {}", e);
             }
         }
 
+        return;
+    }
+
+    #[cfg(feature = "gui")]
+    if !args.headless {
+        rgui::run().unwrap();
+
+        // Check if we need to spawn the updated version after GUI exits
+        if update::should_spawn_after_exit() {
+            if let Err(e) = update::spawn_updated_version() {
+                error!("Failed to spawn updated version: {}", e);
+            }
+        }
+        return;
+    }
+
+    // Headless/CLI mode
+    {
         let database = Database::new();
         let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
-        let exporter = OptimizerExporter::new(database);
+        let exporter = OptimizerExporter::new();
 
         let capture_mode = CaptureMode::from_args(&args);
         let export = match capture_mode {
-            CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer),
+            CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer).await,
             #[cfg(feature = "pcap")]
-            CaptureMode::Pcap(path) => capture_from_pcap(&args, exporter, sniffer, path),
+            CaptureMode::Pcap(path) => capture_from_pcap(exporter, sniffer, path),
             #[cfg(feature = "pktmon")]
-            CaptureMode::Etl(path) => capture_from_etl(&args, exporter, sniffer, path),
+            CaptureMode::Etl(path) => capture_from_etl(exporter, sniffer, path),
         };
 
         if let Some(export) = export {
-            let file_name = Local::now()
-                .format("archive_output-%Y-%m-%dT%H-%M-%S.json")
-                .to_string();
-
+            let file_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
             let mut output_file = match args.output {
                 Some(out) => out,
-                _ => {
-                    // Check if current directory is system32 and use executable directory if so
-                    let current_dir = std::env::current_dir().unwrap_or_default();
-                    let is_system32 =
-                        current_dir.ends_with("system32") || current_dir.ends_with("System32");
-
-                    if is_system32 {
-                        // Use executable directory instead of system32
-                        let exe_dir = std::env::current_exe()
-                            .unwrap_or_default()
-                            .parent()
-                            .unwrap_or(&current_dir)
-                            .to_path_buf();
-                        exe_dir.join(file_name.clone())
-                    } else {
-                        PathBuf::from(file_name.clone())
-                    }
-                }
+                _ => PathBuf::from(file_name.clone()),
             };
 
             macro_rules! pick_file {
@@ -178,9 +309,7 @@ fn main() {
                     }
                 };
             }
-
             info!("exporting collected data");
-
             loop {
                 match File::create(&output_file) {
                     Ok(file) => {
@@ -188,10 +317,7 @@ fn main() {
                             error!("Failed to write to {}: {}", output_file.display(), e);
                             pick_file!();
                         }
-                        info!(
-                            "wrote output to {}",
-                            output_file.canonicalize().unwrap().display()
-                        );
+                        info!("wrote output to {}", output_file.canonicalize().unwrap().display());
                         break;
                     }
                     Err(e) => {
@@ -203,87 +329,113 @@ fn main() {
         } else {
             warn!("skipped writing output");
         }
-
         if let Some(log_path) = args.log_path {
             info!("wrote logs to {}", log_path.display());
         }
-    }) {
-        error!("the application panicked, this is a bug, please report it on GitHub or Discord");
-    }
-
-    if !exit_after_capture {
-        info!("press enter to close");
-        std::io::stdin().read_line(&mut String::new()).unwrap();
     }
 }
 
-#[cfg(windows)]
-fn update(auth_token: Option<&str>, no_confirm: bool) -> Result<(), Box<dyn std::error::Error>> {
-    info!("checking for updates");
+struct VecWriter;
 
-    let mut update_builder = self_update::backends::github::Update::configure();
+impl VecWriter {
+    pub fn new() -> Self {
+        Self
+    }
+}
 
-    update_builder
-        .repo_owner("IceDynamix")
-        .repo_name("reliquary-archiver")
-        .bin_name("reliquary-archiver")
-        .target("x64")
-        .show_download_progress(true)
-        .show_output(false)
-        .no_confirm(no_confirm)
-        .current_version(cargo_crate_version!());
+pub static LOG_BUFFER: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+pub static LOG_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
 
-    if let Some(token) = auth_token {
-        update_builder.auth_token(token);
+type VecLayerHandle = Box<dyn Fn(LevelFilter) + Send>;
+pub static VEC_LAYER_HANDLE: LazyLock<Mutex<Option<VecLayerHandle>>> = LazyLock::new(|| Mutex::new(None));
+
+impl std::io::Write for VecWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let str = String::from_utf8_lossy(buf);
+        let lines = str.lines().map(|s| s.to_string());
+        LOG_BUFFER.lock().unwrap().extend(lines);
+        LOG_NOTIFY.notify_one();
+        Ok(buf.len())
     }
 
-    if cfg!(feature = "pcap") {
-        update_builder.identifier("pcap");
-    } else if cfg!(feature = "pktmon") {
-        update_builder.identifier("pktmon");
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct DualWriter<A: io::Write, B: io::Write> {
+    m: Arc<Mutex<(A, B)>>,
+}
+
+impl<A: io::Write, B: io::Write> DualWriter<A, B> {
+    fn new(a: A, b: B) -> Self {
+        Self {
+            m: Arc::new(Mutex::new((a, b))),
+        }
+    }
+}
+
+impl<A: io::Write, B: io::Write> io::Write for DualWriter<A, B> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut m = self.m.lock().unwrap();
+        m.0.write(buf)?;
+        m.1.write(buf)
     }
 
-    let status = update_builder.build()?.update()?;
-
-    if status.updated() {
-        info!("updated to {}", status.version());
-
-        let current_exe = env::current_exe();
-        let mut command = Command::new(current_exe?);
-        command.args(env::args().skip(1)).env("NO_SELF_UPDATE", "1");
-
-        command.spawn().and_then(|mut c| c.wait())?;
-
-        // Stop running the old version
-        std::process::exit(0);
-    } else {
-        info!("already up-to-date");
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut m = self.m.lock().unwrap();
+        m.0.flush()?;
+        m.1.flush()
     }
+}
 
-    Ok(())
+impl<'a, A: io::Write, B: io::Write> MakeWriter<'a> for DualWriter<A, B> {
+    type Writer = DualWriter<A, B>;
+
+    fn make_writer(&'a self) -> Self::Writer {
+        DualWriter { m: self.m.clone() }
+    }
 }
 
 fn tracing_init(args: &Args) {
     tracing_log::LogTracer::init().unwrap();
 
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(
-            match args.verbose {
-                0 => "reliquary_archiver=info",
-                1 => "info",
-                2 => "debug",
-                _ => "trace",
-            }
-            .parse()
-            .unwrap(),
-        )
-        .from_env_lossy();
+    fn env_filter(args: &Args) -> EnvFilter {
+        EnvFilter::builder()
+            .with_default_directive(
+                match args.verbose {
+                    0 => "reliquary_archiver=info",
+                    1 => "info",
+                    2 => "debug",
+                    _ => "trace",
+                }
+                .parse()
+                .unwrap(),
+            )
+            .from_env_lossy()
+    }
 
-    let stdout_log = tracing_subscriber::fmt::layer()
+    let subscriber = tracing_subscriber::fmt::fmt()
         .with_ansi(false)
-        .with_filter(env_filter);
+        .with_env_filter(env_filter(args))
+        .with_writer(DualWriter::new(VecWriter::new(), io::stdout()))
+        .with_filter_reloading();
 
-    let subscriber = Registry::default().with(stdout_log);
+    let handle = subscriber.reload_handle();
+    *VEC_LAYER_HANDLE.lock().unwrap() = Some(Box::new(move |l| {
+        handle.modify(|f| {
+            *f = EnvFilter::builder()
+                .parse(match l {
+                    LevelFilter::TRACE => "trace",
+                    LevelFilter::DEBUG => "debug",
+                    LevelFilter::INFO => "info",
+                    LevelFilter::WARN => "warn",
+                    LevelFilter::ERROR => "error",
+                    _ => "off",
+                })
+                .unwrap();
+        });
+    }));
 
     let file_log = if let Some(log_path) = &args.log_path {
         let log_file = File::create(log_path).unwrap();
@@ -295,6 +447,8 @@ fn tracing_init(args: &Args) {
     } else {
         None
     };
+
+    let subscriber = subscriber.finish();
 
     let subscriber = subscriber.with(file_log);
 
@@ -308,39 +462,32 @@ enum ProcessResult {
 }
 
 // Simplified packet processing for file captures
-fn file_process_packet<E>(
-    exporter: &mut E,
-    sniffer: &mut GameSniffer,
-    payload: Vec<u8>,
-) -> ProcessResult
+fn file_process_packet<E>(exporter: &mut E, sniffer: &mut GameSniffer, payload: Vec<u8>) -> ProcessResult
 where
     E: Exporter,
 {
     if let Ok(packets) = sniffer.receive_packet(payload) {
         for packet in packets {
-            match packet {
-                GamePacket::Commands(command) => match command {
-                    Ok(command) => {
-                        exporter.read_command(command);
+            if let GamePacket::Commands(command) = packet { match command {
+                Ok(command) => {
+                    exporter.read_command(command);
 
-                        if exporter.is_initialized() {
-                            info!("finished capturing");
-                            return ProcessResult::Stop;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(%e);
-                        if matches!(e, GameCommandError::VersionMismatch { .. }) {
-                            // Client packet was misordered from server packet
-                            // This will be reprocessed after we receive the new session key
-                            return ProcessResult::Continue;
-                        }
-
+                    if exporter.is_initialized() {
+                        info!("finished capturing");
                         return ProcessResult::Stop;
                     }
-                },
-                _ => {}
-            }
+                }
+                Err(e) => {
+                    warn!(%e);
+                    if matches!(e, GameCommandError::VersionMismatch) {
+                        // Client packet was misordered from server packet
+                        // This will be reprocessed after we receive the new session key
+                        return ProcessResult::Continue;
+                    }
+
+                    return ProcessResult::Stop;
+                }
+            } }
         }
     }
 
@@ -349,12 +496,7 @@ where
 
 #[instrument(skip_all)]
 #[cfg(feature = "pcap")]
-fn capture_from_pcap<E>(
-    _args: &Args,
-    mut exporter: E,
-    mut sniffer: GameSniffer,
-    pcap_path: PathBuf,
-) -> Option<E::Export>
+pub fn capture_from_pcap<E>(mut exporter: E, mut sniffer: GameSniffer, pcap_path: PathBuf) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -374,12 +516,7 @@ where
 
 #[instrument(skip_all)]
 #[cfg(feature = "pktmon")]
-fn capture_from_etl<E>(
-    _args: &Args,
-    mut exporter: E,
-    mut sniffer: GameSniffer,
-    etl_path: PathBuf,
-) -> Option<E::Export>
+fn capture_from_etl<E>(mut exporter: E, mut sniffer: GameSniffer, etl_path: PathBuf) -> Option<E::Export>
 where
     E: Exporter,
 {
@@ -389,12 +526,10 @@ where
 
     while let Ok(packet) = capture.next_packet() {
         match packet.payload {
-            pktmon::PacketPayload::Ethernet(payload) => {
-                match file_process_packet(&mut exporter, &mut sniffer, payload) {
-                    ProcessResult::Continue => {}
-                    ProcessResult::Stop => break,
-                }
-            }
+            pktmon::PacketPayload::Ethernet(payload) => match file_process_packet(&mut exporter, &mut sniffer, payload) {
+                ProcessResult::Continue => {}
+                ProcessResult::Stop => break,
+            },
             _ => {}
         }
     }
@@ -403,128 +538,91 @@ where
     exporter.export()
 }
 
-fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
+async fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
 {
-    let exporter = Arc::new(Mutex::new(exporter));
-
     #[cfg(feature = "stream")]
-    {
-        if args.stream {
-            let rt = tokio::runtime::Runtime::new().unwrap();
-            let _guard = rt.enter();
+    use crate::websocket::{start_websocket_server, PortSource};
 
-            let port = args.websocket_port;
-            let ws_server = rt.block_on(websocket::start_websocket_server(port, exporter.clone()));
-
-            info!("WebSocket server running on ws://localhost:{}/ws", port);
-            info!("You can connect to this WebSocket server to receive real-time relic updates");
-
-            let result = live_capture(args, exporter, sniffer);
-
-            ws_server.abort();
-
-            result
-        } else {
-            live_capture(args, exporter, sniffer)
-        }
-    }
-
-    #[cfg(not(feature = "stream"))]
-    {
-        live_capture(args, exporter, sniffer)
-    }
-}
-
-#[instrument(skip_all)]
-fn live_capture<E>(
-    args: &Args,
-    exporter: Arc<Mutex<E>>,
-    mut sniffer: GameSniffer,
-) -> Option<E::Export>
-where
-    E: Exporter,
-{
-    let abort_signal = Arc::new(AtomicBool::new(false));
-
-    #[cfg(windows)]
-    let rx = {
-        #[cfg(feature = "pcap")]
-        {
-            capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone())
-        }
-
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-        {
-            if unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
-                capture::listen_on_all(capture::pktmon::PktmonBackend, abort_signal.clone())
-            } else {
-                fn confirm(msg: &str) -> bool {
-                    use std::io::Write;
-
-                    print!("{}", msg);
-                    if std::io::stdout().flush().is_err() {
-                        return false;
-                    }
-
-                    let mut input = String::new();
-                    if std::io::stdin().read_line(&mut input).is_err() {
-                        return false;
-                    }
-
-                    input = input.trim().to_lowercase();
-                    input.starts_with("y") || input.is_empty()
-                }
-
-                println!();
-                println!("===========================================================================================================");
-                println!("                       Administrative privileges are required to capture packets");
-                println!("===========================================================================================================");
-                println!();
-                println!("Reliquary Archiver now uses PacketMonitor (pktmon) to capture the game traffic instead of npcap on Windows");
-                println!("Due to the way pktmon works, it requires running the application as an administrator");
-                println!();
-                println!("If you don't feel comfortable running the application as an administrator, you can download the pcap");
-                println!("version of Reliquary Archiver from the GitHub releases page.");
-                println!();
-                if confirm(
-                    "Would you like to restart the application with elevated privileges? (Y/n): ",
-                ) {
-                    if let Err(e) = escalate_to_admin() {
-                        error!("Failed to escalate privileges: {}", e);
-                    }
-                }
-
-                return None;
-            }
-        }
-    };
-
-    #[cfg(not(windows))]
-    let rx = capture::listen_on_all(capture::pcap::PcapBackend, abort_signal.clone());
-
-    let (rx, join_handles) = rx.expect("Failed to start packet capture");
-
-    #[cfg(feature = "stream")]
-    let streaming = args.stream;
+    let exporter = Arc::new(FuturesMutex::new(exporter));
 
     #[cfg(not(feature = "stream"))]
     let streaming = false;
 
-    info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
-    if !streaming {
-        info!("listening with a timeout of {} seconds...", args.timeout);
+    #[cfg(feature = "stream")]
+    let streaming = args.stream;
+
+    if streaming {
+        let port = args.websocket_port;
+
+        let ws_server = start_websocket_server(PortSource::Fixed(port), exporter.clone()).await;
+
+        info!("WebSocket server running on ws://localhost:{}/ws", port);
+        info!("You can connect to this WebSocket server to receive real-time relic updates");
+
+        let result = live_capture(args, exporter, sniffer, streaming);
+
+        result.await
+    } else {
+        live_capture(args, exporter, sniffer, streaming).await
     }
+}
+
+async fn maybe_timeout(timeout: Option<Duration>) -> () {
+    if let Some(timeout) = timeout {
+        tokio::time::sleep(timeout).await;
+    } else {
+        future::pending::<()>().await;
+    }
+}
+
+#[instrument(skip_all)]
+async fn live_capture<E>(args: &Args, exporter: Arc<FuturesMutex<E>>, mut sniffer: GameSniffer, streaming: bool) -> Option<E::Export>
+where
+    E: Exporter,
+{
+    let rx = {
+        #[cfg(feature = "pcap")]
+        {
+            capture::listen_on_all(capture::pcap::PcapBackend)
+        }
+
+        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+        {
+            capture::listen_on_all(capture::pktmon::PktmonBackend)
+        }
+    };
+
+    let packet_stream = rx.expect("Failed to start packet capture");
+
+    let mut packet_stream = packet_stream.fuse();
+
+    info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
+
+    pin!(
+        let timeout_future = maybe_timeout(
+            if !streaming {
+                info!("listening with a timeout of {} seconds...", args.timeout);
+                Some(Duration::from_secs(args.timeout))
+            } else {
+                None
+            }
+        ).fuse();
+    );
 
     let mut poisoned_sources = HashSet::new();
 
     'recv: loop {
-        let received = if streaming {
-            // If streaming, we don't want to timeout during inactivity
-            rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
-        } else {
-            rx.recv_timeout(Duration::from_secs(args.timeout))
+        let received = select! {
+            packet = packet_stream.next() => match packet {
+                Some(packet) => packet,
+                None => break 'recv,
+            },
+
+            _ = timeout_future => {
+                break 'recv;
+            }
         };
 
         match received {
@@ -557,18 +655,16 @@ where
                                             info!("detected login start");
                                         }
 
-                                        if !streaming
-                                            && command.command_id == PlayerLoginFinishScRsp
-                                        {
+                                        if !streaming && command.command_id == PlayerLoginFinishScRsp {
                                             info!("detected login end, assume initialization is finished");
                                             break 'recv;
                                         }
 
-                                        exporter.lock().unwrap().read_command(command);
+                                        exporter.lock().await.read_command(command);
                                     }
                                     Err(e) => {
                                         warn!(%e);
-                                        if matches!(e, GameCommandError::VersionMismatch { .. }) {
+                                        if matches!(e, GameCommandError::VersionMismatch) {
                                             // Client packet was misordered from server packet
                                             // This will be reprocessed after we receive the new session key
                                         } else {
@@ -579,7 +675,7 @@ where
                             }
                         }
 
-                        if !streaming && exporter.lock().unwrap().is_initialized() {
+                        if !streaming && exporter.lock().await.is_initialized() {
                             info!("retrieved all relevant packets, stop listening");
                             break 'recv;
                         }
@@ -606,39 +702,21 @@ where
         }
     }
 
-    abort_signal.store(true, Ordering::Relaxed);
-
-    #[cfg(target_os = "linux")]
-    {
-        // Detach join handles on linux since pcap timeout will not fire if no packets are received on some interface
-        drop(join_handles);
-    }
-
-    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
-    #[cfg(not(target_os = "linux"))]
-    {
-        for handle in join_handles {
-            handle.join().expect("Failed to join capture thread");
-        }
-    }
-
-    exporter.lock().unwrap().export()
+    exporter.lock().await.export()
 }
 
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
 fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::windows::ffi::OsStrExt;
-    use windows::core::w;
-    use windows::core::PCWSTR;
+
+    use windows::core::{w, PCWSTR};
     use windows::Win32::System::Console::GetConsoleWindow;
-    use windows::Win32::UI::Shell::{
-        ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW,
-    };
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW};
     use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER, SW_SHOWNORMAL};
 
-    let args_str = env::args().skip(1).collect::<Vec<_>>().join(" ");
+    let args_str = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
 
-    let exe_path = env::current_exe()
+    let exe_path = std::env::current_exe()
         .expect("Failed to get current exe")
         .as_os_str()
         .encode_wide()

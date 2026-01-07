@@ -1,9 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::export::database::Database;
-use crate::export::fribbels::models::*;
-use crate::export::Exporter;
-
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
 use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
@@ -14,36 +10,45 @@ use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
 use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
 use reliquary::network::command::{command_id, GameCommand};
-use tracing::{debug, info, instrument, trace, warn};
-
 #[cfg(feature = "stream")]
 use tokio::sync::broadcast;
+use tracing::{debug, info, instrument, trace, warn};
+
+use crate::export::database::{get_database, Database};
+use crate::export::fribbels::models::*;
+use crate::export::Exporter;
 
 pub struct OptimizerExporter {
-    pub(super) database: Database,
+    pub(super) database: &'static Database,
 
     // State fields
-    pub(super) initialized: bool,
-    pub(super) uid: Option<u32>,
-    pub(super) trailblazer: Option<&'static str>,
-    pub(super) banners: HashMap<u32, BannerInfo>,
-    pub(super) gacha: GachaFunds,
-    pub(super) materials: BTreeMap<u32, Material>,
-    pub(super) light_cones: BTreeMap<u32, LightCone>,
-    pub(super) relics: BTreeMap<u32, Relic>,
-    pub(super) characters: BTreeMap<u32, Character>,
-    pub(super) multipath_characters: BTreeMap<u32, Character>,
-    pub(super) multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    pub initialized: bool,
+    pub uid: Option<u32>,
+    pub trailblazer: Option<&'static str>,
+    pub banners: HashMap<u32, BannerInfo>,
+    pub gacha: GachaFunds,
+    pub materials: BTreeMap<u32, Material>,
+    pub light_cones: BTreeMap<u32, LightCone>,
+    pub relics: BTreeMap<u32, Relic>,
+    pub characters: BTreeMap<u32, Character>,
+    pub multipath_characters: BTreeMap<u32, Character>,
+    pub multipath_base_avatars: HashMap<u32, ProtoCharacter>,
     pub(super) unresolved_multipath_characters: HashSet<u32>,
 
     #[cfg(feature = "stream")]
     pub(super) event_channel: broadcast::Sender<OptimizerEvent>,
 }
 
+impl Default for OptimizerExporter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OptimizerExporter {
-    pub fn new(database: Database) -> OptimizerExporter {
+    pub fn new() -> OptimizerExporter {
         OptimizerExporter {
-            database,
+            database: get_database(),
 
             // Initialize state fields
             initialized: false,
@@ -219,11 +224,7 @@ impl Exporter for OptimizerExporter {
                 }
             }
             _ => {
-                trace!(
-                    command_id = command.command_id,
-                    tag = command.get_command_name(),
-                    "ignored"
-                );
+                trace!(command_id = command.command_id, tag = command.get_command_name(), "ignored");
             }
         }
 
@@ -290,7 +291,7 @@ impl Exporter for OptimizerExporter {
                 uid: self.uid,
                 trailblazer: self.trailblazer,
             },
-            gacha: self.gacha.clone(),
+            gacha: self.gacha,
             materials: self.materials.values().cloned().collect(),
             light_cones: self.light_cones.values().cloned().collect(),
             relics: self.relics.values().cloned().collect(),
@@ -310,8 +311,7 @@ impl Exporter for OptimizerExporter {
         (
             if self.is_initialized() {
                 Some(OptimizerEvent::InitialScan(
-                    self.export()
-                        .expect("marked as initialized but data was not recorded"),
+                    self.export().expect("marked as initialized but data was not recorded"),
                 ))
             } else {
                 None

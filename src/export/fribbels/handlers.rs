@@ -1,6 +1,3 @@
-use crate::export::fribbels::converters::*;
-use crate::export::fribbels::models::*;
-
 use protobuf::Enum;
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
@@ -16,6 +13,8 @@ use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhan
 use tracing::{debug, info, warn};
 
 use super::OptimizerExporter;
+use crate::export::fribbels::converters::*;
+use crate::export::fribbels::models::*;
 
 impl OptimizerExporter {
     pub fn handle_token(&mut self, token: PlayerGetTokenScRsp) {
@@ -31,7 +30,7 @@ impl OptimizerExporter {
         let relics: Vec<Relic> = bag
             .relic_list
             .iter()
-            .filter_map(|r| export_proto_relic(&self.database, r))
+            .filter_map(|r| export_proto_relic(self.database, r))
             .collect();
 
         info!(num = relics.len(), "found relics");
@@ -42,7 +41,7 @@ impl OptimizerExporter {
         let light_cones: Vec<LightCone> = bag
             .equipment_list
             .iter()
-            .filter_map(|equip| export_proto_light_cone(&self.database, equip))
+            .filter_map(|equip| export_proto_light_cone(self.database, equip))
             .collect();
 
         info!(num = light_cones.len(), "found light cones");
@@ -53,7 +52,7 @@ impl OptimizerExporter {
         let materials: Vec<Material> = bag
             .material_list
             .iter()
-            .filter_map(|m| export_proto_material(&self.database, m))
+            .filter_map(|m| export_proto_material(self.database, m))
             .collect();
 
         info!(num = materials.len(), "found materials");
@@ -63,11 +62,8 @@ impl OptimizerExporter {
     }
 
     pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) -> Option<Character> {
-        let Some(character) = export_proto_character(&self.database, proto_character) else {
-            warn!(
-                uid = &proto_character.base_avatar_id,
-                "character config not found, skipping"
-            );
+        let Some(character) = export_proto_character(self.database, proto_character) else {
+            warn!(uid = &proto_character.base_avatar_id, "character config not found, skipping");
             return None;
         };
 
@@ -80,7 +76,7 @@ impl OptimizerExporter {
                 self.resolve_multipath_character(*unresolved_avatar_id);
             }
 
-            return None;
+            None
         } else {
             // Only emit character data here if it's not a multipath character.
             // For multipath characters, we need to wait for the multipath packet
@@ -88,17 +84,12 @@ impl OptimizerExporter {
 
             self.characters.insert(character.id, character.clone());
 
-            return Some(character);
+            Some(character)
         }
     }
 
-    pub fn ingest_multipath_character(
-        &mut self,
-        proto_multipath_character: &MultiPathAvatarInfo,
-    ) -> Option<Character> {
-        let Some(character) =
-            export_proto_multipath_character(&self.database, proto_multipath_character)
-        else {
+    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarInfo) -> Option<Character> {
+        let Some(character) = export_proto_multipath_character(self.database, proto_multipath_character) else {
             warn!(
                 uid = &proto_multipath_character.avatar_id.value(),
                 "multipath character config not found, skipping"
@@ -106,25 +97,20 @@ impl OptimizerExporter {
             return None;
         };
 
-        self.multipath_characters
-            .insert(character.id, character.clone());
+        self.multipath_characters.insert(character.id, character.clone());
 
         // If it's the trailblazer, determine the gender
         if character.name == "Trailblazer" {
-            self.trailblazer = Some(if character.id % 2 == 0 {
-                "Stelle"
-            } else {
-                "Caelus"
-            });
+            self.trailblazer = Some(if character.id % 2 == 0 { "Stelle" } else { "Caelus" });
         }
 
         if let Some(character) = self.resolve_multipath_character(character.id) {
-            return Some(character);
+            Some(character)
         } else {
             debug!(uid = &character.id, "multipath character not resolved");
             self.unresolved_multipath_characters.insert(character.id);
 
-            return None;
+            None
         }
     }
 
@@ -134,10 +120,7 @@ impl OptimizerExporter {
             self.ingest_character(&character);
         }
 
-        info!(
-            num = characters.multi_path_avatar_info_list.len(),
-            "found multipath characters"
-        );
+        info!(num = characters.multi_path_avatar_info_list.len(), "found multipath characters");
         for multipath_avatar_info in characters.multi_path_avatar_info_list {
             self.ingest_multipath_character(&multipath_avatar_info);
         }
@@ -167,7 +150,7 @@ impl OptimizerExporter {
             return Some(character.clone());
         }
 
-        return None;
+        None
     }
 
     pub fn handle_player_sync(&mut self, sync: PlayerSyncScNotify) -> Vec<OptimizerEvent> {
@@ -176,7 +159,7 @@ impl OptimizerExporter {
         let relics: Vec<Relic> = sync
             .relic_list
             .iter()
-            .filter_map(|r| export_proto_relic(&self.database, r))
+            .filter_map(|r| export_proto_relic(self.database, r))
             .collect();
 
         if !relics.is_empty() {
@@ -191,7 +174,7 @@ impl OptimizerExporter {
         let light_cones: Vec<LightCone> = sync
             .equipment_list
             .iter()
-            .filter_map(|equip| export_proto_light_cone(&self.database, equip))
+            .filter_map(|equip| export_proto_light_cone(self.database, equip))
             .collect();
 
         if !light_cones.is_empty() {
@@ -206,7 +189,7 @@ impl OptimizerExporter {
         let materials: Vec<Material> = sync
             .material_list
             .iter()
-            .filter_map(|m| export_proto_material(&self.database, m))
+            .filter_map(|m| export_proto_material(self.database, m))
             .collect();
 
         if !materials.is_empty() {
@@ -222,7 +205,7 @@ impl OptimizerExporter {
             self.gacha.oneric_shards = basic_info.oneric_shard_count;
             self.gacha.stellar_jade = basic_info.stellar_jade_count;
 
-            events.push(OptimizerEvent::UpdateGachaFunds(self.gacha.clone()));
+            events.push(OptimizerEvent::UpdateGachaFunds(self.gacha));
         }
 
         if !sync.del_relic_list.is_empty() {
@@ -237,10 +220,7 @@ impl OptimizerExporter {
         }
 
         if !sync.del_equipment_list.is_empty() {
-            info!(
-                num = sync.del_equipment_list.len(),
-                "found deleted light cones"
-            );
+            info!(num = sync.del_equipment_list.len(), "found deleted light cones");
             for del_light_cone in sync.del_equipment_list.iter() {
                 if self.light_cones.remove(del_light_cone).is_none() {
                     warn!(uid = &del_light_cone, "del_light_cone not found");
@@ -265,10 +245,7 @@ impl OptimizerExporter {
                 if let Some(character) = self.ingest_multipath_character(&multipath_avatar_info) {
                     updated_characters.push(character);
                 } else {
-                    warn!(
-                        uid = &multipath_avatar_info.avatar_id.value(),
-                        "multipath character not resolved"
-                    );
+                    warn!(uid = &multipath_avatar_info.avatar_id.value(), "multipath character not resolved");
                 }
             }
         }
@@ -281,14 +258,8 @@ impl OptimizerExporter {
         events
     }
 
-    pub fn handle_set_avatar_enhanced(
-        &mut self,
-        set_avatar_enhanced: SetAvatarEnhancedIdScRsp,
-    ) -> OptimizerEvent {
-        let Some(character) = self
-            .characters
-            .get_mut(&set_avatar_enhanced.growth_avatar_id)
-        else {
+    pub fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> OptimizerEvent {
+        let Some(character) = self.characters.get_mut(&set_avatar_enhanced.growth_avatar_id) else {
             warn!(
                 uid = &set_avatar_enhanced.growth_avatar_id,
                 "character not found when setting enhanced id, skipping"
@@ -307,22 +278,19 @@ impl OptimizerExporter {
 
     pub fn handle_gacha_info(&mut self, gacha_info: GetGachaInfoScRsp) {
         for banner in gacha_info.gacha_info_list {
-            self.banners.insert(
-                banner.gacha_id,
-                BannerInfo {
-                    rate_up_item_list: banner.item_detail_list,
-                    banner_type: match banner.gacha_id {
-                        1001 => BannerType::Standard,
-                        _ => {
-                            if self.is_lightcone(*banner.prize_item_list.first().unwrap()) {
-                                BannerType::LightCone
-                            } else {
-                                BannerType::Character
-                            }
+            self.banners.insert(banner.gacha_id, BannerInfo {
+                rate_up_item_list: banner.item_detail_list,
+                banner_type: match banner.gacha_id {
+                    1001 => BannerType::Standard,
+                    _ => {
+                        if self.is_lightcone(*banner.prize_item_list.first().unwrap()) {
+                            BannerType::LightCone
+                        } else {
+                            BannerType::Character
                         }
-                    },
+                    }
                 },
-            );
+            });
         }
     }
 
@@ -339,18 +307,14 @@ impl OptimizerExporter {
             for item in gacha.gacha_item_list {
                 gacha_result.pull_results.push(item.gacha_item.item_id);
 
-                let grade = if let Some(lc_config) =
-                    self.database.equipment_config.get(&item.gacha_item.item_id)
-                {
+                let grade = if let Some(lc_config) = self.database.equipment_config.get(&item.gacha_item.item_id) {
                     match lc_config.Rarity.as_str() {
                         "CombatPowerLightconeRarity5" => 5,
                         "CombatPowerLightconeRarity4" => 4,
                         "CombatPowerLightconeRarity3" => 3,
                         _ => panic!("Unknown light cone rarity: {}", lc_config.Rarity),
                     }
-                } else if let Some(avatar_config) =
-                    self.database.avatar_config.get(&item.gacha_item.item_id)
-                {
+                } else if let Some(avatar_config) = self.database.avatar_config.get(&item.gacha_item.item_id) {
                     match avatar_config.Rarity.as_str() {
                         "CombatPowerAvatarRarityType5" => 5,
                         "CombatPowerAvatarRarityType4" => 4,
@@ -379,10 +343,10 @@ impl OptimizerExporter {
                 }
             }
 
-            return Some(OptimizerEvent::GachaResult(gacha_result));
+            Some(OptimizerEvent::GachaResult(gacha_result))
         } else {
             warn!(gacha_id = &gacha.gacha_id, "gacha info not found");
-            return None;
+            None
         }
     }
 }

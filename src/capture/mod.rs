@@ -1,10 +1,15 @@
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::sync::atomic::AtomicBool;
-use std::sync::{mpsc, Arc};
-use std::thread::JoinHandle;
+use std::sync::Arc;
 
+use futures::{Stream, StreamExt};
+use tokio::pin;
+use tokio::sync::mpsc;
+use tokio_stream::StreamMap;
 use tracing::instrument;
+
+use crate::scopefns::Also;
 
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
@@ -31,16 +36,11 @@ pub enum CaptureError {
         has_captured: bool,
         error: Box<dyn Error>,
     },
-    ChannelClosed,
 }
 
 impl Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if matches!(self, CaptureError::ChannelClosed) {
-            write!(f, "Channel closed")
-        } else {
-            write!(f, "{}", self.source().unwrap().to_string())
-        }
+        write!(f, "{}", self.source().unwrap())
     }
 }
 
@@ -69,16 +69,15 @@ pub struct Packet {
 /// Trait for implementing different packet capture backends
 pub trait PacketCapture: Send {
     /// Start capturing packets and send them through the channel
-    fn capture_packets(
-        &mut self,
-        tx: mpsc::Sender<Packet>,
-        abort_signal: Arc<AtomicBool>,
-    ) -> Result<()>;
+    fn capture_packets(self) -> Result<impl Stream<Item = Result<Packet>> + Unpin>;
 }
 
 /// Trait for creating packet capture instances
 pub trait CaptureDevice: Send + Debug {
     type Capture: PacketCapture;
+
+    /// Get the name of the device
+    fn name(&self) -> &str;
 
     /// Create a new capture instance from this device
     fn create_capture(&self) -> Result<Self::Capture>;
@@ -94,78 +93,58 @@ pub trait CaptureBackend {
 
 /// Start capturing packets from all available devices using the specified backend
 #[instrument(skip_all)]
-pub fn listen_on_all<B: CaptureBackend + 'static>(
-    backend: B,
-    abort_signal: Arc<AtomicBool>,
-) -> Result<(mpsc::Receiver<Packet>, Vec<JoinHandle<()>>)> {
-    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
-    #[cfg(not(target_os = "linux"))]
-    {
-        use std::sync::atomic::Ordering;
-        use tracing::error;
-
-        let abort_signal = abort_signal.clone();
-        if let Err(e) = ctrlc::set_handler(move || {
-            abort_signal.store(true, Ordering::Relaxed);
-        }) {
-            error!("Failed to set Ctrl-C handler: {}", e);
-        }
-    }
-
-    let (tx, rx) = mpsc::channel();
-
+pub fn listen_on_all<B: CaptureBackend + 'static>(backend: B) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
     let devices = backend.list_devices()?;
-    let mut join_handles = Vec::new();
+    let mut merged_stream = StreamMap::new();
 
     if devices.is_empty() {
         tracing::warn!("Could not find any network devices");
     }
 
     for device in devices {
-        let tx = tx.clone();
-        let abort_signal = abort_signal.clone();
+        tracing::debug!("Creating capture for device: {}", device.name());
 
-        join_handles.push(std::thread::spawn(move || {
-            tracing::debug!("Starting capture thread for device: {:?}", device);
-
-            let mut capture = match device.create_capture() {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("Failed to create capture: {:#?}", e);
-                    return;
-                }
-            };
-
-            if let Err(e) = capture.capture_packets(tx, abort_signal) {
-                match e {
-                    CaptureError::ChannelClosed => {
-                        tracing::debug!("Channel closed");
-                    }
-                    CaptureError::CaptureError {
-                        has_captured,
-                        error,
-                    } => {
-                        // we only really care about capture errors on devices that we already know
-                        // are relevant (have sent packets before) and send those errors on warn level.
-                        //
-                        // if a capture errors right after initialization or on a device that did
-                        // not receive any relevant packets, error is less useful to the user,
-                        // so we lower the logging level
-                        if !has_captured {
-                            tracing::info!("Capture error: {:#?}", error);
-                        } else {
-                            tracing::warn!("Capture error: {:#?}", error);
-                        }
-                    }
-                    _ => {
-                        tracing::warn!("Unexpected non-capture error: {:#?}", e);
-                    }
-                }
+        let mut capture = match device.create_capture() {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("Failed to create capture: {:#?}", e);
+                return Err(e);
             }
+        };
 
-            tracing::debug!("Capture thread finished");
-        }));
+        let device_name = device.name().to_owned();
+
+        match capture.capture_packets() {
+            Ok(stream) => {
+                merged_stream.insert(device_name, stream);
+            }
+            Err(e) => {
+                tracing::warn!("Capture initialization error on device {}: {:#?}", device_name, e);
+            }
+        }
     }
 
-    Ok((rx, join_handles))
+    let merged_stream = StreamExt::map(merged_stream, |(_, item)| match item {
+        Ok(p) => Ok(p),
+        Err(e) => Err(e.also(|e| match e {
+            CaptureError::CaptureError { has_captured, error } => {
+                // we only really care about capture errors on devices that we already know
+                // are relevant (have sent packets before) and send those errors on warn level.
+                //
+                // if a capture errors right after initialization or on a device that did
+                // not receive any relevant packets, error is less useful to the user,
+                // so we lower the logging level
+                if !has_captured {
+                    tracing::info!("Capture error: {:#?}", error);
+                } else {
+                    tracing::warn!("Capture error: {:#?}", error);
+                }
+            }
+            _ => {
+                tracing::warn!("Unexpected non-capture error: {:#?}", e);
+            }
+        })),
+    });
+
+    Ok(merged_stream)
 }

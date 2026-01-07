@@ -1,0 +1,5 @@
+edition = "2024"
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+max_width = 140
+overflow_delimited_expr = true

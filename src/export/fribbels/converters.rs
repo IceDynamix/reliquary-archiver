@@ -1,6 +1,3 @@
-use crate::export::database::Database;
-use crate::export::fribbels::models::*;
-use crate::export::fribbels::utils::*;
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::AvatarSkillTree::AvatarSkillTree as ProtoSkillTree;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
@@ -10,16 +7,16 @@ use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use tracing::{debug, info_span, instrument, trace, warn};
 
+use crate::export::database::Database;
+use crate::export::fribbels::models::*;
+use crate::export::fribbels::utils::*;
+
 /// Converts a proto material to an export material
 #[instrument(name = "material", skip_all, fields(id = proto.tid))]
 pub fn export_proto_material(db: &Database, proto: &ProtoMaterial) -> Option<Material> {
     let cfg = db.item_config.get(&proto.tid)?;
     let id = cfg.ID;
-    let name = cfg
-        .ItemName
-        .map(|hash| db.text_map.get(&hash))
-        .flatten()
-        .map(|s| s.to_string())?;
+    let name = cfg.ItemName.and_then(|hash| db.text_map.get(&hash)).map(|s| s.to_string())?;
     let count = proto.num;
 
     debug!(material = name, count, "detected");
@@ -122,10 +119,7 @@ pub fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Optio
 pub fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<LightCone> {
     let cfg = db.equipment_config.get(&proto.tid)?;
     let id = cfg.EquipmentID;
-    let name = cfg
-        .EquipmentName
-        .lookup(&db.text_map)
-        .map(|s| s.to_string())?;
+    let name = cfg.EquipmentName.lookup(&db.text_map).map(|s| s.to_string())?;
 
     let level = proto.level;
     let superimposition = proto.rank;
@@ -176,10 +170,7 @@ pub fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<C
 }
 
 /// Converts a proto multipath character to an export character
-pub fn export_proto_multipath_character(
-    db: &Database,
-    proto: &MultiPathAvatarInfo,
-) -> Option<Character> {
+pub fn export_proto_multipath_character(db: &Database, proto: &MultiPathAvatarInfo) -> Option<Character> {
     let id = proto.avatar_id.value() as u32;
     let name = db.lookup_avatar_name(id)?;
     let path = avatar_path_lookup(db, id)?.to_owned();
@@ -210,10 +201,7 @@ pub fn export_proto_multipath_character(
 }
 
 /// Extracts skills, traces, and memosprite from a skill tree
-pub fn export_skill_tree(
-    db: &Database,
-    proto: &[ProtoSkillTree],
-) -> (Skills, Traces, Option<Memosprite>) {
+pub fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces, Option<Memosprite>) {
     let mut skills = Skills {
         basic: 0,
         skill: 0,
@@ -238,10 +226,7 @@ pub fn export_skill_tree(
         special: false,
     };
 
-    let mut memosprite = Memosprite {
-        skill: 0,
-        talent: 0,
-    };
+    let mut memosprite = Memosprite { skill: 0, talent: 0 };
 
     for skill in proto.iter().filter(|s| s.point_id != 0) {
         let level = skill.level;
@@ -249,10 +234,7 @@ pub fn export_skill_tree(
         let span = info_span!("skill", id = skill.point_id, level);
         let _enter = span.enter();
 
-        let Some(skill_tree_config) = db
-            .avatar_skill_tree_config
-            .get(&skill.point_id, &skill.level)
-        else {
+        let Some(skill_tree_config) = db.avatar_skill_tree_config.get(&skill.point_id, &skill.level) else {
             warn!("could not look up skill tree config");
             continue;
         };
@@ -347,10 +329,7 @@ pub fn export_skill_tree(
             }
 
             _ => {
-                warn!(
-                    anchor = skill_tree_config.AnchorType,
-                    "unknown point anchor"
-                );
+                warn!(anchor = skill_tree_config.AnchorType, "unknown point anchor");
                 continue;
             }
         }

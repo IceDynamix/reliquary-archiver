@@ -6,3 +6,7 @@ wpcap.lib
 /*.json
 /*.log
 npcap-sdk*.zip
+.DS_Store
+*.bat
+*.vscode
+*.code-workspace
