@@ -714,9 +714,9 @@ fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
     use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW};
     use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER, SW_SHOWNORMAL};
 
-    let args_str = env::args().skip(1).collect::<Vec<_>>().join(" ");
+    let args_str = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
 
-    let exe_path = env::current_exe()
+    let exe_path = std::env::current_exe()
         .expect("Failed to get current exe")
         .as_os_str()
         .encode_wide()

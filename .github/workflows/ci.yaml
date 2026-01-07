@@ -23,7 +23,7 @@ jobs:
           unzip -p npcap-sdk.zip Lib/x64/Packet.lib > Packet.lib
           unzip -p npcap-sdk.zip Lib/x64/wpcap.lib > wpcap.lib
       - name: Build pcap Windows exe
-        run: cargo build --verbose --no-default-features --features pcap,stream
+        run: cargo build --verbose --no-default-features --features pcap,stream,gui
       - name: Move pcap exe
         run: mv -Force target/debug/reliquary-archiver.exe target/debug/reliquary-archiver-pcap-x64.exe
       - uses: actions/upload-artifact@v4
@@ -31,7 +31,7 @@ jobs:
           name: reliquary-archiver-pcap-x64
           path: target/debug/reliquary-archiver-pcap-x64.exe
       - name: Build pktmon Windows exe
-        run: cargo build --verbose --no-default-features --features pktmon,stream
+        run: cargo build --verbose --no-default-features --features pktmon,stream,gui
       - name: Move pktmon exe
         run: mv -Force target/debug/reliquary-archiver.exe target/debug/reliquary-archiver-pktmon-x64.exe
       - uses: actions/upload-artifact@v4

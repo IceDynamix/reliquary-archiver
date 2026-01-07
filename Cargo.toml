@@ -69,7 +69,7 @@ lto = true
 overflow-checks = false # see comment above
 
 [features]
-default = ["gui", "pcap"]
+default = ["pcap", "stream"]
 gui = [
     "stream",
     "dep:raxis",
