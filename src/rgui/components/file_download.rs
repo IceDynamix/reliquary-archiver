@@ -1,20 +1,16 @@
 use std::path::PathBuf;
 
 use raxis::{
-    layout::{
+    HookManager, layout::{
         helpers::{center, row},
-        model::{Alignment, Border, BorderRadius, BoxAmount, Color, Direction, Element, Sizing, StrokeLineCap, StrokeLineJoin},
-    },
-    runtime::task::Task,
-    svg, svg_path, w_id,
-    widgets::{
+        model::{Alignment, BackdropFilter, Border, BorderRadius, BoxAmount, Color, Direction, Element, Sizing, StrokeLineCap, StrokeLineJoin},
+    }, runtime::task::Task, svg, svg_path, w_id, widgets::{
         button::Button,
         svg::ViewBox,
         svg_path::SvgPath,
         text::{ParagraphAlignment, Text, TextAlignment},
         widget,
-    },
-    HookManager,
+    }
 };
 
 use crate::{
@@ -143,6 +139,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         id: Some(w_id!()),
         width: Sizing::fixed(400.0),
         background_color: Some(Color::from(CARD_BACKGROUND)),
+        backdrop_filter: Some(BackdropFilter::blur(10.0)),
         border_radius: Some(BorderRadius::all(BORDER_RADIUS)),
         border: Some(Border {
             color: BORDER_COLOR,

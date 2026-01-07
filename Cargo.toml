@@ -35,7 +35,7 @@ rfd = "0.15.3"
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
-raxis = { optional = true, git= "https://github.com/emmachase/raxis", rev = "e11d528d78c950acc0e2af9c844d071b62e3e3a3", features = ["tokio"] }
+raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "ad86aac85a1a55ac5b17f3917fcd734ccdf79b95", features = ["tokio"] }
 #raxis = { optional = true, git= "https://github.com/FI00ds/raxis", rev = "e8fd369a6d6e3d4ccce33a85cc3c7e46705107ec", features = ["tokio"]}
 #raxis = { optional = true, path = "../raxis", features = ["tokio"]}
 

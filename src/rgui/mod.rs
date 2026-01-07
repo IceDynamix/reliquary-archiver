@@ -17,8 +17,7 @@ use futures::sink::SinkExt;
 use raxis::gfx::color::Oklch;
 use raxis::layout::helpers::spacer;
 use raxis::layout::model::{
-    Alignment2D, Color, DropShadow, FloatingConfig, ScrollBarSize, ScrollConfig, StrokeLineCap, StrokeLineJoin, TextShadow,
-    ScrollbarStyle,
+    Alignment2D, BackdropFilter, Color, DropShadow, FloatingConfig, ScrollBarSize, ScrollConfig, ScrollbarStyle, StrokeLineCap, StrokeLineJoin, TextShadow
 };
 use raxis::runtime::font_manager::{FontIdentifier, FontWeight};
 use raxis::runtime::scroll::ScrollPosition;
@@ -62,7 +61,7 @@ use raxis::{
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use tokio::sync::watch::{self, Sender};
 use tokio_stream::wrappers::WatchStream;
-use tracing::info;
+use tracing::{error, info};
 use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::file_download::{self, download_view};
@@ -441,6 +440,7 @@ impl WaitingScreen {
                     .with_padding(BoxAmount::new(PAD_MD, PAD_LG, PAD_MD, PAD_LG))
                     .with_height(Sizing::grow()),
             )
+            .with_backdrop_filter(BackdropFilter::blur(10.0))
             .with_height(Sizing::grow())
             .with_snap(true);
 
@@ -932,6 +932,7 @@ fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
             ..Default::default()
         }),
         background_color: Some(CARD_BACKGROUND),
+        backdrop_filter: Some(BackdropFilter::blur(10.0)),
         border: Some(Border {
             width: 1.0,
             color: BORDER_COLOR, //Color::from(0x000000FF),
@@ -1964,6 +1965,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
         RootMessage::NotifyInvalidWSPort(err) => {
             tracing::info!("Unable to start websocket server on desired port. e={}", err);
+            state.store.connection_stats.ws_status = WebSocketStatus::Failed { error: err };
             None
         },
 
@@ -2100,7 +2102,14 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             info!("Loading settings from {}", path.display());
             if path.exists() {
                 Some(Task::future(tokio::fs::read_to_string(path)).and_then(move |content| {
-                    let mut settings: Settings = serde_json::from_str(&content).unwrap_or_default();
+                    let mut settings: Settings = match serde_json::from_str::<Settings>(&content) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to load settings: {}", e);
+                            Settings::default()
+                        }
+                    };
+
                     let run_on_start = settings.run_on_start;
                     let test = match registry_matches_settings(run_on_start) {
                         // settings are not guaranteed to match the registry
