@@ -17,7 +17,7 @@ use std::{
     net::SocketAddr,
     sync::{Arc, RwLock, atomic::{AtomicU16, AtomicUsize, Ordering}}
 };
-use tokio::{sync::{broadcast, mpsc, watch}, task::{AbortHandle, JoinHandle}};
+use tokio::{sync::watch, task::AbortHandle};
 use tracing::{debug, info, warn};
 
 struct WebSocketServerState<E: Exporter> {
