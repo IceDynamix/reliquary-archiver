@@ -130,9 +130,8 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
             // If the server is not yet running then update the status with the relevant error message
             if matches!(state.store.connection_stats.ws_status, WebSocketStatus::Pending) {
                 state.store.connection_stats.ws_status = WebSocketStatus::Failed { error: err };
-            } else {
-                tracing::info!("Unable to start websocket server on desired port. e={}", err);
             }
+            tracing::info!("Unable to start websocket server on desired port. e={}", err);
             None
         }
     }
