@@ -420,11 +420,6 @@ fn tracing_init(args: &Args) {
         .with_env_filter(env_filter(args))
         .with_writer(DualWriter::new(VecWriter::new(), io::stdout()))
         .with_filter_reloading();
-    //layer().with_ansi(false).with_filter(env_filter(args));
-
-    // Create the vec_layer with a reloadable filter
-    // let vec_filter = env_filter(args);
-    // Filtered<Layer<Registry, DefaultFields, Format, impl Fn() -> VecWriter>, Layer<EnvFilter, Registry>, Registry>
 
     let handle = subscriber.reload_handle();
     *VEC_LAYER_HANDLE.lock().unwrap() = Some(Box::new(move |l| {
@@ -442,19 +437,6 @@ fn tracing_init(args: &Args) {
         });
     }));
 
-    // let (vec_filter, vec_reload_handle) = reload::Layer::new(vec_filter);
-    // let vec_layer = tracing_subscriber::fmt::layer()
-    //     .with_ansi(false)
-    //     .with_writer(VecWriter::new)
-    //     .with_filter(vec_filter);
-
-    // // Store the reload handle globally
-    // *VEC_LAYER_HANDLE.lock().unwrap() = Some(vec_reload_handle);
-
-    // let builder = SubscriberBuilder::default().with_writer(VecWriter::new).finish();
-
-    // let subscriber = Registry::default().with(stdout_log);
-
     let file_log = if let Some(log_path) = &args.log_path {
         let log_file = File::create(log_path).unwrap();
         let file_log = tracing_subscriber::fmt::layer()
@@ -469,7 +451,6 @@ fn tracing_init(args: &Args) {
     let subscriber = subscriber.finish();
 
     let subscriber = subscriber.with(file_log);
-    // let subscriber = subscriber.with(builder);
 
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
@@ -633,15 +614,6 @@ where
     let mut poisoned_sources = HashSet::new();
 
     'recv: loop {
-        // let received: Result<capture::Packet, CaptureError> = if streaming {
-        //     // If streaming, we don't want to timeout during inactivity
-        // //     rx.recv().map_err(|_| RecvTimeoutError::Disconnected)
-        //     todo!()
-        // } else {
-        // //     rx.recv_timeout(Duration::from_secs(args.timeout))
-        //     packet_stream.selec
-        // };
-
         let received = select! {
             packet = packet_stream.next() => match packet {
                 Some(packet) => packet,
@@ -729,24 +701,6 @@ where
             }
         }
     }
-
-    // abort_signal.store(true, Ordering::Relaxed);
-
-    // #[cfg(target_os = "linux")] {
-    //     // Detach join handles on linux since pcap timeout will not fire if no packets are received on some interface
-    //     drop(join_handles);
-    // }
-
-    // TODO: determine why pcap timeout is not working on linux, so that we can gracefully exit
-    // #[cfg(not(target_os = "linux"))] {
-    //     for handle in join_handles {
-    //         handle.join().expect("Failed to join capture thread");
-    //     }
-    // }
-
-    // for handle in join_handles {
-    //     handle.abort();
-    // }
 
     exporter.lock().await.export()
 }
