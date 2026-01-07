@@ -84,6 +84,7 @@ pub async fn start_websocket_server<E: Exporter>(
                 PortSource::Dynamic(ref mut stream) => {
                     let new_port = stream.next().await;
                     if new_port.is_none() {
+                        state.abort_service();
                         break;
                     }
                     new_port.unwrap()

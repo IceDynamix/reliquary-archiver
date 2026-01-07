@@ -149,7 +149,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .then(|e| match e {
                 Err(e) => Task::done(RootMessage::ws_status(WebSocketStatus::Failed { error: e })),
                 Ok((port_stream, client_count_stream)) => {
-                    Task::done(RootMessage::ws_status(WebSocketStatus::Running { port: 0, client_count: 0 })).chain(Task::batch(vec![
+                    Task::done(RootMessage::ws_status(WebSocketStatus::Pending)).chain(Task::batch(vec![
                         Task::stream(client_count_stream).map(RootMessage::ws_client_count_changed),
                         Task::stream(port_stream).map(|port| match port {
                             Ok(port) => RootMessage::ws_port_changed(port),
