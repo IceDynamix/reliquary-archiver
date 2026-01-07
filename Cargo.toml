@@ -36,8 +36,6 @@ tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
 raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "ad86aac85a1a55ac5b17f3917fcd734ccdf79b95", features = ["tokio"] }
-#raxis = { optional = true, git= "https://github.com/FI00ds/raxis", rev = "e8fd369a6d6e3d4ccce33a85cc3c7e46705107ec", features = ["tokio"]}
-#raxis = { optional = true, path = "../raxis", features = ["tokio"]}
 
 [target.'cfg(windows)'.dependencies]
 # By default self_update makes its http requests with reqwest, which itself relies on tokio
@@ -45,7 +43,7 @@ raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "ad
 # therefore when self_update calls update(), a second tokio runtime is spawned which leads to a crash
 # self_update added a ureq feature but has not yet pushed to crates.io
 # (latest release is 0.42.0 which is over a year old as of writing this)
-self_update = { git = "https://github.com/jaemk/self_update", features = ["ureq", "rustls"], default-features = false}
+self_update = { git = "https://github.com/jaemk/self_update", rev = "9ec008b4d66627d578966231cfd87a87bf4c7083", features = ["ureq", "rustls"], default-features = false}
 pktmon = { optional = true, version = "0.6.2", features = ["tokio"] }
 windows = { optional = true, version = "0.61"}
 windows-registry = { optional = true, version = "0.6.1" }
@@ -64,15 +62,6 @@ winres = "0.1.12"
 # (some kind of timestamp), except that i don't know what it is exactly and i haven't bothered
 # to circumvent the addition that happens in the kcp library
 overflow-checks = false
-# debug = "line-tables-only"
-# # codegen-backend = "cranelift"
-
-# [profile.dev.package."*"]
-# debug = false
-
-# [profile.debugging]
-# inherits = "dev"
-# debug = true
 
 [profile.release]
 opt-level = "z"         # optimize for size
