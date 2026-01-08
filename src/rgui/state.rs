@@ -17,6 +17,7 @@ use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::update::UpdateState;
 use crate::rgui::messages::WebSocketStatus;
+use crate::websocket::PortCommand;
 use crate::worker;
 
 /// File extension filter configuration for save dialogs.
@@ -210,11 +211,11 @@ pub struct RootState {
     /// Whether the opacity slider is being dragged (hides modal backdrop)
     pub opacity_slider_dragging: bool,
     /// Channel to send port changes to the WebSocket server
-    pub ws_port_sender: Option<Sender<u16>>,
+    pub ws_port_sender: Option<Sender<PortCommand>>,
 }
 
 impl RootState {
-    pub fn with_port_sender(self, port_sender: Sender<u16>) -> Self {
+    pub fn with_port_sender(self, port_sender: Sender<PortCommand>) -> Self {
         Self {
             ws_port_sender: Some(port_sender),
             ..self

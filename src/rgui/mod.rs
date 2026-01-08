@@ -32,8 +32,9 @@ use raxis::{ContextMenuItem, SystemCommand, SystemCommandResponse, TrayEvent, Tr
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
+use crate::rgui::components::update::UpdateMessage;
 use crate::scopefns::Also;
-use crate::websocket::{start_websocket_server, PortSource};
+use crate::websocket::{start_websocket_server, PortCommand, PortSource};
 use crate::worker::archiver_worker;
 use crate::LOG_NOTIFY;
 
@@ -105,11 +106,21 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         // Update messages
         RootMessage::Update(msg) => {
             use crate::rgui::components::update;
-            match update::handle_message(msg, &mut state.store.update_state, state.store.settings.always_update) {
-                update::HandleResult::None => None,
-                update::HandleResult::Task(t) => Some(t.map(RootMessage::Update)),
-                update::HandleResult::ExitForRestart => return Some(task::exit_application()),
-            }
+            let task = if matches!(msg, UpdateMessage::Confirm) {
+                Task::done(RootMessage::WebSocket(WebSocketMessage::Close))
+            } else {
+                Task::none()
+            };
+            Some(
+                task.chain(
+                    match update::handle_message(msg, &mut state.store.update_state, state.store.settings.always_update) {
+                        update::HandleResult::None => None,
+                        update::HandleResult::Task(t) => Some(t.map(RootMessage::Update)),
+                        update::HandleResult::ExitForRestart => return Some(task::exit_application()),
+                    }
+                    .unwrap_or(Task::none()),
+                ),
+            )
         }
     }
     .also(|_| {
@@ -131,7 +142,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use crate::rgui::components::update;
 
-    let (port_tx, port_rx) = watch::channel::<u16>(0);
+    let (port_tx, port_rx) = watch::channel::<PortCommand>(PortCommand::Open(0));
     let state = RootState::default().with_port_sender(port_tx);
     let exporter = state.exporter.clone();
 
@@ -149,7 +160,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             .then(|e| match e {
                 Err(e) => Task::done(RootMessage::ws_status(WebSocketStatus::Failed { error: e })),
                 Ok((port_stream, client_count_stream)) => {
-                    Task::done(RootMessage::ws_status(WebSocketStatus::Running { port: 0, client_count: 0 })).chain(Task::batch(vec![
+                    Task::done(RootMessage::ws_status(WebSocketStatus::Pending)).chain(Task::batch(vec![
                         Task::stream(client_count_stream).map(RootMessage::ws_client_count_changed),
                         Task::stream(port_stream).map(|port| match port {
                             Ok(port) => RootMessage::ws_port_changed(port),

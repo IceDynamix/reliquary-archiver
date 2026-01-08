@@ -53,6 +53,8 @@ pub enum WebSocketMessage {
     ClientCountChanged(usize),
     /// Failed to bind to the requested port
     InvalidPort(String),
+    /// Close the WebSocket server
+    Close,
 }
 
 // ============================================================================

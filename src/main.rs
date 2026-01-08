@@ -468,26 +468,28 @@ where
 {
     if let Ok(packets) = sniffer.receive_packet(payload) {
         for packet in packets {
-            if let GamePacket::Commands(command) = packet { match command {
-                Ok(command) => {
-                    exporter.read_command(command);
+            if let GamePacket::Commands(command) = packet {
+                match command {
+                    Ok(command) => {
+                        exporter.read_command(command);
 
-                    if exporter.is_initialized() {
-                        info!("finished capturing");
+                        if exporter.is_initialized() {
+                            info!("finished capturing");
+                            return ProcessResult::Stop;
+                        }
+                    }
+                    Err(e) => {
+                        warn!(%e);
+                        if matches!(e, GameCommandError::VersionMismatch) {
+                            // Client packet was misordered from server packet
+                            // This will be reprocessed after we receive the new session key
+                            return ProcessResult::Continue;
+                        }
+
                         return ProcessResult::Stop;
                     }
                 }
-                Err(e) => {
-                    warn!(%e);
-                    if matches!(e, GameCommandError::VersionMismatch) {
-                        // Client packet was misordered from server packet
-                        // This will be reprocessed after we receive the new session key
-                        return ProcessResult::Continue;
-                    }
-
-                    return ProcessResult::Stop;
-                }
-            } }
+            }
         }
     }
 

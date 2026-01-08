@@ -27,11 +27,7 @@ impl OptimizerExporter {
     }
 
     pub fn handle_inventory(&mut self, bag: GetBagScRsp) {
-        let relics: Vec<Relic> = bag
-            .relic_list
-            .iter()
-            .filter_map(|r| export_proto_relic(self.database, r))
-            .collect();
+        let relics: Vec<Relic> = bag.relic_list.iter().filter_map(|r| export_proto_relic(self.database, r)).collect();
 
         info!(num = relics.len(), "found relics");
         for relic in &relics {

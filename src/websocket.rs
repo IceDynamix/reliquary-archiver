@@ -50,7 +50,13 @@ impl<E: Exporter> WebSocketServerState<E> {
 
 pub enum PortSource {
     Fixed(u16),
-    Dynamic(WatchStream<u16>),
+    Dynamic(WatchStream<PortCommand>),
+}
+
+#[derive(Clone)]
+pub enum PortCommand {
+    Open(u16),
+    Close,
 }
 
 pub async fn start_websocket_server<E: Exporter>(
@@ -81,13 +87,14 @@ pub async fn start_websocket_server<E: Exporter>(
         loop {
             let port = match port_source {
                 PortSource::Fixed(port) => port,
-                PortSource::Dynamic(ref mut stream) => {
-                    let new_port = stream.next().await;
-                    if new_port.is_none() {
-                        break;
+                PortSource::Dynamic(ref mut stream) => match stream.next().await {
+                    None => break,
+                    Some(PortCommand::Close) => {
+                        state.abort_service();
+                        continue;
                     }
-                    new_port.unwrap()
-                }
+                    Some(PortCommand::Open(port)) => port,
+                },
             };
 
             let server_addr = format!("0.0.0.0:{}", port);
