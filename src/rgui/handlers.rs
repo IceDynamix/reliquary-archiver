@@ -5,6 +5,7 @@
 //! responsible for updating state and returning optional async tasks.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
@@ -28,19 +29,55 @@ pub fn get_settings_path(appdata: PathBuf) -> PathBuf {
     appdata.join("reliquary-archiver").join("settings.json")
 }
 
+/// Counter for generating unique temp file names within this process.
+static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Persists the current settings to disk asynchronously.
 ///
-/// Settings are saved to the user's local app data folder as JSON.
+/// Settings are saved atomically to the user's local app data folder as JSON.
+/// We write to a temporary file first, then rename it to avoid corruption
+/// if the application crashes or is killed during the write.
+///
+/// Each save uses a unique temp filename (process ID + counter) to prevent
+/// race conditions if multiple saves happen concurrently.
 pub fn save_settings(state: &RootState) -> Option<Task<RootMessage>> {
     let settings = state.store.settings.clone();
+    // Generate unique temp filename to avoid races between concurrent saves
+    let unique_id = SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+
     Some(
         task::get_local_app_data()
             .and_then(move |path| {
                 let settings = settings.clone();
                 Task::future(async move {
                     let path = get_settings_path(path);
-                    tokio::fs::create_dir_all(path.parent().unwrap().to_owned()).await;
-                    tokio::fs::write(path, serde_json::to_string(&settings).unwrap()).await;
+                    let temp_path = path.with_extension(format!("json.{}.{}.tmp", pid, unique_id));
+
+                    if let Err(e) = tokio::fs::create_dir_all(path.parent().unwrap()).await {
+                        tracing::error!("Failed to create settings directory: {}", e);
+                        return;
+                    }
+
+                    let json = match serde_json::to_string_pretty(&settings) {
+                        Ok(json) => json,
+                        Err(e) => {
+                            tracing::error!("Failed to serialize settings: {}", e);
+                            return;
+                        }
+                    };
+
+                    // Write to temporary file first (unique per save operation)
+                    if let Err(e) = tokio::fs::write(&temp_path, &json).await {
+                        tracing::error!("Failed to write settings to temp file: {}", e);
+                        return;
+                    }
+
+                    // Atomically rename temp file to actual settings file
+                    if let Err(e) = tokio::fs::rename(&temp_path, &path).await {
+                        tracing::error!("Failed to rename temp settings file: {}", e);
+                        let _ = tokio::fs::remove_file(&temp_path).await;
+                    }
                 })
             })
             .discard(),
