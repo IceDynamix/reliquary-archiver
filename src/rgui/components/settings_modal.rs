@@ -673,12 +673,18 @@ pub fn handle_settings_message(state: &mut RootState, message: SettingsMessage) 
 
         SettingsMessage::OpacityChanged(opacity) => {
             state.store.settings.background_opacity = opacity;
-            save_settings(state)
+            // Don't save on every slider change - wait for drag to end
+            None
         }
 
         SettingsMessage::OpacitySliderDrag(is_dragging) => {
             state.opacity_slider_dragging = is_dragging;
-            None
+            // Save settings when the drag ends to avoid excessive writes
+            if !is_dragging {
+                save_settings(state)
+            } else {
+                None
+            }
         }
 
         SettingsMessage::TextShadowToggled(enabled) => {
