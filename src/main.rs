@@ -105,6 +105,11 @@ struct Args {
     #[cfg(feature = "gui")]
     #[arg(long, short = 'H', visible_alias = "cli", visible_alias = "nogui")]
     headless: bool,
+
+    /// Detach from the parent terminal (run in background), only applicable on Windows
+    #[cfg(all(windows, feature = "gui"))]
+    #[arg(long, short = 'd')]
+    detach: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -161,9 +166,15 @@ async fn main() {
 
     let args = Args::parse();
 
+    // Detach from parent terminal if requested
+    #[cfg(all(windows, feature = "gui"))]
+    if args.detach {
+        unsafe { windows::Win32::System::Console::FreeConsole().ok() };
+    }
+
     // Allocate a console for headless mode if AttachConsole didn't work
     #[cfg(all(windows, feature = "gui"))]
-    if args.headless && !has_console {
+    if args.headless && !has_console && !args.detach {
         unsafe { windows::Win32::System::Console::AllocConsole().ok() };
     }
 
