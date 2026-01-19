@@ -21,7 +21,7 @@ serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
-ureq = { version = "2.12.1" }
+ureq = "2.12.1"
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v16.0.0", features = [
     "proto-rqa",
 ] }
@@ -31,7 +31,7 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
 open = "5.3.2"
-rfd = "0.15.3"
+rfd = "0.17.2"
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
