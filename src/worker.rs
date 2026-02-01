@@ -235,8 +235,8 @@ async fn live_capture<E: Exporter>(
                     for packet in packets {
                         match packet {
                             GamePacket::Connection(c) => match c {
-                                ConnectionPacket::HandshakeEstablished => {
-                                    info!("detected connection established");
+                                ConnectionPacket::HandshakeEstablished { conv_id } => {
+                                    info!(conv_id, "detected connection established");
                                     metric_tx.send(SnifferMetric::ConnectionEstablished).await.ok();
 
                                     if cfg!(all(feature = "pcap", windows)) {
@@ -249,16 +249,16 @@ async fn live_capture<E: Exporter>(
                                 }
                                 _ => {}
                             },
-                            GamePacket::Commands(command) => match command {
+                            GamePacket::Commands { conv_id, result } => match result {
                                 Ok(command) => {
                                     if command.command_id == PlayerLoginScRsp {
-                                        info!("detected login start");
+                                        info!(conv_id, "detected login start");
                                     }
 
                                     exporter.lock().await.read_command(command);
                                 }
                                 Err(e) => {
-                                    warn!(%e);
+                                    warn!(conv_id, %e);
                                     if let GameCommandError::DecryptionKeyMissing = e {
                                         metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
                                     } else {

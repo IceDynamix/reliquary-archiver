@@ -479,8 +479,8 @@ where
 {
     if let Ok(packets) = sniffer.receive_packet(payload) {
         for packet in packets {
-            if let GamePacket::Commands(command) = packet {
-                match command {
+            if let GamePacket::Commands { conv_id, result } = packet {
+                match result {
                     Ok(command) => {
                         exporter.read_command(command);
 
@@ -490,7 +490,7 @@ where
                         }
                     }
                     Err(e) => {
-                        warn!(%e);
+                        warn!(conv_id, %e);
                         if matches!(e, GameCommandError::VersionMismatch) {
                             // Client packet was misordered from server packet
                             // This will be reprocessed after we receive the new session key
@@ -650,8 +650,8 @@ where
                         for packet in packets {
                             match packet {
                                 GamePacket::Connection(c) => match c {
-                                    ConnectionPacket::HandshakeEstablished => {
-                                        info!("detected connection established");
+                                    ConnectionPacket::HandshakeEstablished { conv_id } => {
+                                        info!(conv_id, "detected connection established");
 
                                         if cfg!(all(feature = "pcap", windows)) {
                                             info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
@@ -662,10 +662,10 @@ where
                                     }
                                     _ => {}
                                 },
-                                GamePacket::Commands(command) => match command {
+                                GamePacket::Commands { conv_id, result } => match result {
                                     Ok(command) => {
                                         if command.command_id == PlayerLoginScRsp {
-                                            info!("detected login start");
+                                            info!(conv_id, "detected login start");
                                         }
 
                                         if !streaming && command.command_id == PlayerLoginFinishScRsp {
@@ -676,7 +676,7 @@ where
                                         exporter.lock().await.read_command(command);
                                     }
                                     Err(e) => {
-                                        warn!(%e);
+                                        warn!(conv_id, %e);
                                         if matches!(e, GameCommandError::VersionMismatch) {
                                             // Client packet was misordered from server packet
                                             // This will be reprocessed after we receive the new session key
