@@ -64,7 +64,7 @@ pub struct Store {
     // Account management
     pub accounts: HashMap<u32, AccountInfo>,
     pub selected_account: Option<u32>,
-    
+
     // Export data (for currently selected account)
     pub json_export: Option<FileContainer>,
     pub export_out_of_date: bool,

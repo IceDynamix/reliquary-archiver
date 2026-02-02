@@ -149,10 +149,7 @@ pub async fn start_websocket_server(
     Ok((port_stream, client_count_stream))
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    Extension(state): Extension<Arc<WebSocketServerState>>,
-) -> axum::response::Response {
+async fn ws_handler(ws: WebSocketUpgrade, Extension(state): Extension<Arc<WebSocketServerState>>) -> axum::response::Response {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -172,14 +169,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
     let _ = state.client_count_tx.send(client_count);
 
     let (mut sender, mut receiver) = socket.split();
-    
+
     // Subscribe to manager's unified event channel
     let mut manager_rx = state.manager.lock().await.subscribe();
     let mut account_rx = state.selected_account_rx.clone();
-    
+
     // Sync with GUI's current selection
     let mut selected_uid = *account_rx.borrow();
-    
+
     // Send initial state if an account is already selected
     if let Some(uid) = selected_uid {
         let exporter = state.manager.lock().await.get_account_exporter(uid);
@@ -208,7 +205,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
                     AccountEvent::Discovered { uid } | AccountEvent::Reconnected { uid } => {
                         // If this is the selected account (or first account), send initial state
                         if Some(uid) == selected_uid {
-                            info!(uid, "WebSocket sending initial state for account");
                             let exporter = state.manager.lock().await.get_account_exporter(uid);
                             if let Some(exporter) = exporter {
                                 if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
@@ -225,14 +221,13 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
             // GUI selection changed
             result = account_rx.changed() => {
                 if result.is_err() {
-                    info!("Account selection channel closed");
                     break;
                 }
                 let new_uid = *account_rx.borrow_and_update();
                 if new_uid != selected_uid {
                     selected_uid = new_uid;
                     info!("WebSocket switched to account {:?}", selected_uid);
-                    
+
                     // Send initial state for newly selected account
                     if let Some(uid) = selected_uid {
                         let exporter = state.manager.lock().await.get_account_exporter(uid);

@@ -557,12 +557,12 @@ where
     E::Export: From<<OptimizerExporter as Exporter>::Export>,
 {
     use reliquary_archiver::export::database::get_database;
-    use crate::worker::MultiAccountManager;
-    
-    #[cfg(feature = "stream")]
-    use crate::websocket::{start_websocket_server, PortSource};
     #[cfg(feature = "stream")]
     use tokio::sync::watch;
+
+    #[cfg(feature = "stream")]
+    use crate::websocket::{start_websocket_server, PortSource};
+    use crate::worker::MultiAccountManager;
 
     #[cfg(not(feature = "stream"))]
     let streaming = false;
@@ -573,27 +573,23 @@ where
     // Always use MultiAccountManager for consistency
     let database = get_database();
     let manager = Arc::new(FuturesMutex::new(MultiAccountManager::new(database.keys.clone())));
-    
+
     #[cfg(feature = "stream")]
     let selected_account_tx = if streaming {
         let (tx, rx) = watch::channel::<Option<u32>>(None);
-        
+
         // Start websocket server
-        tokio::spawn(start_websocket_server(
-            PortSource::Fixed(args.websocket_port),
-            manager.clone(),
-            rx,
-        ));
-        
+        tokio::spawn(start_websocket_server(PortSource::Fixed(args.websocket_port), manager.clone(), rx));
+
         info!("WebSocket server starting on port {}...", args.websocket_port);
         Some(tx)
     } else {
         None
     };
-    
+
     #[cfg(not(feature = "stream"))]
     let selected_account_tx = None;
-    
+
     // Run live capture with manager
     let result = live_capture(args, manager, sniffer, selected_account_tx, streaming).await;
     result.map(|export| export.into())
@@ -609,7 +605,7 @@ async fn live_capture(
 ) -> Option<<OptimizerExporter as Exporter>::Export> {
     use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
     use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
-    
+
     let rx = {
         #[cfg(feature = "pcap")]
         {
@@ -626,7 +622,7 @@ async fn live_capture(
     let mut packet_stream = packet_stream.fuse();
 
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
-    
+
     if streaming {
         info!("WebSocket streaming enabled - capture will run until manually stopped");
     }
@@ -651,7 +647,7 @@ async fn live_capture(
                 Some(packet) => packet,
                 None => break 'recv,
             },
-            
+
             _ = timeout_future => {
                 break 'recv;
             }
@@ -693,7 +689,7 @@ async fn live_capture(
                                                 let uid = token_rsp.uid;
                                                 let mut mgr = manager.lock().await;
                                                 mgr.register_uid(conv_id, uid);
-                                                
+
                                                 // Auto-select latest account
                                                 latest_uid = Some(uid);
                                                 if let Some(ref tx) = selected_account_tx {
@@ -727,7 +723,7 @@ async fn live_capture(
                                 },
                             }
                         }
-                        
+
                         // Check if initialized for early exit in non-streaming mode
                         if !streaming {
                             if let Some(uid) = latest_uid {
@@ -769,7 +765,7 @@ async fn live_capture(
             return exporter.lock().await.export();
         }
     }
-    
+
     None
 }
 

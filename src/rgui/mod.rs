@@ -142,21 +142,23 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 /// Returns an error if the GUI framework fails to initialize.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
+
     use futures::lock::Mutex;
-    use crate::rgui::components::update;
-    use crate::worker::MultiAccountManager;
     use reliquary_archiver::export::database::get_database;
 
+    use crate::rgui::components::update;
+    use crate::worker::MultiAccountManager;
+
     let (port_tx, port_rx) = watch::channel::<PortCommand>(PortCommand::Open(0));
-    
+
     let database = get_database();
     let manager = Arc::new(Mutex::new(MultiAccountManager::new(database.keys.clone())));
-    
+
     let state = RootState::new(manager.clone()).with_port_sender(port_tx);
 
     let app = raxis::Application::new(state, view, update, move |state| {
         let selected_account_rx = state.selected_account_tx.subscribe();
-        
+
         Some(Task::batch(vec![
             task::get_local_app_data().and_then(|path| Task::done(RootMessage::Settings(SettingsMessage::Load(get_settings_path(path))))),
             // technically calling PerformCheck here is a data race (should be .chain() to SettingsMessage::Activate)
