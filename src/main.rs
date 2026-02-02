@@ -567,16 +567,10 @@ where
     let streaming = args.stream;
 
     if streaming {
-        let port = args.websocket_port;
-
-        let ws_server = start_websocket_server(PortSource::Fixed(port), exporter.clone()).await;
-
-        info!("WebSocket server running on ws://localhost:{}/ws", port);
-        info!("You can connect to this WebSocket server to receive real-time relic updates");
-
-        let result = live_capture(args, exporter, sniffer, streaming);
-
-        result.await
+        warn!("WebSocket streaming is currently only supported in GUI mode");
+        // TODO: WebSocket in CLI mode needs to be updated for MultiAccountManager
+        // For now, CLI websocket is disabled - use GUI mode for websocket support
+        live_capture(args, exporter, sniffer, false).await
     } else {
         live_capture(args, exporter, sniffer, streaming).await
     }

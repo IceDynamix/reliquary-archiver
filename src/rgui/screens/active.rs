@@ -9,13 +9,14 @@ use raxis::widgets::button::Button;
 use raxis::widgets::rule::Rule;
 use raxis::widgets::text::{ParagraphAlignment, Text};
 use raxis::{column, row, w_id, HookManager};
+use raxis::layout::helpers::{column, row};
 
 use crate::rgui::components::file_download::download_view;
 use crate::rgui::kit::icons::refresh_icon;
-use crate::rgui::messages::{ActiveMessage, ExportMessage, RootMessage, ScreenAction};
+use crate::rgui::messages::{AccountMessage, ActiveMessage, ExportMessage, RootMessage, ScreenAction};
 use crate::rgui::state::{ActiveScreen, Store};
 use crate::rgui::theme::{
-    maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, SHADOW_SM, SPACE_LG, SPACE_MD, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
+    maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PAD_SM, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
 };
 
 /// Renders a single statistic line (label + value).
@@ -32,6 +33,70 @@ fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> El
     .with_child_gap(SPACE_MD)
     .with_cross_align_items(Alignment::Center)
     .with_width(Sizing::grow())
+}
+
+/// Renders the account selector (only when multiple accounts detected).
+fn account_selector(store: &Store, text_shadow_enabled: bool) -> Option<Element<RootMessage>> {
+    if store.accounts.len() <= 1 {
+        return None;
+    }
+    
+    let mut accounts: Vec<_> = store.accounts.values().collect();
+    accounts.sort_by_key(|a| a.uid);
+    
+    let account_buttons: Vec<Element<RootMessage>> = accounts
+        .iter()
+        .map(|account| {
+            let is_selected = store.selected_account == Some(account.uid);
+            let uid_text = format!("{}{}", 
+                if account.is_active { "● " } else { "○ " },
+                format!("{:08}", account.uid % 100000000) // Last 8 digits
+            );
+            
+            let bg_color = if is_selected {
+                SUCCESS_COLOR
+            } else {
+                Color::from_rgba(0.3, 0.3, 0.3, 1.0)
+            };
+            
+            Button::new()
+                .with_bg_color(bg_color)
+                .with_border_radius(BORDER_RADIUS)
+                .with_click_handler({
+                    let uid = account.uid;
+                    move |_, shell| {
+                        shell.publish(RootMessage::Account(AccountMessage::Select(uid)));
+                    }
+                })
+                .as_element(
+                    combine_id(w_id!(), account.uid.to_string().as_str()),
+                    maybe_text_shadow(
+                        Text::new(uid_text)
+                            .with_font_size(14.0)
+                            .with_color(TEXT_COLOR),
+                        text_shadow_enabled
+                    )
+                )
+                .with_padding(BoxAmount::all(PAD_SM))
+        })
+        .collect();
+    
+    Some(
+        column![
+            maybe_text_shadow(
+                Text::new("Account:")
+                    .with_font_size(14.0)
+                    .with_color(TEXT_MUTED),
+                text_shadow_enabled
+            ),
+            row(account_buttons)
+                .with_child_gap(SPACE_SM)
+                .with_axis_align_content(Alignment::Center)
+        ]
+        .with_child_gap(SPACE_SM)
+        .with_cross_align_items(Alignment::Center)
+        .with_padding(BoxAmount::all(PAD_MD))
+    )
 }
 
 impl ActiveScreen {
@@ -76,26 +141,38 @@ impl ActiveScreen {
             .with_axis_align_content(Alignment::Center)
             .with_padding(BoxAmount::all(PAD_MD));
 
-        column![
-            maybe_text_shadow(
-                Text::new("Connected!")
-                    .with_font_size(24.0)
-                    .with_color(TEXT_COLOR)
-                    .with_paragraph_alignment(ParagraphAlignment::Center),
-                text_shadow_enabled
-            )
-            .as_element()
-            .with_padding(BoxAmount::all(PAD_MD)),
-            stats_display,
-            Rule::horizontal()
-                .with_color(BORDER_COLOR)
-                .as_element(w_id!())
-                .with_padding(BoxAmount::vertical(PAD_LG)),
-            action_bar,
-        ]
-        .with_child_gap(SPACE_LG)
-        .with_cross_align_items(Alignment::Center)
-        .with_padding(BoxAmount::all(PAD_LG * 2.0))
-        .with_border_radius(BorderRadius::all(BORDER_RADIUS))
+        {
+            let mut elements = vec![
+                maybe_text_shadow(
+                    Text::new("Connected!")
+                        .with_font_size(24.0)
+                        .with_color(TEXT_COLOR)
+                        .with_paragraph_alignment(ParagraphAlignment::Center),
+                    text_shadow_enabled
+                )
+                .as_element()
+                .with_padding(BoxAmount::all(PAD_MD)),
+            ];
+            
+            // Add account selector if multiple accounts
+            if let Some(selector) = account_selector(store, text_shadow_enabled) {
+                elements.push(selector);
+            }
+            
+            elements.push(stats_display);
+            elements.push(
+                Rule::horizontal()
+                    .with_color(BORDER_COLOR)
+                    .as_element(w_id!())
+                    .with_padding(BoxAmount::vertical(PAD_LG))
+            );
+            elements.push(action_bar);
+            
+            column(elements)
+                .with_child_gap(SPACE_LG)
+                .with_cross_align_items(Alignment::Center)
+                .with_padding(BoxAmount::all(PAD_LG * 2.0))
+                .with_border_radius(BorderRadius::all(BORDER_RADIUS))
+        }
     }
 }

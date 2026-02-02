@@ -10,6 +10,7 @@ use axum::{Extension, Router};
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, Stream, StreamExt};
+use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -17,15 +18,18 @@ use tokio::task::AbortHandle;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, info, warn};
 
-struct WebSocketServerState<E: Exporter> {
-    pub exporter: Arc<Mutex<E>>,
+use crate::worker::MultiAccountManager;
+
+struct WebSocketServerState {
+    pub manager: Arc<Mutex<MultiAccountManager>>,
+    pub selected_account_rx: watch::Receiver<Option<u32>>,
     pub client_count: Arc<AtomicUsize>,
     pub client_count_tx: watch::Sender<usize>,
     pub service_handle: Arc<RwLock<Option<AbortHandle>>>,
     pub active_port: Arc<AtomicU16>,
 }
 
-impl<E: Exporter> WebSocketServerState<E> {
+impl WebSocketServerState {
     pub fn set_service_handle(&self, handle: AbortHandle, port: u16) -> Result<(), ()> {
         self.active_port.store(port, Ordering::Relaxed);
         if let Ok(mut w) = self.service_handle.write() {
@@ -59,9 +63,10 @@ pub enum PortCommand {
     Close,
 }
 
-pub async fn start_websocket_server<E: Exporter>(
+pub async fn start_websocket_server(
     mut port_source: PortSource,
-    exporter: Arc<Mutex<E>>,
+    manager: Arc<Mutex<MultiAccountManager>>,
+    selected_account_rx: watch::Receiver<Option<u32>>,
 ) -> Result<(impl Stream<Item = Result<u16, String>>, impl Stream<Item = usize>), String> {
     let initial_port = match port_source {
         PortSource::Fixed(ref port) => *port,
@@ -72,7 +77,8 @@ pub async fn start_websocket_server<E: Exporter>(
     let (port_tx, port_rx) = watch::channel::<Result<u16, String>>(Ok(initial_port));
 
     let state = Arc::new(WebSocketServerState {
-        exporter: exporter.clone(),
+        manager: manager.clone(),
+        selected_account_rx,
         client_count: Arc::new(AtomicUsize::new(0)),
         client_count_tx,
         service_handle: Arc::new(RwLock::new(None)),
@@ -100,7 +106,7 @@ pub async fn start_websocket_server<E: Exporter>(
             let server_addr = format!("0.0.0.0:{}", port);
 
             let service = Router::new()
-                .route("/ws", get(ws_handler::<E>))
+                .route("/ws", get(ws_handler))
                 .layer(Extension(state.clone()))
                 .into_make_service();
 
@@ -143,9 +149,9 @@ pub async fn start_websocket_server<E: Exporter>(
     Ok((port_stream, client_count_stream))
 }
 
-async fn ws_handler<E: Exporter>(
+async fn ws_handler(
     ws: WebSocketUpgrade,
-    Extension(state): Extension<Arc<WebSocketServerState<E>>>,
+    Extension(state): Extension<Arc<WebSocketServerState>>,
 ) -> axum::response::Response {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
@@ -157,7 +163,7 @@ async fn send_serialized_message<T: Serialize>(sender: &mut SplitSink<WebSocket,
     Ok(())
 }
 
-async fn handle_socket<E: Exporter>(socket: WebSocket, state: Arc<WebSocketServerState<E>>) {
+async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
     // Increment client count
     let client_count = state.client_count.fetch_add(1, Ordering::SeqCst) + 1;
     info!("New client connected, total clients: {}", client_count);
@@ -166,41 +172,95 @@ async fn handle_socket<E: Exporter>(socket: WebSocket, state: Arc<WebSocketServe
     let _ = state.client_count_tx.send(client_count);
 
     let (mut sender, mut receiver) = socket.split();
+    let mut account_rx = state.selected_account_rx.clone();
 
-    // Subscribe to the exporter's event channel
-    let (initial_event, mut rx) = state.exporter.lock().await.subscribe();
+    // Main loop: subscribe to current account and stream until account changes
+    'outer: loop {
+        // Wait for a valid account selection
+        let uid = loop {
+            if let Some(uid) = *account_rx.borrow_and_update() {
+                break uid;
+            }
+            // Wait for account to be selected
+            if account_rx.changed().await.is_err() {
+                // Channel closed, exit entire function
+                break 'outer;
+            }
+        };
 
-    // Send the initial exporter state to the client
-    if let Some(event) = initial_event {
-        if let Err(e) = send_serialized_message(&mut sender, event).await {
-            warn!("Failed to send initial state to client: {}", e);
-        }
-    }
+        // Get exporter for this account
+        let current_exporter = {
+            let mgr = state.manager.lock().await;
+            mgr.get_account_exporter(uid)
+        };
 
-    // Forward messages from the channel to the websocket
-    let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if let Err(e) = send_serialized_message(&mut sender, msg).await {
-                warn!("Failed to send event to client: {}", e);
+        if let Some(exporter) = current_exporter {
+            // Subscribe to this account's events
+            let (initial_event, mut rx) = exporter.lock().await.subscribe();
+
+            // Send initial state
+            if let Some(event) = initial_event {
+                if let Err(e) = send_serialized_message(&mut sender, event).await {
+                    warn!("Failed to send initial state to client: {}", e);
+                    break;
+                }
+            }
+
+            // Stream events until account changes or reconnects
+            loop {
+                tokio::select! {
+                    // New event from current account
+                    Ok(event) = rx.recv() => {
+                        if let Err(e) = send_serialized_message(&mut sender, event).await {
+                            warn!("Failed to send event to client: {}", e);
+                            break;
+                        }
+                    }
+                    // Account selection changed or reconnection notification
+                    result = account_rx.changed() => {
+                        match result {
+                            Ok(_) => {
+                                let new_uid = *account_rx.borrow_and_update();
+                                if new_uid != Some(uid) {
+                                    info!("Account changed from {} to {:?}, re-subscribing", uid, new_uid);
+                                    break; // Break inner loop to re-subscribe
+                                }
+                                
+                                // Same UID - check if exporter instance changed (reconnection)
+                                let latest_exporter = {
+                                    let mgr = state.manager.lock().await;
+                                    mgr.get_account_exporter(uid)
+                                };
+                                
+                                if let Some(latest) = latest_exporter {
+                                    if !Arc::ptr_eq(&exporter, &latest) {
+                                        info!(uid, "Detected reconnection - exporter changed, re-subscribing");
+                                        break; // Break to re-subscribe to new exporter
+                                    }
+                                }
+                                // Same account, same exporter - spurious notification, ignore
+                            }
+                            Err(_) => {
+                                info!("Account channel closed, disconnecting client");
+                                break 'outer;
+                            }
+                        }
+                    }
+                    // Client message (keepalive)
+                    msg = receiver.next() => {
+                        if msg.is_none() {
+                            // Client disconnected
+                            break 'outer;
+                        }
+                    }
+                }
+            }
+        } else {
+            // No exporter for this account, wait for account change
+            if account_rx.changed().await.is_err() {
                 break;
             }
         }
-    });
-
-    let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(_)) = receiver.next().await {
-            // Just keep the connection alive, we don't need client messages
-        }
-    });
-
-    // If any task exits, clean up both
-    tokio::select! {
-        _ = &mut send_task => {
-            recv_task.abort();
-        },
-        _ = &mut recv_task => {
-            send_task.abort();
-        },
     }
 
     // Decrement client count when client disconnects

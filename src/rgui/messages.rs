@@ -186,6 +186,23 @@ pub enum ScreenAction<Message> {
 }
 
 // ============================================================================
+// Account Messages
+// ============================================================================
+
+/// Messages related to account management.
+#[derive(Debug, Clone)]
+pub enum AccountMessage {
+    /// New account discovered with UID
+    Discovered { uid: u32, is_active: bool },
+    /// User selected a different account to view
+    Select(u32),
+    /// Update stats for a specific account
+    UpdateStats { uid: u32, stats: ExportStats },
+    /// Update active status for an account
+    UpdateActive { uid: u32, is_active: bool },
+}
+
+// ============================================================================
 // Root Message - Aggregates all message types
 // ============================================================================
 
@@ -208,6 +225,8 @@ pub enum RootMessage {
     CheckConnection(Instant),
 
     // Grouped messages
+    /// Account management messages
+    Account(AccountMessage),
     /// Export-related messages
     Export(ExportMessage),
     /// WebSocket server messages
