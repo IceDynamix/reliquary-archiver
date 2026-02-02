@@ -499,10 +499,11 @@ impl<Message: Send + 'static> ScreenAction<Message> {
             Self::RefreshExport => {
                 if let Some(sender) = state.worker_sender.as_ref() {
                     let mut sender = sender.clone();
+                    let uid = state.store.selected_account;
                     Task::future(async move {
                         let (tx, rx) = oneshot::channel();
                         sender.send(worker::WorkerCommand::MakeExport { 
-                            uid: None, // TODO: Use selected account UID
+                            uid,
                             sender: tx 
                         }).await;
                         rx.await.unwrap()
