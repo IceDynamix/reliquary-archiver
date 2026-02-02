@@ -18,7 +18,7 @@ use tokio::task::AbortHandle;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, info, warn};
 
-use crate::worker::MultiAccountManager;
+use crate::worker::{AccountEvent, MultiAccountManager};
 
 struct WebSocketServerState {
     pub manager: Arc<Mutex<MultiAccountManager>>,
@@ -82,7 +82,7 @@ pub async fn start_websocket_server(
         client_count: Arc::new(AtomicUsize::new(0)),
         client_count_tx,
         service_handle: Arc::new(RwLock::new(None)),
-        active_port: Arc::new(AtomicU16::new(0)),
+        active_port: Arc::new(AtomicU16::new(initial_port)),
     });
 
     // Create streams from the watch receivers
@@ -172,93 +172,88 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
     let _ = state.client_count_tx.send(client_count);
 
     let (mut sender, mut receiver) = socket.split();
+    
+    // Subscribe to manager's unified event channel
+    let mut manager_rx = state.manager.lock().await.subscribe();
     let mut account_rx = state.selected_account_rx.clone();
-
-    // Main loop: subscribe to current account and stream until account changes
-    'outer: loop {
-        // Wait for a valid account selection
-        let uid = loop {
-            if let Some(uid) = *account_rx.borrow_and_update() {
-                break uid;
+    
+    // Sync with GUI's current selection
+    let mut selected_uid = *account_rx.borrow();
+    
+    // Send initial state if an account is already selected
+    if let Some(uid) = selected_uid {
+        let exporter = state.manager.lock().await.get_account_exporter(uid);
+        if let Some(exporter) = exporter {
+            if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
+                send_serialized_message(&mut sender, initial_event).await.ok();
             }
-            // Wait for account to be selected
-            if account_rx.changed().await.is_err() {
-                // Channel closed, exit entire function
-                break 'outer;
-            }
-        };
+        }
+    }
 
-        // Get exporter for this account
-        let current_exporter = {
-            let mgr = state.manager.lock().await;
-            mgr.get_account_exporter(uid)
-        };
-
-        if let Some(exporter) = current_exporter {
-            // Subscribe to this account's events
-            let (initial_event, mut rx) = exporter.lock().await.subscribe();
-
-            // Send initial state
-            if let Some(event) = initial_event {
-                if let Err(e) = send_serialized_message(&mut sender, event).await {
-                    warn!("Failed to send initial state to client: {}", e);
-                    break;
-                }
-            }
-
-            // Stream events until account changes or reconnects
-            loop {
-                tokio::select! {
-                    // New event from current account
-                    Ok(event) = rx.recv() => {
-                        if let Err(e) = send_serialized_message(&mut sender, event).await {
-                            warn!("Failed to send event to client: {}", e);
-                            break;
+    // Main loop: filter events by selected account and track GUI selection changes
+    loop {
+        tokio::select! {
+            // Events from manager
+            Ok(event) = manager_rx.recv() => {
+                match event {
+                    AccountEvent::ExporterEvent { uid, event } => {
+                        // Only send if this is the selected account
+                        if Some(uid) == selected_uid {
+                            if let Err(e) = send_serialized_message(&mut sender, event).await {
+                                warn!("Failed to send event to client: {}", e);
+                                break;
+                            }
                         }
                     }
-                    // Account selection changed or reconnection notification
-                    result = account_rx.changed() => {
-                        match result {
-                            Ok(_) => {
-                                let new_uid = *account_rx.borrow_and_update();
-                                if new_uid != Some(uid) {
-                                    info!("Account changed from {} to {:?}, re-subscribing", uid, new_uid);
-                                    break; // Break inner loop to re-subscribe
-                                }
-                                
-                                // Same UID - check if exporter instance changed (reconnection)
-                                let latest_exporter = {
-                                    let mgr = state.manager.lock().await;
-                                    mgr.get_account_exporter(uid)
-                                };
-                                
-                                if let Some(latest) = latest_exporter {
-                                    if !Arc::ptr_eq(&exporter, &latest) {
-                                        info!(uid, "Detected reconnection - exporter changed, re-subscribing");
-                                        break; // Break to re-subscribe to new exporter
+                    AccountEvent::Discovered { uid } | AccountEvent::Reconnected { uid } => {
+                        // If this is the selected account (or first account), send initial state
+                        if Some(uid) == selected_uid {
+                            info!(uid, "WebSocket sending initial state for account");
+                            let exporter = state.manager.lock().await.get_account_exporter(uid);
+                            if let Some(exporter) = exporter {
+                                if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
+                                    if let Err(e) = send_serialized_message(&mut sender, initial_event).await {
+                                        warn!("Failed to send initial state: {}", e);
+                                        break;
                                     }
                                 }
-                                // Same account, same exporter - spurious notification, ignore
                             }
-                            Err(_) => {
-                                info!("Account channel closed, disconnecting client");
-                                break 'outer;
-                            }
-                        }
-                    }
-                    // Client message (keepalive)
-                    msg = receiver.next() => {
-                        if msg.is_none() {
-                            // Client disconnected
-                            break 'outer;
                         }
                     }
                 }
             }
-        } else {
-            // No exporter for this account, wait for account change
-            if account_rx.changed().await.is_err() {
-                break;
+            // GUI selection changed
+            result = account_rx.changed() => {
+                if result.is_err() {
+                    info!("Account selection channel closed");
+                    break;
+                }
+                let new_uid = *account_rx.borrow_and_update();
+                if new_uid != selected_uid {
+                    selected_uid = new_uid;
+                    info!("WebSocket switched to account {:?}", selected_uid);
+                    
+                    // Send initial state for newly selected account
+                    if let Some(uid) = selected_uid {
+                        let exporter = state.manager.lock().await.get_account_exporter(uid);
+                        if let Some(exporter) = exporter {
+                            if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
+                                if let Err(e) = send_serialized_message(&mut sender, initial_event).await {
+                                    warn!("Failed to send initial state after selection: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Client messages (for future account selection or keepalive)
+            msg = receiver.next() => {
+                if msg.is_none() {
+                    // Client disconnected
+                    info!("WebSocket client disconnected");
+                    break;
+                }
             }
         }
     }

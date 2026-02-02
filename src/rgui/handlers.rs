@@ -139,74 +139,33 @@ pub fn handle_export_message(state: &mut RootState, message: ExportMessage) -> O
 /// Manages account discovery, selection, and stats updates.
 pub fn handle_account_message(state: &mut RootState, message: AccountMessage) -> Option<Task<RootMessage>> {
     match message {
-        AccountMessage::Discovered { uid, is_active } => {
+        AccountMessage::Discovered { uid } => {
             // Add or update account info
-            state.store.accounts.insert(uid, AccountInfo { uid, is_active });
+            state.store.accounts.insert(uid, AccountInfo { uid });
             
             // Always auto-switch to newly discovered account
             state.store.selected_account = Some(uid);
-            // Broadcast the selection (for WebSocket)
-            let _ = state.selected_account_tx.send(Some(uid));
+            state.selected_account_tx.send(Some(uid)).ok();
             // Mark export as out of date
             state.store.export_out_of_date = true;
             
             // Refresh stats and trigger export
             let manager = state.manager.clone();
             let worker_sender = state.worker_sender.clone();
-            Some(Task::future(async move {
-                // Get stats
-                let stats = {
+            Some(Task::batch(vec![
+                // Update stats immediately
+                Task::future(async move {
                     let mgr = manager.lock().await;
-                    if let Some(exporter) = mgr.get_account_exporter(uid) {
+                    let stats = if let Some(exporter) = mgr.get_account_exporter(uid) {
                         let exp = exporter.lock().await;
                         ExportStats::new(&exp)
                     } else {
                         ExportStats::default()
-                    }
-                };
-                
-                // Trigger export refresh
-                if let Some(mut sender) = worker_sender {
-                    let (tx, rx) = futures::channel::oneshot::channel();
-                    sender.send(crate::worker::WorkerCommand::MakeExport { 
-                        uid: Some(uid), 
-                        sender: tx 
-                    }).await.ok();
-                    
-                    if let Ok(Some(export)) = rx.await {
-                        return RootMessage::Export(ExportMessage::New(export));
-                    }
-                }
-                
-                RootMessage::export_stats(stats)
-            }))
-        }
-        
-        AccountMessage::Select(uid) => {
-            // Only select if account exists
-            if state.store.accounts.contains_key(&uid) {
-                state.store.selected_account = Some(uid);
-                // Broadcast the selection change (for WebSocket)
-                let _ = state.selected_account_tx.send(Some(uid));
-                // Mark export as out of date since we switched accounts
-                state.store.export_out_of_date = true;
-                
-                // Refresh stats and trigger export for the newly selected account
-                let manager = state.manager.clone();
-                let worker_sender = state.worker_sender.clone();
-                return Some(Task::future(async move {
-                    // Get stats
-                    let stats = {
-                        let mgr = manager.lock().await;
-                        if let Some(exporter) = mgr.get_account_exporter(uid) {
-                            let exp = exporter.lock().await;
-                            ExportStats::new(&exp)
-                        } else {
-                            ExportStats::default()
-                        }
                     };
-                    
-                    // Trigger export refresh
+                    RootMessage::export_stats(stats)
+                }),
+                // Then trigger export refresh
+                Task::future(async move {
                     if let Some(mut sender) = worker_sender {
                         let (tx, rx) = futures::channel::oneshot::channel();
                         sender.send(crate::worker::WorkerCommand::MakeExport { 
@@ -218,25 +177,50 @@ pub fn handle_account_message(state: &mut RootState, message: AccountMessage) ->
                             return RootMessage::Export(ExportMessage::New(export));
                         }
                     }
-                    
-                    RootMessage::export_stats(stats)
-                }));
-            }
-            None
+                    RootMessage::TriggerRender
+                }),
+            ]))
         }
         
-        AccountMessage::UpdateStats { uid, stats } => {
-            // Only update stats if this is the selected account
-            if state.store.selected_account == Some(uid) {
-                state.store.export_stats = stats;
-            }
-            None
-        }
-        
-        AccountMessage::UpdateActive { uid, is_active } => {
-            // Update active status for account
-            if let Some(account) = state.store.accounts.get_mut(&uid) {
-                account.is_active = is_active;
+        AccountMessage::Select(uid) => {
+            // Only select if account exists
+            if state.store.accounts.contains_key(&uid) {
+                state.store.selected_account = Some(uid);
+                state.selected_account_tx.send(Some(uid)).ok();
+                // Mark export as out of date since we switched accounts
+                state.store.export_out_of_date = true;
+                
+                // Refresh stats and trigger export for the newly selected account
+                let manager = state.manager.clone();
+                let worker_sender = state.worker_sender.clone();
+                return Some(Task::batch(vec![
+                    // Update stats immediately
+                    Task::future(async move {
+                        let mgr = manager.lock().await;
+                        let stats = if let Some(exporter) = mgr.get_account_exporter(uid) {
+                            let exp = exporter.lock().await;
+                            ExportStats::new(&exp)
+                        } else {
+                            ExportStats::default()
+                        };
+                        RootMessage::export_stats(stats)
+                    }),
+                    // Then trigger export refresh
+                    Task::future(async move {
+                        if let Some(mut sender) = worker_sender {
+                            let (tx, rx) = futures::channel::oneshot::channel();
+                            sender.send(crate::worker::WorkerCommand::MakeExport { 
+                                uid: Some(uid), 
+                                sender: tx 
+                            }).await.ok();
+                            
+                            if let Ok(Some(export)) = rx.await {
+                                return RootMessage::Export(ExportMessage::New(export));
+                            }
+                        }
+                        RootMessage::TriggerRender
+                    }),
+                ]));
             }
             None
         }
@@ -392,12 +376,9 @@ pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) ->
             state.worker_sender = Some(sender);
         }
         worker::WorkerEvent::AccountReconnected { uid } => {
-            info!(uid, "account reconnected, triggering watch notification for WebSocket");
-            // Trigger watch channel notification even though value hasn't changed
-            // This forces WebSocket to recheck exporter identity and resubscribe
-            state.selected_account_tx.send_modify(|_| {});
+            info!(uid, "account reconnected - refreshing stats");
             
-            // Also refresh stats for this account
+            // Refresh stats for this account
             let manager = state.manager.clone();
             return Task::future(async move {
                 let mgr = manager.lock().await;
@@ -412,8 +393,8 @@ pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) ->
         worker::WorkerEvent::Metric(metric) => {
             handle_sniffer_metric(state, metric);
         }
-        worker::WorkerEvent::AccountDiscovered { uid, is_active } => {
-            return Task::done(RootMessage::Account(AccountMessage::Discovered { uid, is_active }));
+        worker::WorkerEvent::AccountDiscovered { uid } => {
+            return Task::done(RootMessage::Account(AccountMessage::Discovered { uid }));
         }
         worker::WorkerEvent::ExportEvent { uid, event } => {
             // Only process if this is the selected account

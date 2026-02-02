@@ -25,7 +25,6 @@ use crate::worker::{self, MultiAccountManager};
 #[derive(Debug, Clone)]
 pub struct AccountInfo {
     pub uid: u32,
-    pub is_active: bool,  // is this account's conversation currently connected?
 }
 
 /// File extension filter configuration for save dialogs.
@@ -216,7 +215,7 @@ pub struct RootState {
     pub manager: Arc<Mutex<MultiAccountManager>>,
     /// Channel to send commands to the background worker
     pub worker_sender: Option<worker::WorkerHandle>,
-    /// Channel to broadcast selected account changes (for WebSocket)
+    /// Channel to broadcast GUI's selected account to WebSocket (UI state, not lifecycle events)
     pub selected_account_tx: watch::Sender<Option<u32>>,
     /// Central data store
     pub store: Store,

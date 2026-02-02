@@ -193,13 +193,9 @@ pub enum ScreenAction<Message> {
 #[derive(Debug, Clone)]
 pub enum AccountMessage {
     /// New account discovered with UID
-    Discovered { uid: u32, is_active: bool },
+    Discovered { uid: u32 },
     /// User selected a different account to view
     Select(u32),
-    /// Update stats for a specific account
-    UpdateStats { uid: u32, stats: ExportStats },
-    /// Update active status for an account
-    UpdateActive { uid: u32, is_active: bool },
 }
 
 // ============================================================================

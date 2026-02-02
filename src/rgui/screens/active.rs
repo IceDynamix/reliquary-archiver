@@ -48,10 +48,7 @@ fn account_selector(store: &Store, text_shadow_enabled: bool) -> Option<Element<
         .iter()
         .map(|account| {
             let is_selected = store.selected_account == Some(account.uid);
-            let uid_text = format!("{}{}", 
-                if account.is_active { "● " } else { "○ " },
-                format!("{:08}", account.uid % 100000000) // Last 8 digits
-            );
+            let uid_text = account.uid.to_string();
             
             let bg_color = if is_selected {
                 SUCCESS_COLOR
@@ -69,7 +66,7 @@ fn account_selector(store: &Store, text_shadow_enabled: bool) -> Option<Element<
                     }
                 })
                 .as_element(
-                    combine_id(w_id!(), account.uid.to_string().as_str()),
+                    combine_id(w_id!(), account.uid),
                     maybe_text_shadow(
                         Text::new(uid_text)
                             .with_font_size(14.0)
