@@ -554,11 +554,15 @@ where
 async fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
+    E::Export: From<<OptimizerExporter as Exporter>::Export>,
 {
+    use reliquary_archiver::export::database::get_database;
+    use crate::worker::MultiAccountManager;
+    
     #[cfg(feature = "stream")]
     use crate::websocket::{start_websocket_server, PortSource};
-
-    let exporter = Arc::new(FuturesMutex::new(exporter));
+    #[cfg(feature = "stream")]
+    use tokio::sync::watch;
 
     #[cfg(not(feature = "stream"))]
     let streaming = false;
@@ -566,29 +570,46 @@ where
     #[cfg(feature = "stream")]
     let streaming = args.stream;
 
-    if streaming {
-        warn!("WebSocket streaming is currently only supported in GUI mode");
-        // TODO: WebSocket in CLI mode needs to be updated for MultiAccountManager
-        // For now, CLI websocket is disabled - use GUI mode for websocket support
-        live_capture(args, exporter, sniffer, false).await
+    // Always use MultiAccountManager for consistency
+    let database = get_database();
+    let manager = Arc::new(FuturesMutex::new(MultiAccountManager::new(database.keys.clone())));
+    
+    #[cfg(feature = "stream")]
+    let selected_account_tx = if streaming {
+        let (tx, rx) = watch::channel::<Option<u32>>(None);
+        
+        // Start websocket server
+        tokio::spawn(start_websocket_server(
+            PortSource::Fixed(args.websocket_port),
+            manager.clone(),
+            rx,
+        ));
+        
+        info!("WebSocket server starting on port {}...", args.websocket_port);
+        Some(tx)
     } else {
-        live_capture(args, exporter, sniffer, streaming).await
-    }
-}
-
-async fn maybe_timeout(timeout: Option<Duration>) -> () {
-    if let Some(timeout) = timeout {
-        tokio::time::sleep(timeout).await;
-    } else {
-        future::pending::<()>().await;
-    }
+        None
+    };
+    
+    #[cfg(not(feature = "stream"))]
+    let selected_account_tx = None;
+    
+    // Run live capture with manager
+    let result = live_capture(args, manager, sniffer, selected_account_tx, streaming).await;
+    result.map(|export| export.into())
 }
 
 #[instrument(skip_all)]
-async fn live_capture<E>(args: &Args, exporter: Arc<FuturesMutex<E>>, mut sniffer: GameSniffer, streaming: bool) -> Option<E::Export>
-where
-    E: Exporter,
-{
+async fn live_capture(
+    args: &Args,
+    manager: Arc<FuturesMutex<worker::MultiAccountManager>>,
+    mut sniffer: GameSniffer,
+    selected_account_tx: Option<tokio::sync::watch::Sender<Option<u32>>>,
+    streaming: bool,
+) -> Option<<OptimizerExporter as Exporter>::Export> {
+    use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
+    use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
+    
     let rx = {
         #[cfg(feature = "pcap")]
         {
@@ -602,10 +623,13 @@ where
     };
 
     let packet_stream = rx.expect("Failed to start packet capture");
-
     let mut packet_stream = packet_stream.fuse();
 
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
+    
+    if streaming {
+        info!("WebSocket streaming enabled - capture will run until manually stopped");
+    }
 
     pin!(
         let timeout_future = maybe_timeout(
@@ -619,6 +643,7 @@ where
     );
 
     let mut poisoned_sources = HashSet::new();
+    let mut latest_uid: Option<u32> = None;
 
     'recv: loop {
         let received = select! {
@@ -626,7 +651,7 @@ where
                 Some(packet) => packet,
                 None => break 'recv,
             },
-
+            
             _ = timeout_future => {
                 break 'recv;
             }
@@ -662,11 +687,32 @@ where
                                             info!(conv_id, "detected login start");
                                         }
 
+                                        // Check for UID discovery to register with manager
+                                        if command.command_id == PlayerGetTokenScRsp {
+                                            if let Ok(token_rsp) = command.parse_proto::<PlayerGetTokenScRspProto>() {
+                                                let uid = token_rsp.uid;
+                                                let mut mgr = manager.lock().await;
+                                                mgr.register_uid(conv_id, uid);
+                                                
+                                                // Auto-select latest account
+                                                latest_uid = Some(uid);
+                                                if let Some(ref tx) = selected_account_tx {
+                                                    tx.send(Some(uid)).ok();
+                                                    info!(uid, "Auto-selected account for WebSocket streaming");
+                                                }
+                                            }
+                                        }
+
                                         if !streaming && command.command_id == PlayerLoginFinishScRsp {
                                             info!("detected login end, assume initialization is finished");
                                             break 'recv;
                                         }
 
+                                        // Route command to correct account exporter
+                                        let exporter = {
+                                            let mut mgr = manager.lock().await;
+                                            mgr.get_or_create_exporter(conv_id)
+                                        };
                                         exporter.lock().await.read_command(command);
                                     }
                                     Err(e) => {
@@ -681,15 +727,22 @@ where
                                 },
                             }
                         }
-
-                        if !streaming && exporter.lock().await.is_initialized() {
-                            info!("retrieved all relevant packets, stop listening");
-                            break 'recv;
+                        
+                        // Check if initialized for early exit in non-streaming mode
+                        if !streaming {
+                            if let Some(uid) = latest_uid {
+                                let mgr = manager.lock().await;
+                                if let Some(exporter) = mgr.get_account_exporter(uid) {
+                                    if exporter.lock().await.is_initialized() {
+                                        info!("retrieved all relevant packets, stop listening");
+                                        break 'recv;
+                                    }
+                                }
+                            }
                         }
                     }
                     Err(e) => {
                         warn!(%e);
-
                         match e {
                             NetworkError::ConnectionPacket(_) => {
                                 // Connection errors are not fatal as all network interfaces are funneled through the same stream
@@ -709,7 +762,23 @@ where
         }
     }
 
-    exporter.lock().await.export()
+    // Export from the latest account
+    if let Some(uid) = latest_uid {
+        let mgr = manager.lock().await;
+        if let Some(exporter) = mgr.get_account_exporter(uid) {
+            return exporter.lock().await.export();
+        }
+    }
+    
+    None
+}
+
+async fn maybe_timeout(timeout: Option<Duration>) -> () {
+    if let Some(timeout) = timeout {
+        tokio::time::sleep(timeout).await;
+    } else {
+        future::pending::<()>().await;
+    }
 }
 
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
