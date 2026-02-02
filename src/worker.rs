@@ -437,17 +437,14 @@ async fn live_capture(
                                         info!(conv_id, "detected login start");
                                     }
 
-                                    // Check if this is a UID discovery packet
+                                    // Check if this is a UID discovery packet and register it if so
                                     if command.command_id == PlayerGetTokenScRsp {
                                         if let Ok(token_rsp) = command.parse_proto::<PlayerGetTokenScRspProto>() {
                                             let uid = token_rsp.uid;
                                             let mut mgr = manager.lock().await;
                                             let is_new = mgr.register_uid(conv_id, uid);
 
-                                            // Emit account discovered event
                                             metric_tx.sender.send(WorkerEvent::AccountDiscovered { uid }).await.ok();
-
-                                            // Manager now handles discovery/reconnection events internally via register_uid
                                         }
                                     }
 
