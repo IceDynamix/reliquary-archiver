@@ -7,18 +7,25 @@
 //! - Connection tracking
 //! - Screen states
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 
 use futures::lock::Mutex;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
-use tokio::sync::watch::Sender;
+use tokio::sync::watch;
 use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::update::UpdateState;
 use crate::rgui::messages::WebSocketStatus;
 use crate::websocket::PortCommand;
-use crate::worker;
+use crate::worker::{self, MultiAccountManager};
+
+/// Information about a detected account.
+#[derive(Debug, Clone)]
+pub struct AccountInfo {
+    pub uid: u32,
+}
 
 /// File extension filter configuration for save dialogs.
 #[derive(Debug, Clone)]
@@ -54,6 +61,11 @@ pub struct FileContainer {
 /// This is the "model" part of the MVU architecture, containing all
 /// application data that the view reads from.
 pub struct Store {
+    // Account management
+    pub accounts: HashMap<u32, AccountInfo>,
+    pub selected_account: Option<u32>,
+
+    // Export data (for currently selected account)
     pub json_export: Option<FileContainer>,
     pub export_out_of_date: bool,
     pub connection_stats: StatsStore,
@@ -114,6 +126,8 @@ pub struct Settings {
 impl Default for Store {
     fn default() -> Self {
         Self {
+            accounts: HashMap::new(),
+            selected_account: None,
             json_export: None,
             export_out_of_date: false,
             connection_stats: StatsStore::default(),
@@ -196,12 +210,13 @@ pub struct StatsStore {
 /// Root application state containing all UI and runtime data.
 ///
 /// This is the top-level state object passed to the view and update functions.
-#[derive(Default)]
 pub struct RootState {
-    /// Shared exporter instance for generating output files
-    pub exporter: Arc<Mutex<OptimizerExporter>>,
+    /// Multi-account manager for handling multiple exporters
+    pub manager: Arc<Mutex<MultiAccountManager>>,
     /// Channel to send commands to the background worker
     pub worker_sender: Option<worker::WorkerHandle>,
+    /// Channel to broadcast GUI's selected account to WebSocket (UI state, not lifecycle events)
+    pub selected_account_tx: watch::Sender<Option<u32>>,
     /// Central data store
     pub store: Store,
     /// Current screen being displayed
@@ -211,11 +226,25 @@ pub struct RootState {
     /// Whether the opacity slider is being dragged (hides modal backdrop)
     pub opacity_slider_dragging: bool,
     /// Channel to send port changes to the WebSocket server
-    pub ws_port_sender: Option<Sender<PortCommand>>,
+    pub ws_port_sender: Option<watch::Sender<PortCommand>>,
 }
 
 impl RootState {
-    pub fn with_port_sender(self, port_sender: Sender<PortCommand>) -> Self {
+    pub fn new(manager: Arc<Mutex<MultiAccountManager>>) -> Self {
+        let (selected_account_tx, _) = watch::channel(None);
+        Self {
+            manager,
+            worker_sender: None,
+            selected_account_tx,
+            store: Store::default(),
+            screen: Screen::default(),
+            settings_open: false,
+            opacity_slider_dragging: false,
+            ws_port_sender: None,
+        }
+    }
+
+    pub fn with_port_sender(self, port_sender: watch::Sender<PortCommand>) -> Self {
         Self {
             ws_port_sender: Some(port_sender),
             ..self

@@ -10,6 +10,7 @@ use axum::{Extension, Router};
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, Stream, StreamExt};
+use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 use serde::Serialize;
 use tokio::sync::watch;
@@ -17,15 +18,18 @@ use tokio::task::AbortHandle;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, info, warn};
 
-struct WebSocketServerState<E: Exporter> {
-    pub exporter: Arc<Mutex<E>>,
+use crate::worker::{AccountEvent, MultiAccountManager};
+
+struct WebSocketServerState {
+    pub manager: Arc<Mutex<MultiAccountManager>>,
+    pub selected_account_rx: watch::Receiver<Option<u32>>,
     pub client_count: Arc<AtomicUsize>,
     pub client_count_tx: watch::Sender<usize>,
     pub service_handle: Arc<RwLock<Option<AbortHandle>>>,
     pub active_port: Arc<AtomicU16>,
 }
 
-impl<E: Exporter> WebSocketServerState<E> {
+impl WebSocketServerState {
     pub fn set_service_handle(&self, handle: AbortHandle, port: u16) -> Result<(), ()> {
         self.active_port.store(port, Ordering::Relaxed);
         if let Ok(mut w) = self.service_handle.write() {
@@ -59,9 +63,10 @@ pub enum PortCommand {
     Close,
 }
 
-pub async fn start_websocket_server<E: Exporter>(
+pub async fn start_websocket_server(
     mut port_source: PortSource,
-    exporter: Arc<Mutex<E>>,
+    manager: Arc<Mutex<MultiAccountManager>>,
+    selected_account_rx: watch::Receiver<Option<u32>>,
 ) -> Result<(impl Stream<Item = Result<u16, String>>, impl Stream<Item = usize>), String> {
     let initial_port = match port_source {
         PortSource::Fixed(ref port) => *port,
@@ -72,11 +77,12 @@ pub async fn start_websocket_server<E: Exporter>(
     let (port_tx, port_rx) = watch::channel::<Result<u16, String>>(Ok(initial_port));
 
     let state = Arc::new(WebSocketServerState {
-        exporter: exporter.clone(),
+        manager: manager.clone(),
+        selected_account_rx,
         client_count: Arc::new(AtomicUsize::new(0)),
         client_count_tx,
         service_handle: Arc::new(RwLock::new(None)),
-        active_port: Arc::new(AtomicU16::new(0)),
+        active_port: Arc::new(AtomicU16::new(initial_port)),
     });
 
     // Create streams from the watch receivers
@@ -100,7 +106,7 @@ pub async fn start_websocket_server<E: Exporter>(
             let server_addr = format!("0.0.0.0:{}", port);
 
             let service = Router::new()
-                .route("/ws", get(ws_handler::<E>))
+                .route("/ws", get(ws_handler))
                 .layer(Extension(state.clone()))
                 .into_make_service();
 
@@ -143,10 +149,7 @@ pub async fn start_websocket_server<E: Exporter>(
     Ok((port_stream, client_count_stream))
 }
 
-async fn ws_handler<E: Exporter>(
-    ws: WebSocketUpgrade,
-    Extension(state): Extension<Arc<WebSocketServerState<E>>>,
-) -> axum::response::Response {
+async fn ws_handler(ws: WebSocketUpgrade, Extension(state): Extension<Arc<WebSocketServerState>>) -> axum::response::Response {
     ws.on_upgrade(|socket| handle_socket(socket, state))
 }
 
@@ -157,7 +160,7 @@ async fn send_serialized_message<T: Serialize>(sender: &mut SplitSink<WebSocket,
     Ok(())
 }
 
-async fn handle_socket<E: Exporter>(socket: WebSocket, state: Arc<WebSocketServerState<E>>) {
+async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
     // Increment client count
     let client_count = state.client_count.fetch_add(1, Ordering::SeqCst) + 1;
     info!("New client connected, total clients: {}", client_count);
@@ -167,40 +170,87 @@ async fn handle_socket<E: Exporter>(socket: WebSocket, state: Arc<WebSocketServe
 
     let (mut sender, mut receiver) = socket.split();
 
-    // Subscribe to the exporter's event channel
-    let (initial_event, mut rx) = state.exporter.lock().await.subscribe();
+    // Subscribe to manager's unified event channel
+    let mut manager_rx = state.manager.lock().await.subscribe();
+    let mut account_rx = state.selected_account_rx.clone();
 
-    // Send the initial exporter state to the client
-    if let Some(event) = initial_event {
-        if let Err(e) = send_serialized_message(&mut sender, event).await {
-            warn!("Failed to send initial state to client: {}", e);
+    // Sync with GUI's current selection
+    let mut selected_uid = *account_rx.borrow();
+
+    // Send initial state if an account is already selected
+    if let Some(uid) = selected_uid {
+        let exporter = state.manager.lock().await.get_account_exporter(uid);
+        if let Some(exporter) = exporter {
+            if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
+                send_serialized_message(&mut sender, initial_event).await.ok();
+            }
         }
     }
 
-    // Forward messages from the channel to the websocket
-    let mut send_task = tokio::spawn(async move {
-        while let Ok(msg) = rx.recv().await {
-            if let Err(e) = send_serialized_message(&mut sender, msg).await {
-                warn!("Failed to send event to client: {}", e);
-                break;
+    // Main loop: filter events by selected account and track GUI selection changes
+    loop {
+        tokio::select! {
+            // Events from manager
+            Ok(event) = manager_rx.recv() => {
+                match event {
+                    AccountEvent::ExporterEvent { uid, event } => {
+                        // Only send if this is the selected account
+                        if Some(uid) == selected_uid {
+                            if let Err(e) = send_serialized_message(&mut sender, event).await {
+                                warn!("Failed to send event to client: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                    AccountEvent::Discovered { uid } | AccountEvent::Reconnected { uid } => {
+                        // If this is the selected account (or first account), send initial state
+                        if Some(uid) == selected_uid {
+                            let exporter = state.manager.lock().await.get_account_exporter(uid);
+                            if let Some(exporter) = exporter {
+                                if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
+                                    if let Err(e) = send_serialized_message(&mut sender, initial_event).await {
+                                        warn!("Failed to send initial state: {}", e);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // GUI selection changed
+            result = account_rx.changed() => {
+                if result.is_err() {
+                    break;
+                }
+                let new_uid = *account_rx.borrow_and_update();
+                if new_uid != selected_uid {
+                    selected_uid = new_uid;
+                    info!("WebSocket switched to account {:?}", selected_uid);
+
+                    // Send initial state for newly selected account
+                    if let Some(uid) = selected_uid {
+                        let exporter = state.manager.lock().await.get_account_exporter(uid);
+                        if let Some(exporter) = exporter {
+                            if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
+                                if let Err(e) = send_serialized_message(&mut sender, initial_event).await {
+                                    warn!("Failed to send initial state after selection: {}", e);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // Client messages (for future account selection or keepalive)
+            msg = receiver.next() => {
+                if msg.is_none() {
+                    // Client disconnected
+                    info!("WebSocket client disconnected");
+                    break;
+                }
             }
         }
-    });
-
-    let mut recv_task = tokio::spawn(async move {
-        while let Some(Ok(_)) = receiver.next().await {
-            // Just keep the connection alive, we don't need client messages
-        }
-    });
-
-    // If any task exits, clean up both
-    tokio::select! {
-        _ = &mut send_task => {
-            recv_task.abort();
-        },
-        _ = &mut recv_task => {
-            send_task.abort();
-        },
     }
 
     // Decrement client count when client disconnects

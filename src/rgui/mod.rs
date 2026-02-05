@@ -93,6 +93,7 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         RootMessage::CheckConnection(now) => handle_connection_check(state, now),
 
         // Grouped message handlers - delegate to appropriate modules
+        RootMessage::Account(msg) => handlers::handle_account_message(state, msg),
         RootMessage::Export(msg) => handle_export_message(state, msg),
         RootMessage::WebSocket(msg) => handle_websocket_message(state, msg),
         RootMessage::Settings(msg) => components::settings_modal::handle_settings_message(state, msg),
@@ -140,22 +141,34 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 /// # Errors
 /// Returns an error if the GUI framework fails to initialize.
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
+    use std::sync::Arc;
+
+    use futures::lock::Mutex;
+    use reliquary_archiver::export::database::get_database;
+
     use crate::rgui::components::update;
+    use crate::worker::MultiAccountManager;
 
     let (port_tx, port_rx) = watch::channel::<PortCommand>(PortCommand::Open(0));
-    let state = RootState::default().with_port_sender(port_tx);
-    let exporter = state.exporter.clone();
 
-    let app = raxis::Application::new(state, view, update, move |_state| {
+    let database = get_database();
+    let manager = Arc::new(Mutex::new(MultiAccountManager::new(database.keys.clone())));
+
+    let state = RootState::new(manager.clone()).with_port_sender(port_tx);
+
+    let app = raxis::Application::new(state, view, update, move |state| {
+        let selected_account_rx = state.selected_account_tx.subscribe();
+
         Some(Task::batch(vec![
             task::get_local_app_data().and_then(|path| Task::done(RootMessage::Settings(SettingsMessage::Load(get_settings_path(path))))),
             // technically calling PerformCheck here is a data race (should be .chain() to SettingsMessage::Activate)
             // however its a case of loading+parsing ~300 bytes of json vs a round trip web request
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
-            Task::run(archiver_worker(exporter.clone()), RootMessage::WorkerEvent),
+            Task::run(archiver_worker(manager.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(
                 PortSource::Dynamic(WatchStream::from_changes(port_rx.clone())),
-                exporter.clone(),
+                manager.clone(),
+                selected_account_rx,
             ))
             .then(|e| match e {
                 Err(e) => Task::done(RootMessage::ws_status(WebSocketStatus::Failed { error: e })),
