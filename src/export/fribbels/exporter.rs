@@ -296,10 +296,7 @@ impl Exporter for OptimizerExporter {
             light_cones: self.light_cones.values().cloned().collect(),
             relics: self.relics.values().cloned().collect(),
             characters: self
-                .characters
-                .iter()
-                .chain(self.multipath_characters.iter())
-                .map(|(_id, c)| c.clone()) // Discard the key
+                .multipath_characters.values().map(|c| c.clone()) // Discard the key
                 .collect(),
         };
 

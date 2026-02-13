@@ -1,8 +1,8 @@
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
-use reliquary::network::command::proto::AvatarSkillTree::AvatarSkillTree as ProtoSkillTree;
+use reliquary::network::command::proto::AvatarPathData::AvatarPathData as ProtoAvatarPathData;
+use reliquary::network::command::proto::AvatarPathSkillTree::AvatarPathSkillTree as ProtoSkillTree;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::command::proto::Material::Material as ProtoMaterial;
-use reliquary::network::command::proto::MultiPathAvatarInfo::MultiPathAvatarInfo;
 use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use tracing::{debug, info_span, instrument, trace, warn};
@@ -76,6 +76,18 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         )
     };
 
+    let preview_substats = if proto.preview_sub_affix_list.is_empty() {
+        None
+    } else {
+        Some(
+            proto
+                .preview_sub_affix_list
+                .iter()
+                .filter_map(|substat| export_substat(db, rarity, substat))
+                .collect(),
+        )
+    };
+
     Some(Relic {
         set_id,
         name: set_name,
@@ -85,6 +97,7 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         mainstat,
         substats,
         reroll_substats,
+        preview_substats,
         location,
         lock,
         discard,
@@ -148,12 +161,12 @@ pub fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<C
     let path = avatar_path_lookup(db, id)?.to_owned();
 
     let level = proto.level;
-    let eidolon = proto.rank;
+    // let eidolon = proto.rank;
 
-    debug!(character = name, level, eidolon, "detected");
+    debug!(character = name, level, "detected");
 
-    let (skills, traces, memosprite) = export_skill_tree(db, &proto.avatar_skilltree_list);
-    let ability_version = proto.skilltree_version;
+    // let (skills, traces, memosprite) = export_skill_tree(db, &proto.);
+    // let ability_version = proto.skilltree_version;
 
     Some(Character {
         id,
@@ -161,17 +174,20 @@ pub fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<C
         path,
         level,
         ascension: proto.promotion,
-        eidolon,
-        skills,
-        traces,
-        memosprite,
-        ability_version,
+
+        // These fields are only accessible in the AvatarPathData
+        // Will be updated in [resolve_multipath_character]
+        eidolon: 0,
+        skills: Skills::default(),
+        traces: Traces::default(),
+        memosprite: None,
+        ability_version: 0,
     })
 }
 
 /// Converts a proto multipath character to an export character
-pub fn export_proto_multipath_character(db: &Database, proto: &MultiPathAvatarInfo) -> Option<Character> {
-    let id = proto.avatar_id.value() as u32;
+pub fn export_proto_multipath_character(db: &Database, proto: &ProtoAvatarPathData) -> Option<Character> {
+    let id = proto.avatar_id;
     let name = db.lookup_avatar_name(id)?;
     let path = avatar_path_lookup(db, id)?.to_owned();
 
@@ -180,7 +196,7 @@ pub fn export_proto_multipath_character(db: &Database, proto: &MultiPathAvatarIn
 
     trace!(character = name, path, "detected");
 
-    let (skills, traces, memosprite) = export_skill_tree(db, &proto.multipath_skilltree_list);
+    let (skills, traces, memosprite) = export_skill_tree(db, &proto.avatar_path_skill_tree);
     let ability_version = proto.skilltree_version;
 
     Some(Character {
@@ -201,7 +217,7 @@ pub fn export_proto_multipath_character(db: &Database, proto: &MultiPathAvatarIn
 }
 
 /// Extracts skills, traces, and memosprite from a skill tree
-pub fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces, Option<Memosprite>) {
+pub fn export_skill_tree(_db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces, Option<Memosprite>) {
     let mut skills = Skills {
         basic: 0,
         skill: 0,
@@ -228,108 +244,103 @@ pub fn export_skill_tree(db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Tr
 
     let mut memosprite = Memosprite { skill: 0, talent: 0 };
 
-    for skill in proto.iter().filter(|s| s.point_id != 0) {
+    for skill in proto.iter().filter(|s| s.multi_point_id != 0) {
         let level = skill.level;
 
-        let span = info_span!("skill", id = skill.point_id, level);
+        let span = info_span!("skill", id = skill.multi_point_id, level);
         let _enter = span.enter();
 
-        let Some(skill_tree_config) = db.avatar_skill_tree_config.get(&skill.point_id, &skill.level) else {
-            warn!("could not look up skill tree config");
-            continue;
-        };
-
-        match skill_tree_config.AnchorType.as_str() {
-            "Point01" => {
+        match skill.multi_point_id {
+            1 => {
                 trace!(level, "detected basic atk trace");
                 skills.basic = level;
             }
-            "Point02" => {
+            2 => {
                 trace!(level, "detected skill trace");
                 skills.skill = level;
             }
-            "Point03" => {
+            3 => {
                 trace!(level, "detected ult trace");
                 skills.ult = level;
             }
-            "Point04" => {
+            4 => {
                 trace!(level, "detected talent trace");
                 skills.talent = level;
             }
 
-            "Point05" => {
+            5 => {
                 trace!(level, "detected technique trace");
                 /* technique */
             }
 
-            "Point06" => {
+            6 => {
                 trace!("detected major trace 1");
                 traces.ability_1 = true;
             }
-            "Point07" => {
+            7 => {
                 trace!("detected major trace 2");
                 traces.ability_2 = true;
             }
-            "Point08" => {
+            8 => {
                 trace!("detected major trace 3");
                 traces.ability_3 = true;
             }
 
-            "Point09" => {
+            9 => {
                 trace!("detected minor trace 1");
                 traces.stat_1 = true;
             }
-            "Point10" => {
+            10 => {
                 trace!("detected minor trace 2");
                 traces.stat_2 = true;
             }
-            "Point11" => {
+            11 => {
                 trace!("detected minor trace 3");
                 traces.stat_3 = true;
             }
-            "Point12" => {
+            12 => {
                 trace!("detected minor trace 4");
                 traces.stat_4 = true;
             }
-            "Point13" => {
+            13 => {
                 trace!("detected minor trace 5");
                 traces.stat_5 = true;
             }
-            "Point14" => {
+            14 => {
                 trace!("detected minor trace 6");
                 traces.stat_6 = true;
             }
-            "Point15" => {
+            15 => {
                 trace!("detected minor trace 7");
                 traces.stat_7 = true;
             }
-            "Point16" => {
+            16 => {
                 trace!("detected minor trace 8");
                 traces.stat_8 = true;
             }
-            "Point17" => {
+            17 => {
                 trace!("detected minor trace 9");
                 traces.stat_9 = true;
             }
-            "Point18" => {
+            18 => {
                 trace!("detected minor trace 10");
                 traces.stat_10 = true;
             }
-            "Point19" => {
+            19 => {
                 trace!("detected memosprite skill trace");
                 memosprite.skill = level;
             }
-            "Point20" => {
+            20 => {
                 trace!("detected memosprite talent trace");
                 memosprite.talent = level;
             }
-            "Point21" => {
+            21 => {
                 trace!("detected special trace",);
                 traces.special = true;
             }
 
             _ => {
-                warn!(anchor = skill_tree_config.AnchorType, "unknown point anchor");
+                warn!(anchor = skill.multi_point_id, "unknown point anchor");
                 continue;
             }
         }

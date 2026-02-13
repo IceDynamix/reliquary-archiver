@@ -1,11 +1,9 @@
-use protobuf::Enum;
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
+use reliquary::network::command::proto::AvatarPathData::AvatarPathData;
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
 use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
 use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
-use reliquary::network::command::proto::MultiPathAvatarInfo::MultiPathAvatarInfo;
-use reliquary::network::command::proto::MultiPathAvatarType::MultiPathAvatarType;
 use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
@@ -57,37 +55,20 @@ impl OptimizerExporter {
         }
     }
 
-    pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) -> Option<Character> {
-        let Some(character) = export_proto_character(self.database, proto_character) else {
-            warn!(uid = &proto_character.base_avatar_id, "character config not found, skipping");
-            return None;
-        };
+    pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) {
+        self.multipath_base_avatars
+            .insert(proto_character.base_avatar_id, proto_character.clone());
 
-        if MultiPathAvatarType::from_i32(proto_character.base_avatar_id as i32).is_some() {
-            self.multipath_base_avatars
-                .insert(proto_character.base_avatar_id, proto_character.clone());
-
-            // Try to resolve any multipath characters that have this as their base avatar.
-            for unresolved_avatar_id in self.unresolved_multipath_characters.clone().iter() {
-                self.resolve_multipath_character(*unresolved_avatar_id);
-            }
-
-            None
-        } else {
-            // Only emit character data here if it's not a multipath character.
-            // For multipath characters, we need to wait for the multipath packet
-            // to get the rest of the data, so we'll do that in [ingest_multipath_character].
-
-            self.characters.insert(character.id, character.clone());
-
-            Some(character)
+        // Try to resolve any multipath characters that have this as their base avatar.
+        for unresolved_avatar_id in self.unresolved_multipath_characters.clone().iter() {
+            self.resolve_multipath_character(*unresolved_avatar_id);
         }
     }
 
-    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &MultiPathAvatarInfo) -> Option<Character> {
+    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &AvatarPathData) -> Option<Character> {
         let Some(character) = export_proto_multipath_character(self.database, proto_multipath_character) else {
             warn!(
-                uid = &proto_multipath_character.avatar_id.value(),
+                uid = &proto_multipath_character.avatar_id,
                 "multipath character config not found, skipping"
             );
             return None;
@@ -101,6 +82,8 @@ impl OptimizerExporter {
         }
 
         if let Some(character) = self.resolve_multipath_character(character.id) {
+            self.characters.insert(character.id, character.clone());
+
             Some(character)
         } else {
             debug!(uid = &character.id, "multipath character not resolved");
@@ -116,8 +99,8 @@ impl OptimizerExporter {
             self.ingest_character(&character);
         }
 
-        info!(num = characters.multi_path_avatar_info_list.len(), "found multipath characters");
-        for multipath_avatar_info in characters.multi_path_avatar_info_list {
+        info!(num = characters.avatar_path_data_info_list.len(), "found multipath characters");
+        for multipath_avatar_info in characters.avatar_path_data_info_list {
             self.ingest_multipath_character(&multipath_avatar_info);
         }
     }
@@ -126,8 +109,8 @@ impl OptimizerExporter {
         self.database
             .multipath_avatar_config
             .get(&avatar_id)
-            .expect("multipath character not found")
-            .BaseAvatarID
+            .map(|cfg| cfg.BaseAvatarID)
+            .unwrap_or(avatar_id)
     }
 
     pub fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
@@ -230,18 +213,16 @@ impl OptimizerExporter {
 
         if let Some(avatar_sync) = sync.avatar_sync.into_option() {
             for avatar in avatar_sync.avatar_list {
-                if let Some(character) = self.ingest_character(&avatar) {
-                    updated_characters.push(character);
-                }
+                self.ingest_character(&avatar)
             }
-        }
 
-        if !sync.multi_path_avatar_info_list.is_empty() {
-            for multipath_avatar_info in sync.multi_path_avatar_info_list {
-                if let Some(character) = self.ingest_multipath_character(&multipath_avatar_info) {
-                    updated_characters.push(character);
-                } else {
-                    warn!(uid = &multipath_avatar_info.avatar_id.value(), "multipath character not resolved");
+            if !avatar_sync.avatar_path_data_info_list.is_empty() {
+                for multipath_avatar_info in avatar_sync.avatar_path_data_info_list {
+                    if let Some(character) = self.ingest_multipath_character(&multipath_avatar_info) {
+                        updated_characters.push(character);
+                    } else {
+                        warn!(uid = &multipath_avatar_info.avatar_id, "multipath character not resolved");
+                    }
                 }
             }
         }

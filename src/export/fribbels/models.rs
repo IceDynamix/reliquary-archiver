@@ -90,7 +90,7 @@ impl PityUpdate {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Material {
     #[serde_as(as = "DisplayFromStr")]
     pub id: u32,
@@ -101,7 +101,7 @@ pub struct Material {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Relic {
     #[serde_as(as = "DisplayFromStr")]
     pub set_id: u32,
@@ -113,6 +113,8 @@ pub struct Relic {
     pub substats: Vec<Substat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reroll_substats: Option<Vec<Substat>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preview_substats: Option<Vec<Substat>>,
     pub location: String,
     pub lock: bool,
     pub discard: bool,
@@ -120,7 +122,7 @@ pub struct Relic {
     pub _uid: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Substat {
     pub key: String,
     pub value: f32,
@@ -129,7 +131,7 @@ pub struct Substat {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct LightCone {
     #[serde_as(as = "DisplayFromStr")]
     pub id: u32,
@@ -144,7 +146,7 @@ pub struct LightCone {
 }
 
 #[serde_as]
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Character {
     #[serde_as(as = "DisplayFromStr")]
     pub id: u32,
@@ -160,7 +162,7 @@ pub struct Character {
     pub ability_version: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Skills {
     pub basic: u32,
     pub skill: u32,
@@ -168,7 +170,7 @@ pub struct Skills {
     pub talent: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Traces {
     pub ability_1: bool,
     pub ability_2: bool,
@@ -186,7 +188,7 @@ pub struct Traces {
     pub special: bool,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Memosprite {
     pub skill: u32,
     pub talent: u32,
