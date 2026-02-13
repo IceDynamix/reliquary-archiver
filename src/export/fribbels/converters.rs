@@ -223,6 +223,7 @@ pub fn export_skill_tree(_db: &Database, proto: &[ProtoSkillTree]) -> (Skills, T
         skill: 0,
         ult: 0,
         talent: 0,
+        elation: None,
     };
 
     let mut traces = Traces {
@@ -337,6 +338,10 @@ pub fn export_skill_tree(_db: &Database, proto: &[ProtoSkillTree]) -> (Skills, T
             21 => {
                 trace!("detected special trace",);
                 traces.special = true;
+            }
+            22 => {
+                trace!("detected elation skill trace");
+                skills.elation = Some(level);
             }
 
             _ => {
