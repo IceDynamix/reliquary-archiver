@@ -168,6 +168,8 @@ pub struct Skills {
     pub skill: u32,
     pub ult: u32,
     pub talent: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub elation: Option<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
