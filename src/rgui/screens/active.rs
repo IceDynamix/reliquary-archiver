@@ -5,6 +5,7 @@
 
 use raxis::layout::helpers::{column, row};
 use raxis::layout::model::{Alignment, BackdropFilter, BorderRadius, BoxAmount, Color, Element, Sizing};
+use raxis::runtime::font_manager::FontWeight;
 use raxis::util::unique::combine_id;
 use raxis::widgets::button::Button;
 use raxis::widgets::rule::Rule;
@@ -12,6 +13,7 @@ use raxis::widgets::text::{ParagraphAlignment, Text};
 use raxis::{column, row, w_id, HookManager};
 
 use crate::rgui::components::file_download::download_view;
+use crate::rgui::components::update::UpdateMessage;
 use crate::rgui::kit::icons::refresh_icon;
 use crate::rgui::messages::{AccountMessage, ActiveMessage, ExportMessage, RootMessage, ScreenAction};
 use crate::rgui::state::{ActiveScreen, Store};
@@ -19,6 +21,7 @@ use crate::rgui::theme::{
     maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PAD_SM, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR,
     TEXT_COLOR, TEXT_MUTED,
 };
+use crate::rgui::PRIMARY_COLOR;
 
 /// Renders a single statistic line (label + value).
 fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> Element<RootMessage> {
@@ -104,6 +107,57 @@ impl ActiveScreen {
     /// Renders the main active view content with stats and export controls.
     fn active_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         let text_shadow_enabled = store.settings.text_shadow_enabled;
+
+        // Check if exporter is outdated (decryption key missing and no characters exported)
+        if store.connection_stats.decryption_key_missing > 0 && store.export_stats.characters == 0 {
+            let update_check_button = Button::new()
+                .with_click_handler(|_, s| {
+                    s.publish(RootMessage::Update(UpdateMessage::PerformCheck));
+                })
+                .with_bg_color(PRIMARY_COLOR)
+                .as_element(
+                    w_id!(),
+                    Text::new("Check for updates")
+                        .with_color(Color::WHITE)
+                        .with_font_size(14.0)
+                        .with_font_weight(FontWeight::Medium)
+                        .as_element()
+                        .with_axis_align_self(Alignment::Center)
+                        .with_cross_align_self(Alignment::Center)
+                        .with_padding(BoxAmount::all(8.0)),
+                )
+                .with_height(Sizing::grow())
+                .with_border_radius(BORDER_RADIUS);
+
+            return column![
+                maybe_text_shadow(
+                    Text::new("Out of Date")
+                        .with_font_size(24.0)
+                        .with_color(TEXT_COLOR)
+                        .with_paragraph_alignment(ParagraphAlignment::Center),
+                    text_shadow_enabled,
+                ),
+                maybe_text_shadow(
+                    Text::new("Reliquary Archiver has not updated for the latest game version.")
+                        .with_font_size(16.0)
+                        .with_color(TEXT_COLOR)
+                        .with_paragraph_alignment(ParagraphAlignment::Center),
+                    text_shadow_enabled,
+                ),
+                maybe_text_shadow(
+                    Text::new("Please check Discord and/or the Optimizer website for status updates.")
+                        .with_font_size(16.0)
+                        .with_color(TEXT_COLOR)
+                        .with_paragraph_alignment(ParagraphAlignment::Center),
+                    text_shadow_enabled,
+                ),
+                update_check_button,
+            ]
+            .with_child_gap(SPACE_LG)
+            .with_cross_align_items(Alignment::Center)
+            .with_padding(BoxAmount::all(PAD_LG * 2.0))
+            .with_border_radius(BorderRadius::all(BORDER_RADIUS));
+        }
 
         let stats_display = row![
             stat_line("Relics", store.export_stats.relics, text_shadow_enabled),
