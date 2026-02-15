@@ -90,9 +90,6 @@ pub struct MultiAccountManager {
     /// Track which conversation belongs to which account UID
     uid_to_conv: HashMap<u32, u32>,
 
-    /// Initial decryption keys shared across all exporters
-    initial_keys: HashMap<u32, Vec<u8>>,
-
     /// Unified event channel for all account lifecycle and exporter events
     event_tx: broadcast::Sender<AccountEvent>,
 
@@ -101,12 +98,11 @@ pub struct MultiAccountManager {
 }
 
 impl MultiAccountManager {
-    pub fn new(initial_keys: HashMap<u32, Vec<u8>>) -> Self {
+    pub fn new() -> Self {
         let (event_tx, _) = broadcast::channel(100);
         Self {
             exporters: HashMap::new(),
             uid_to_conv: HashMap::new(),
-            initial_keys,
             event_tx,
             subscription_tasks: HashMap::new(),
         }
@@ -232,7 +228,7 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
         let (sender, mut receiver) = mpsc::channel(100);
 
         let database = get_database();
-        let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
+        let sniffer = GameSniffer::new();
 
         let (mut recorded_tx, recorded_rx) = mpsc::channel(100);
 

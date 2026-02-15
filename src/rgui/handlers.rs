@@ -522,7 +522,7 @@ impl<Message: Send + 'static> ScreenAction<Message> {
                 use crate::capture_from_pcap;
 
                 tokio::task::spawn_blocking(move || {
-                    let sniffer = GameSniffer::new().set_initial_keys(get_database().keys.clone());
+                    let sniffer = GameSniffer::new();
                     let exporter = reliquary_archiver::export::fribbels::OptimizerExporter::new();
 
                     capture_from_pcap(exporter, sniffer, path)
