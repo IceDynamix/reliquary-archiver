@@ -285,7 +285,7 @@ async fn capture(args: Args) {
     // Headless/CLI mode
     {
         let database = Database::new();
-        let sniffer = GameSniffer::new().set_initial_keys(database.keys.clone());
+        let sniffer = GameSniffer::new();
         let exporter = OptimizerExporter::new();
 
         let capture_mode = CaptureMode::from_args(&args);
@@ -572,7 +572,7 @@ where
 
     // Always use MultiAccountManager for consistency
     let database = get_database();
-    let manager = Arc::new(FuturesMutex::new(MultiAccountManager::new(database.keys.clone())));
+    let manager = Arc::new(FuturesMutex::new(MultiAccountManager::new()));
 
     #[cfg(feature = "stream")]
     let selected_account_tx = if streaming {

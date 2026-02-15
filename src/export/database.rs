@@ -1,8 +1,5 @@
-use std::collections::HashMap;
 use std::sync::OnceLock;
 
-use base64::prelude::BASE64_STANDARD;
-use base64::Engine;
 use reliquary::resource::excel::{
     AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap, RelicConfigMap,
     RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
@@ -22,7 +19,6 @@ pub struct Database {
     pub relic_main_affix_config: RelicMainAffixConfigMap,
     pub relic_sub_affix_config: RelicSubAffixConfigMap,
     pub text_map: TextMap,
-    pub keys: HashMap<u32, Vec<u8>>,
 }
 
 pub fn get_database() -> &'static Database {
@@ -58,23 +54,11 @@ impl Database {
             relic_main_affix_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicMainAffixConfig.json"))),
             relic_sub_affix_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicSubAffixConfig.json"))),
             text_map: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/TextMapEN.json"))),
-            keys: Self::load_local_keys(),
         }
     }
 
     fn parse_json<T: DeserializeOwned>(str: &'static str) -> T {
         serde_json::de::from_str(str).unwrap()
-    }
-
-    fn load_local_keys() -> HashMap<u32, Vec<u8>> {
-        let keys: HashMap<u32, String> = Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/keys.json")));
-        let mut keys_bytes = HashMap::new();
-
-        for (k, v) in keys {
-            keys_bytes.insert(k, BASE64_STANDARD.decode(v).unwrap());
-        }
-
-        keys_bytes
     }
 
     pub(crate) fn lookup_avatar_name(&self, avatar_id: u32) -> Option<String> {

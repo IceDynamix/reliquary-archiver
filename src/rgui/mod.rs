@@ -152,7 +152,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let (port_tx, port_rx) = watch::channel::<PortCommand>(PortCommand::Open(0));
 
     let database = get_database();
-    let manager = Arc::new(Mutex::new(MultiAccountManager::new(database.keys.clone())));
+    let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
 
     let state = RootState::new(manager.clone()).with_port_sender(port_tx);
 
