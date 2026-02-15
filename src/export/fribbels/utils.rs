@@ -1,4 +1,4 @@
-use tracing::debug;
+use tracing::error;
 
 /// Formats character ID as location string for relics and light cones
 pub fn format_location(avatar_id: u32) -> String {
@@ -82,8 +82,9 @@ pub fn avatar_path_lookup(db: &crate::export::database::Database, avatar_id: u32
         "Shaman" => Some("Harmony"),
         "Priest" => Some("Abundance"),
         "Memory" => Some("Remembrance"),
+        "Elation" => Some("Elation"),
         _ => {
-            debug!(?avatar_base_type, "unknown path");
+            error!(?avatar_base_type, "unknown path");
             None
         }
     }
