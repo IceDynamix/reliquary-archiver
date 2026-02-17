@@ -11,7 +11,7 @@ use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, Stream, StreamExt};
 use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::fribbels::OptimizerExporter;
+use reliquary_archiver::export::fribbels::{OptimizerEvent, OptimizerExporter};
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::AbortHandle;
@@ -179,10 +179,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
 
     // Send initial state if an account is already selected
     if let Some(uid) = selected_uid {
-        let exporter = state.manager.lock().await.get_account_exporter(uid);
-        if let Some(exporter) = exporter {
-            if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
-                send_serialized_message(&mut sender, initial_event).await.ok();
+        if let Some(exporter) = state.manager.lock().await.get_account_exporter(uid) {
+            let exporter = exporter.lock().await;
+            if exporter.is_initialized() {
+                let event = OptimizerEvent::InitialScan(exporter.export().unwrap());
+
+                if let Err(e) = send_serialized_message(&mut sender, event).await {
+                    warn!("Failed to send initial state: {}", e);
+                }
             }
         }
     }
@@ -203,18 +207,8 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
                         }
                     }
                     AccountEvent::Discovered { uid } | AccountEvent::Reconnected { uid } => {
-                        // If this is the selected account (or first account), send initial state
-                        if Some(uid) == selected_uid {
-                            let exporter = state.manager.lock().await.get_account_exporter(uid);
-                            if let Some(exporter) = exporter {
-                                if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
-                                    if let Err(e) = send_serialized_message(&mut sender, initial_event).await {
-                                        warn!("Failed to send initial state: {}", e);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
+                        // No-op, if the account is selected, the exporter will send the initial state on selection change.
+                        // Or for the automatic initial export after exporter initialization.
                     }
                 }
             }
@@ -230,10 +224,14 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
 
                     // Send initial state for newly selected account
                     if let Some(uid) = selected_uid {
-                        let exporter = state.manager.lock().await.get_account_exporter(uid);
-                        if let Some(exporter) = exporter {
-                            if let (Some(initial_event), _) = exporter.lock().await.subscribe() {
-                                if let Err(e) = send_serialized_message(&mut sender, initial_event).await {
+                        if let Some(exporter) = state.manager.lock().await.get_account_exporter(uid) {
+                            let exporter = exporter.lock().await;
+                            if exporter.is_initialized() {
+                                let event = OptimizerEvent::InitialScan(
+                                    exporter.export().unwrap(),
+                                );
+
+                                if let Err(e) = send_serialized_message(&mut sender, event).await {
                                     warn!("Failed to send initial state after selection: {}", e);
                                     break;
                                 }

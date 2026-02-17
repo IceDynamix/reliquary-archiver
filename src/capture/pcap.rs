@@ -5,7 +5,7 @@ use ::pcap::{self, Active, Capture, Device as PcapDevice};
 use futures::executor::block_on;
 use futures::{SinkExt, StreamExt, TryStreamExt};
 use pcap::PacketCodec;
-use tracing::{debug, instrument};
+use tracing::{debug, instrument, warn};
 
 use super::*;
 
@@ -91,19 +91,37 @@ impl PacketCapture for PcapCapture {
     #[instrument(skip_all, fields(device = self.device.desc))]
     fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>>> {
         let mut has_captured = false;
+
         return match self.capture.stream(Codec { source_id: self.id }) {
-            Ok(stream) => Ok(stream.map(move |r| match r {
-                Ok(p) => {
-                    has_captured = true;
-                    Ok(p)
-                }
-                Err(e) => {
-                    return Err(CaptureError::CaptureError {
-                        has_captured,
-                        error: Box::new(e),
-                    });
-                }
-            })),
+            Ok(stream) => Ok(Box::pin(
+                stream
+                    .take_while(move |r| {
+                        let result = match &r {
+                            Err(pcap::Error::PcapError(error_msg)) => {
+                                // Check if this is a device removal error
+                                if error_msg.contains("ERROR_DEVICE_REMOVED") {
+                                    warn!(%error_msg, %self.device.name, "Device removed, terminating capture stream");
+                                    false // Stop the stream immediately
+                                } else {
+                                    true // Continue for other errors
+                                }
+                            }
+                            _ => true, // Continue for Ok packets
+                        };
+
+                        async move { result }
+                    })
+                    .map(move |r| match r {
+                        Ok(p) => {
+                            has_captured = true;
+                            Ok(p)
+                        }
+                        Err(e) => Err(CaptureError::CaptureError {
+                            has_captured,
+                            error: Box::new(e),
+                        }),
+                    }),
+            )),
             Err(e) => Err(CaptureError::CaptureError {
                 has_captured: false,
                 error: Box::new(e),

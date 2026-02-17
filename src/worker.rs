@@ -278,16 +278,20 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
                             let export = if let Some(target_uid) = uid {
                                 // Export specific account
                                 let exporter_opt = manager.lock().await.get_account_exporter(target_uid);
-                                if let Some(exporter) = exporter_opt {
-                                    exporter.lock().await.export()
+                                if let Some(exporter) = exporter_opt
+                                && let exporter = exporter.lock().await
+                                && exporter.is_initialized() {
+                                    exporter.export()
                                 } else {
                                     None
                                 }
                             } else {
                                 // Export first account
                                 let accounts = manager.lock().await.get_all_accounts();
-                                if let Some((_, exporter)) = accounts.first() {
-                                    exporter.lock().await.export()
+                                if let Some((_, exporter)) = accounts.first()
+                                && let exporter = exporter.lock().await
+                                && exporter.is_initialized() {
+                                    exporter.export()
                                 } else {
                                     None
                                 }
@@ -435,6 +439,12 @@ async fn live_capture(
                                         info!(conv_id, "detected login start");
                                     }
 
+                                    // Route command to the correct exporter
+                                    let exporter = {
+                                        let mut mgr = manager.lock().await;
+                                        mgr.get_or_create_exporter(conv_id)
+                                    };
+
                                     // Check if this is a UID discovery packet and register it if so
                                     if command.command_id == PlayerGetTokenScRsp {
                                         if let Ok(token_rsp) = command.parse_proto::<PlayerGetTokenScRspProto>() {
@@ -445,12 +455,6 @@ async fn live_capture(
                                             metric_tx.sender.send(WorkerEvent::AccountDiscovered { uid }).await.ok();
                                         }
                                     }
-
-                                    // Route command to the correct exporter
-                                    let exporter = {
-                                        let mut mgr = manager.lock().await;
-                                        mgr.get_or_create_exporter(conv_id)
-                                    };
 
                                     exporter.lock().await.read_command(command);
                                 }
@@ -478,5 +482,6 @@ async fn live_capture(
         }
 
         info!("capture ended, restarting...");
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }

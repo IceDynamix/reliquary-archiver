@@ -364,7 +364,17 @@ impl std::io::Write for VecWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let str = String::from_utf8_lossy(buf);
         let lines = str.lines().map(|s| s.to_string());
-        LOG_BUFFER.lock().unwrap().extend(lines);
+        {
+            let mut buffer = LOG_BUFFER.lock().unwrap();
+            buffer.extend(lines);
+
+            // Limit the buffer size to prevent unbounded memory growth, keeping only the most recent 100000 lines
+            // (assuming an average of ~100 bytes per log line, this would use around 10MB of memory)
+            if buffer.len() > 100000 {
+                let range = 0..buffer.len() - 10000;
+                buffer.drain(range);
+            }
+        }
         LOG_NOTIFY.notify_one();
         Ok(buf.len())
     }
