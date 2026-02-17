@@ -101,7 +101,7 @@ impl PacketCapture for PcapCapture {
                     return Err(CaptureError::CaptureError {
                         has_captured,
                         error: Box::new(e),
-                    })
+                    });
                 }
             })),
             Err(e) => Err(CaptureError::CaptureError {

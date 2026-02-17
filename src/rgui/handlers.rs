@@ -20,7 +20,7 @@ use crate::rgui::messages::{
 };
 use crate::rgui::state::{AccountInfo, ActiveScreen, ExportStats, FileContainer, FileExtensions, RootState, Screen, WaitingScreen};
 use crate::websocket::PortCommand;
-use crate::{worker, LOG_BUFFER, VEC_LAYER_HANDLE};
+use crate::{LOG_BUFFER, VEC_LAYER_HANDLE, worker};
 
 // ============================================================================
 // Settings Path Helper
@@ -516,8 +516,8 @@ impl<Message: Send + 'static> ScreenAction<Message> {
             #[cfg(feature = "pcap")]
             Self::ProcessCapture(path) => Task::future(async move {
                 use reliquary::network::GameSniffer;
-                use reliquary_archiver::export::database::{get_database, Database};
                 use reliquary_archiver::export::Exporter;
+                use reliquary_archiver::export::database::{Database, get_database};
 
                 use crate::capture_from_pcap;
 

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::channel::{mpsc, oneshot};
@@ -8,14 +8,14 @@ use futures::executor::block_on;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use futures::stream::FusedStream;
-use futures::{select, stream, FutureExt, Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt, select, stream};
 use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
 use reliquary::network::command::{GameCommand, GameCommandError};
 use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
-use reliquary_archiver::export::database::{get_database, Database};
-use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use reliquary_archiver::export::Exporter;
+use reliquary_archiver::export::database::{Database, get_database};
+use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use tokio::pin;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -418,7 +418,9 @@ async fn live_capture(
                                     metric_tx.send(SnifferMetric::ConnectionEstablished).await.ok();
 
                                     if cfg!(all(feature = "pcap", windows)) {
-                                        info!("If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest");
+                                        info!(
+                                            "If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest"
+                                        );
                                     }
                                 }
                                 ConnectionPacket::Disconnected => {

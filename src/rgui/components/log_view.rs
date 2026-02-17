@@ -24,8 +24,8 @@ use raxis::util::unique::combine_id;
 use raxis::widgets::button::Button;
 use raxis::widgets::mouse_area::{MouseArea, MouseAreaEvent};
 use raxis::widgets::text::{ParagraphAlignment, Text};
-use raxis::widgets::{widget, Widget};
-use raxis::{w_id, HookManager};
+use raxis::widgets::{Widget, widget};
+use raxis::{HookManager, w_id};
 
 use crate::rgui::messages::RootMessage;
 use crate::rgui::theme::{

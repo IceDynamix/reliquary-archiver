@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fmt::{Debug, Display};
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use futures::{Stream, StreamExt};
 use tokio::pin;

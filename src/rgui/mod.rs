@@ -25,18 +25,18 @@
 use std::time::Instant;
 
 use async_stream::stream;
+use raxis::runtime::Backdrop;
 use raxis::runtime::task::{self, Task};
 use raxis::runtime::window::builder::InitialDisplay;
-use raxis::runtime::Backdrop;
 use raxis::{ContextMenuItem, SystemCommand, SystemCommandResponse, TrayEvent, TrayIconConfig};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
+use crate::LOG_NOTIFY;
 use crate::rgui::components::update::UpdateMessage;
 use crate::scopefns::Also;
-use crate::websocket::{start_websocket_server, PortCommand, PortSource};
+use crate::websocket::{PortCommand, PortSource, start_websocket_server};
 use crate::worker::archiver_worker;
-use crate::LOG_NOTIFY;
 
 // Module declarations
 pub mod components;

@@ -10,18 +10,18 @@ use raxis::util::unique::combine_id;
 use raxis::widgets::button::Button;
 use raxis::widgets::rule::Rule;
 use raxis::widgets::text::{ParagraphAlignment, Text};
-use raxis::{column, row, w_id, HookManager};
+use raxis::{HookManager, column, row, w_id};
 
+use crate::rgui::PRIMARY_COLOR;
 use crate::rgui::components::file_download::download_view;
 use crate::rgui::components::update::UpdateMessage;
 use crate::rgui::kit::icons::refresh_icon;
 use crate::rgui::messages::{AccountMessage, ActiveMessage, ExportMessage, RootMessage, ScreenAction};
 use crate::rgui::state::{ActiveScreen, Store};
 use crate::rgui::theme::{
-    maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PAD_SM, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR,
-    TEXT_COLOR, TEXT_MUTED,
+    BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PAD_SM, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
+    maybe_text_shadow,
 };
-use crate::rgui::PRIMARY_COLOR;
 
 /// Renders a single statistic line (label + value).
 fn stat_line(label: &'static str, value: usize, text_shadow_enabled: bool) -> Element<RootMessage> {
@@ -187,15 +187,17 @@ impl ActiveScreen {
             .with_padding(BoxAmount::all(PAD_MD));
 
         {
-            let mut elements = vec![maybe_text_shadow(
-                Text::new("Connected!")
-                    .with_font_size(24.0)
-                    .with_color(TEXT_COLOR)
-                    .with_paragraph_alignment(ParagraphAlignment::Center),
-                text_shadow_enabled,
-            )
-            .as_element()
-            .with_padding(BoxAmount::all(PAD_MD))];
+            let mut elements = vec![
+                maybe_text_shadow(
+                    Text::new("Connected!")
+                        .with_font_size(24.0)
+                        .with_color(TEXT_COLOR)
+                        .with_paragraph_alignment(ParagraphAlignment::Center),
+                    text_shadow_enabled,
+                )
+                .as_element()
+                .with_padding(BoxAmount::all(PAD_MD)),
+            ];
 
             // Add account selector if multiple accounts
             if let Some(selector) = account_selector(store, text_shadow_enabled) {

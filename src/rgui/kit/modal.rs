@@ -3,10 +3,10 @@
 use std::time::Instant;
 
 use raxis::layout::model::{Alignment, Border, BorderRadius, BoxAmount, Color, Direction, Element, FloatingConfig, Sizing};
-use raxis::util::unique::{combine_id, WidgetId};
+use raxis::util::unique::{WidgetId, combine_id};
 use raxis::widgets::button::Button;
 use raxis::widgets::widget;
-use raxis::{use_animation, w_id, HookManager};
+use raxis::{HookManager, use_animation, w_id};
 
 use crate::rgui::theme::{BORDER_COLOR, BORDER_RADIUS, OPAQUE_CARD_BACKGROUND, SHADOW_XL};
 

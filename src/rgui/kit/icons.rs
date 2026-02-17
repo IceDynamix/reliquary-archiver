@@ -6,7 +6,7 @@ use raxis::layout::model::{BoxAmount, Color, Element, StrokeLineCap, StrokeLineJ
 use raxis::widgets::button::Button;
 use raxis::widgets::svg::{Svg, ViewBox};
 use raxis::widgets::svg_path::{ColorChoice, SvgPath};
-use raxis::{svg, svg_path, w_id, SvgPathCommands};
+use raxis::{SvgPathCommands, svg, svg_path, w_id};
 
 use crate::rgui::messages::RootMessage;
 use crate::rgui::theme::{BORDER_RADIUS, PAD_MD};

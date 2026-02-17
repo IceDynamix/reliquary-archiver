@@ -8,8 +8,8 @@ use reliquary::resource::excel::{
     RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::{ResourceMap, TextMapEntry};
-use ureq::serde::de::DeserializeOwned;
 use ureq::serde::Serialize;
+use ureq::serde::de::DeserializeOwned;
 
 const BASE_RESOURCE_URL: &str = "https://gitlab.com/Dimbreath/turnbasedgamedata/-/raw/main";
 

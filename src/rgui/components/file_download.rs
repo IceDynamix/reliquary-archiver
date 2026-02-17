@@ -15,7 +15,7 @@ use raxis::widgets::svg::ViewBox;
 use raxis::widgets::svg_path::SvgPath;
 use raxis::widgets::text::{ParagraphAlignment, Text, TextAlignment};
 use raxis::widgets::widget;
-use raxis::{svg, svg_path, w_id, HookManager};
+use raxis::{HookManager, svg, svg_path, w_id};
 
 use crate::rgui::kit::tooltip::{error_tooltip, info_tooltip, success_tooltip, warning_tooltip};
 use crate::rgui::state::{FileContainer, FileExtensions};

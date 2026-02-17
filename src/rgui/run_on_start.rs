@@ -7,7 +7,7 @@
 
 use std::env::current_exe;
 
-use windows_registry::{Type, CURRENT_USER, HSTRING};
+use windows_registry::{CURRENT_USER, HSTRING, Type};
 
 /// Errors that can occur during registry operations.
 #[derive(Debug, Eq, PartialEq)]

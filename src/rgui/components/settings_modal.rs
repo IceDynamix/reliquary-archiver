@@ -22,16 +22,16 @@ use raxis::widgets::text::Text;
 use raxis::widgets::text_input::TextInput;
 use raxis::widgets::toggle::Toggle;
 use raxis::widgets::widget;
-use raxis::{column, row, use_animation, w_id, HookManager};
+use raxis::{HookManager, column, row, use_animation, w_id};
 use tracing::info;
 
 use crate::rgui::components::update::UpdateMessage;
 use crate::rgui::handlers::save_settings;
 use crate::rgui::kit::icons::x_icon;
-use crate::rgui::kit::modal::{modal_backdrop, ModalConfig, ModalPosition};
-use crate::rgui::kit::togglegroup::{togglegroup, ToggleGroupConfig, ToggleOption};
+use crate::rgui::kit::modal::{ModalConfig, ModalPosition, modal_backdrop};
+use crate::rgui::kit::togglegroup::{ToggleGroupConfig, ToggleOption, togglegroup};
 use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketMessage, WebSocketStatus, WindowMessage};
-use crate::rgui::run_on_start::{set_run_on_start, RegistryError};
+use crate::rgui::run_on_start::{RegistryError, set_run_on_start};
 use crate::rgui::state::{ImageFit, RootState};
 use crate::rgui::theme::{
     BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, OPAQUE_CARD_BACKGROUND, PAD_LG, PAD_MD, PAD_SM, PRIMARY_COLOR, SCROLLBAR_THUMB_COLOR,
@@ -680,11 +680,7 @@ pub fn handle_settings_message(state: &mut RootState, message: SettingsMessage) 
         SettingsMessage::OpacitySliderDrag(is_dragging) => {
             state.opacity_slider_dragging = is_dragging;
             // Save settings when the drag ends to avoid excessive writes
-            if !is_dragging {
-                save_settings(state)
-            } else {
-                None
-            }
+            if !is_dragging { save_settings(state) } else { None }
         }
 
         SettingsMessage::TextShadowToggled(enabled) => {

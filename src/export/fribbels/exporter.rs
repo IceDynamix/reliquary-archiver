@@ -9,14 +9,14 @@ use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp
 use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
 use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
-use reliquary::network::command::{command_id, GameCommand};
+use reliquary::network::command::{GameCommand, command_id};
 #[cfg(feature = "stream")]
 use tokio::sync::broadcast;
 use tracing::{debug, info, instrument, trace, warn};
 
-use crate::export::database::{get_database, Database};
-use crate::export::fribbels::models::*;
 use crate::export::Exporter;
+use crate::export::database::{Database, get_database};
+use crate::export::fribbels::models::*;
 
 pub struct OptimizerExporter {
     pub(super) database: &'static Database,
@@ -296,7 +296,9 @@ impl Exporter for OptimizerExporter {
             light_cones: self.light_cones.values().cloned().collect(),
             relics: self.relics.values().cloned().collect(),
             characters: self
-                .multipath_characters.values().map(|c| c.clone()) // Discard the key
+                .multipath_characters
+                .values()
+                .map(|c| c.clone()) // Discard the key
                 .collect(),
         };
 

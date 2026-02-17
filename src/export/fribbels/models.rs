@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
+use serde_with::{DisplayFromStr, serde_as};
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Export {
@@ -198,10 +198,6 @@ pub struct Memosprite {
 
 impl Memosprite {
     pub fn if_present(self) -> Option<Memosprite> {
-        if self.skill == 0 && self.talent == 0 {
-            None
-        } else {
-            Some(self)
-        }
+        if self.skill == 0 && self.talent == 0 { None } else { Some(self) }
     }
 }

@@ -11,7 +11,7 @@ use raxis::layout::model::{Alignment, Alignment2D, Color, Element, FloatingConfi
 use raxis::util::unique::combine_id;
 use raxis::widgets::mouse_area::{MouseArea, MouseAreaEvent};
 use raxis::widgets::text::{ParagraphAlignment, Text};
-use raxis::{w_id, HookManager};
+use raxis::{HookManager, w_id};
 
 use crate::rgui::theme::{BORDER_RADIUS, PAD_SM};
 
@@ -165,11 +165,13 @@ pub fn create_tooltip<PMsg: Send + Clone + std::fmt::Debug + 'static>(
     let (background_color, text_color, border_color) = config.theme.colors();
 
     let mut tooltip = Element {
-        children: vec![Text::new(text)
-            .with_font_size(config.font_size)
-            .with_color(text_color)
-            .with_paragraph_alignment(ParagraphAlignment::Center)
-            .into()],
+        children: vec![
+            Text::new(text)
+                .with_font_size(config.font_size)
+                .with_color(text_color)
+                .with_paragraph_alignment(ParagraphAlignment::Center)
+                .into(),
+        ],
         ..Default::default()
     }
     .with_id(combine_id(anchor_id, w_id!()))

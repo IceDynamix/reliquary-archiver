@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use ::pktmon::filter::{PktMonFilter, TransportProtocol};
 use ::pktmon::{Capture, PacketPayload};
-use futures::executor::block_on;
 use futures::SinkExt;
+use futures::executor::block_on;
 
 use super::*;
 

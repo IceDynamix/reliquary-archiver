@@ -2,11 +2,7 @@ use tracing::error;
 
 /// Formats character ID as location string for relics and light cones
 pub fn format_location(avatar_id: u32) -> String {
-    if avatar_id == 0 {
-        "".to_owned()
-    } else {
-        avatar_id.to_string()
-    }
+    if avatar_id == 0 { "".to_owned() } else { avatar_id.to_string() }
 }
 
 /// Converts slot type from game format to export format

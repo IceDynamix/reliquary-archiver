@@ -10,19 +10,19 @@ use raxis::widgets::image::Image;
 use raxis::widgets::rule::Rule;
 use raxis::widgets::text::{ParagraphAlignment, Text, TextAlignment};
 use raxis::widgets::titlebar_controls::titlebar_controls;
-use raxis::{column, row, w_id, HookManager};
+use raxis::{HookManager, column, row, w_id};
 use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::log_view::log_view;
 use crate::rgui::components::settings_modal::settings_modal;
-use crate::rgui::components::update::{update_modal, UpdateState};
+use crate::rgui::components::update::{UpdateState, update_modal};
 use crate::rgui::kit::icons::{cog_icon, discord_button, github_button};
-use crate::rgui::kit::togglegroup::{togglegroup, ToggleOption};
+use crate::rgui::kit::togglegroup::{ToggleOption, togglegroup};
 use crate::rgui::messages::{LogMessage, RootMessage, WebSocketStatus, WindowMessage};
 use crate::rgui::state::{ImageFit, RootState, Screen};
 use crate::rgui::theme::{
-    maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, DANGER_COLOR, PAD_LG, PAD_MD, PAD_SM,
-    SCROLLBAR_THUMB_COLOR, SCROLLBAR_TRACK_COLOR, SPACE_MD, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
+    BORDER_COLOR, BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, DANGER_COLOR, PAD_LG, PAD_MD, PAD_SM, SCROLLBAR_THUMB_COLOR,
+    SCROLLBAR_TRACK_COLOR, SPACE_MD, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED, maybe_text_shadow,
 };
 use crate::scopefns::Also;
 

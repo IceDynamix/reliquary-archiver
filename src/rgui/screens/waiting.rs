@@ -10,12 +10,12 @@ use raxis::runtime::task::Task;
 use raxis::widgets::button::Button;
 use raxis::widgets::rule::Rule;
 use raxis::widgets::text::{ParagraphAlignment, Text};
-use raxis::{column, row, w_id, HookManager};
+use raxis::{HookManager, column, row, w_id};
 
 use crate::rgui::components::file_download::download_view;
 use crate::rgui::messages::{RootMessage, ScreenAction, WaitingMessage};
 use crate::rgui::state::{Store, WaitingScreen};
-use crate::rgui::theme::{maybe_text_shadow, BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PRIMARY_COLOR, SPACE_MD, SPACE_SM, TEXT_MUTED};
+use crate::rgui::theme::{BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PRIMARY_COLOR, SPACE_MD, SPACE_SM, TEXT_MUTED, maybe_text_shadow};
 
 impl WaitingScreen {
     /// Renders the waiting screen view.
