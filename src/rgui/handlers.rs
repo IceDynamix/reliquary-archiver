@@ -467,6 +467,9 @@ pub fn handle_sniffer_metric(state: &mut RootState, metric: worker::SnifferMetri
         worker::SnifferMetric::DecryptionKeyMissing => {
             stats.decryption_key_missing += 1;
         }
+        worker::SnifferMetric::TransportLayerNotPresent => {
+            stats.transport_layer_not_present += 1;
+        }
         worker::SnifferMetric::NetworkError => {
             stats.network_errors += 1;
         }

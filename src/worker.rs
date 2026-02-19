@@ -320,6 +320,7 @@ pub enum SnifferMetric {
     NetworkPacketReceived,
     GameCommandsReceived(usize),
     DecryptionKeyMissing,
+    TransportLayerNotPresent,
     NetworkError,
 }
 
@@ -472,10 +473,20 @@ async fn live_capture(
                 }
                 Err(e) => {
                     warn!(%e);
-                    if let NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) = e {
-                        metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
-                    } else {
-                        metric_tx.send(SnifferMetric::NetworkError).await.ok();
+                    match &e {
+                        NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) => {
+                            metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
+                        }
+                        NetworkError::ConnectionPacket(_) => {
+                            if format!("{e:?}").contains("TransportLayerNotPresent") {
+                                metric_tx.send(SnifferMetric::TransportLayerNotPresent).await.ok();
+                            } else {
+                                metric_tx.send(SnifferMetric::NetworkError).await.ok();
+                            }
+                        }
+                        _ => {
+                            metric_tx.send(SnifferMetric::NetworkError).await.ok();
+                        }
                     }
                 }
             }

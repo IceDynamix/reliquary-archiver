@@ -15,7 +15,9 @@ use raxis::{HookManager, column, row, w_id};
 use crate::rgui::components::file_download::download_view;
 use crate::rgui::messages::{RootMessage, ScreenAction, WaitingMessage};
 use crate::rgui::state::{Store, WaitingScreen};
-use crate::rgui::theme::{BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PRIMARY_COLOR, SPACE_MD, SPACE_SM, TEXT_MUTED, maybe_text_shadow};
+use crate::rgui::theme::{BORDER_COLOR, BORDER_RADIUS, DANGER_COLOR, PAD_LG, PAD_MD, PRIMARY_COLOR, SPACE_MD, SPACE_SM, TEXT_MUTED, maybe_text_shadow};
+
+const VPN_WARNING_THRESHOLD: usize = 100;
 
 impl WaitingScreen {
     /// Renders the waiting screen view.
@@ -48,6 +50,7 @@ impl WaitingScreen {
     /// Renders the main waiting view content with instructions and pcap upload option.
     fn waiting_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         let text_shadow_enabled = store.settings.text_shadow_enabled;
+        let show_vpn_warning = store.connection_stats.transport_layer_not_present >= VPN_WARNING_THRESHOLD;
 
         let upload_button = Button::new()
             .with_bg_color(PRIMARY_COLOR)
@@ -85,22 +88,40 @@ impl WaitingScreen {
             .with_child_gap(SPACE_MD)
             .with_padding(BoxAmount::all(PAD_MD));
 
-        column![
+        let mut children: Vec<Element<RootMessage>> = vec![
             maybe_text_shadow(
                 Text::new("Waiting for login...")
                     .with_font_size(24.0)
                     .with_paragraph_alignment(ParagraphAlignment::Center),
-                text_shadow_enabled
-            ),
+                text_shadow_enabled,
+            )
+            .into(),
             maybe_text_shadow(
                 Text::new("Please log into the game. If you are already in-game, you must log out and log back in.")
                     .with_font_size(16.0)
                     .with_color(TEXT_MUTED)
                     .with_paragraph_alignment(ParagraphAlignment::Center),
-                text_shadow_enabled
+                text_shadow_enabled,
             )
             .as_element()
             .with_padding(BoxAmount::horizontal(PAD_LG)),
+        ];
+
+        if show_vpn_warning {
+            children.push(
+                maybe_text_shadow(
+                    Text::new("⚠ Many packets with missing transport layers were detected. Please turn off any active VPNs and try again.")
+                        .with_font_size(16.0)
+                        .with_color(DANGER_COLOR)
+                        .with_paragraph_alignment(ParagraphAlignment::Center),
+                    text_shadow_enabled,
+                )
+                .as_element()
+                .with_padding(BoxAmount::horizontal(PAD_LG)),
+            );
+        }
+
+        children.extend([
             Rule::horizontal()
                 .with_color(BORDER_COLOR)
                 .as_element(w_id!())
@@ -110,15 +131,17 @@ impl WaitingScreen {
                     .with_font_size(16.0)
                     .with_color(TEXT_MUTED)
                     .with_paragraph_alignment(ParagraphAlignment::Center),
-                text_shadow_enabled
+                text_shadow_enabled,
             )
             .as_element()
             .with_padding(BoxAmount::horizontal(PAD_LG)),
             upload_bar,
-        ]
-        .with_child_gap(SPACE_SM)
-        .with_cross_align_items(Alignment::Center)
-        .with_padding(BoxAmount::all(PAD_LG * 2.0))
-        .with_border_radius(BorderRadius::all(BORDER_RADIUS))
+        ]);
+
+        raxis::layout::helpers::column(children)
+            .with_child_gap(SPACE_SM)
+            .with_cross_align_items(Alignment::Center)
+            .with_padding(BoxAmount::all(PAD_LG * 2.0))
+            .with_border_radius(BorderRadius::all(BORDER_RADIUS))
     }
 }

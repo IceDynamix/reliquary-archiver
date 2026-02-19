@@ -199,6 +199,8 @@ pub struct StatsStore {
     pub commands_received: usize,
     /// Count of packets that couldn't be decrypted
     pub decryption_key_missing: usize,
+    /// Count of packets where the transport layer was not present (likely caused by a VPN)
+    pub transport_layer_not_present: usize,
     /// Count of network errors encountered
     pub network_errors: usize,
     /// Timestamp of the last received packet
