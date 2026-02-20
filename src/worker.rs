@@ -477,8 +477,8 @@ async fn live_capture(
                         NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) => {
                             metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
                         }
-                        NetworkError::ConnectionPacket(_) => {
-                            if format!("{e:?}").contains("TransportLayerNotPresent") {
+                        NetworkError::ConnectionPacket(inner) => {
+                            if format!("{inner:?}") == "TransportLayerNotPresent" {
                                 metric_tx.send(SnifferMetric::TransportLayerNotPresent).await.ok();
                             } else {
                                 metric_tx.send(SnifferMetric::NetworkError).await.ok();
