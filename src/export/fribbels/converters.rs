@@ -245,13 +245,13 @@ pub fn export_skill_tree(_db: &Database, proto: &[ProtoSkillTree]) -> (Skills, T
 
     let mut memosprite = Memosprite { skill: 0, talent: 0 };
 
-    for skill in proto.iter().filter(|s| s.multi_point_id != 0) {
+    for skill in proto.iter().filter(|s| s.point_id != 0) {
         let level = skill.level;
 
-        let span = info_span!("skill", id = skill.multi_point_id, level);
+        let span = info_span!("skill", id = skill.point_id, level);
         let _enter = span.enter();
 
-        match skill.multi_point_id {
+        match skill.point_id {
             1 => {
                 trace!(level, "detected basic atk trace");
                 skills.basic = level;
@@ -345,7 +345,7 @@ pub fn export_skill_tree(_db: &Database, proto: &[ProtoSkillTree]) -> (Skills, T
             }
 
             _ => {
-                warn!(anchor = skill.multi_point_id, "unknown point anchor");
+                warn!(anchor = skill.point_id, "unknown point anchor");
                 continue;
             }
         }
