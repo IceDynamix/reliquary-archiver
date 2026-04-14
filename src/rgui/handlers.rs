@@ -48,41 +48,43 @@ pub fn save_settings(state: &RootState) -> Option<Task<RootMessage>> {
     let unique_id = SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
     let pid = std::process::id();
 
+    let Some(appdata) = raxis::get_local_app_data() else {
+        tracing::error!("Could not determine local app data path, settings not saved");
+        return None;
+    };
+
+    let path = get_settings_path(appdata);
+
     Some(
-        task::get_local_app_data()
-            .and_then(move |path| {
-                let settings = settings.clone();
-                Task::future(async move {
-                    let path = get_settings_path(path);
-                    let temp_path = path.with_extension(format!("json.{}.{}.tmp", pid, unique_id));
+        Task::future(async move {
+            let temp_path = path.with_extension(format!("json.{}.{}.tmp", pid, unique_id));
 
-                    if let Err(e) = tokio::fs::create_dir_all(path.parent().unwrap()).await {
-                        tracing::error!("Failed to create settings directory: {}", e);
-                        return;
-                    }
+            if let Err(e) = tokio::fs::create_dir_all(path.parent().unwrap()).await {
+                tracing::error!("Failed to create settings directory: {}", e);
+                return;
+            }
 
-                    let json = match serde_json::to_string_pretty(&settings) {
-                        Ok(json) => json,
-                        Err(e) => {
-                            tracing::error!("Failed to serialize settings: {}", e);
-                            return;
-                        }
-                    };
+            let json = match serde_json::to_string_pretty(&settings) {
+                Ok(json) => json,
+                Err(e) => {
+                    tracing::error!("Failed to serialize settings: {}", e);
+                    return;
+                }
+            };
 
-                    // Write to temporary file first (unique per save operation)
-                    if let Err(e) = tokio::fs::write(&temp_path, &json).await {
-                        tracing::error!("Failed to write settings to temp file: {}", e);
-                        return;
-                    }
+            // Write to temporary file first (unique per save operation)
+            if let Err(e) = tokio::fs::write(&temp_path, &json).await {
+                tracing::error!("Failed to write settings to temp file: {}", e);
+                return;
+            }
 
-                    // Atomically rename temp file to actual settings file
-                    if let Err(e) = tokio::fs::rename(&temp_path, &path).await {
-                        tracing::error!("Failed to rename temp settings file: {}", e);
-                        let _ = tokio::fs::remove_file(&temp_path).await;
-                    }
-                })
-            })
-            .discard(),
+            // Atomically rename temp file to actual settings file
+            if let Err(e) = tokio::fs::rename(&temp_path, &path).await {
+                tracing::error!("Failed to rename temp settings file: {}", e);
+                let _ = tokio::fs::remove_file(&temp_path).await;
+            }
+        })
+        .discard(),
     )
 }
 

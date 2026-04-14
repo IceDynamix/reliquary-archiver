@@ -22,8 +22,6 @@
 //! - [`kit`]: Low-level UI building blocks (icons, modals, toggles, tooltips)
 //! - [`run_on_start`]: Windows startup registry integration
 
-use std::time::Instant;
-
 use async_stream::stream;
 use raxis::runtime::Backdrop;
 use raxis::runtime::task::{self, Task};
@@ -129,6 +127,61 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
     })
 }
 
+/// Loads settings synchronously from disk before the GUI initializes.
+///
+/// Uses the new `raxis::get_local_app_data()` synchronous helper to resolve the
+/// settings path without needing an async task, preventing race conditions between
+/// settings loading and other startup tasks (update checks, WebSocket port binding).
+///
+/// Returns the loaded settings and a bool indicating whether the `run_on_start`
+/// value was corrected during registry reconciliation (and therefore needs to be
+/// persisted back to disk).
+fn load_settings_sync() -> (state::Settings, bool) {
+    use crate::rgui::run_on_start::registry_matches_settings;
+
+    let Some(appdata) = raxis::get_local_app_data() else {
+        tracing::warn!("Could not determine local app data path, using default settings");
+        return (state::Settings::default(), false);
+    };
+
+    let path = get_settings_path(appdata);
+
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::info!("No settings file found at {}, using defaults", path.display());
+            return (state::Settings::default(), false);
+        }
+        Err(e) => {
+            tracing::error!("Failed to read settings file: {}", e);
+            return (state::Settings::default(), false);
+        }
+    };
+
+    let mut settings: state::Settings = match serde_json::from_str(&content) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Failed to parse settings file: {}", e);
+            return (state::Settings::default(), false);
+        }
+    };
+
+    // Reconcile run_on_start setting with registry state.
+    // e.g. user moves the exe after enabling/disabling run on start — in case
+    // of mismatch, update settings in memory and signal that a save is needed.
+    let run_on_start = settings.run_on_start;
+    let needs_save = match registry_matches_settings(run_on_start) {
+        Ok(false) => {
+            settings.run_on_start = !run_on_start;
+            true
+        }
+        Ok(true) | Err(_) => false,
+    };
+
+    tracing::info!("Loaded settings from {}", path.display());
+    (settings, needs_save)
+}
+
 /// Initializes and runs the application GUI.
 ///
 /// This function sets up the raxis application with:
@@ -149,20 +202,46 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use crate::rgui::components::update;
     use crate::worker::MultiAccountManager;
 
-    let (port_tx, port_rx) = watch::channel::<PortCommand>(PortCommand::Open(0));
+    let (settings, settings_needs_save) = load_settings_sync();
+    let start_minimized = settings.start_minimized;
+    let minimize_to_tray_on_minimize = settings.minimize_to_tray_on_minimize;
+
+    // Determine the initial window display state up front so that the window
+    // is shown/hidden/minimized at creation time rather than via a deferred
+    // task, avoiding a brief invisible-window period at startup.
+    let initial_display = if start_minimized {
+        if minimize_to_tray_on_minimize {
+            // Hidden to tray — window should not appear on the taskbar at all.
+            InitialDisplay::Hidden
+        } else {
+            // Minimized to taskbar.
+            InitialDisplay::Minimized
+        }
+    } else {
+        InitialDisplay::Shown
+    };
+
+    // Initialize the port channel with the correct port from settings so the
+    // WebSocket server binds the right port immediately — no SendPort message needed.
+    let (port_tx, port_rx) = watch::channel::<PortCommand>(PortCommand::Open(settings.ws_port));
 
     let database = get_database();
     let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
 
-    let state = RootState::new(manager.clone()).with_port_sender(port_tx);
+    let state = RootState::new(manager.clone()).with_port_sender(port_tx).with_settings(settings);
 
     let app = raxis::Application::new(state, view, update, move |state| {
         let selected_account_rx = state.selected_account_tx.subscribe();
 
+        // Persist corrected run_on_start value if the registry was out of sync.
+        let save_task = if settings_needs_save {
+            Task::done(RootMessage::Settings(SettingsMessage::Save))
+        } else {
+            Task::none()
+        };
+
         Some(Task::batch(vec![
-            task::get_local_app_data().and_then(|path| Task::done(RootMessage::Settings(SettingsMessage::Load(get_settings_path(path))))),
-            // technically calling PerformCheck here is a data race (should be .chain() to SettingsMessage::Activate)
-            // however its a case of loading+parsing ~300 bytes of json vs a round trip web request
+            save_task,
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
             Task::run(archiver_worker(manager.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(
@@ -250,7 +329,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     .replace_titlebar()
     .with_backdrop(Backdrop::MicaAlt)
     .with_window_size(960, 760)
-    .with_initial_display(InitialDisplay::Hidden);
+    .with_initial_display(initial_display);
 
     app.run()?;
 

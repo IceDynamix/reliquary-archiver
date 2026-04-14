@@ -69,8 +69,8 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
             }),
             color: Some(Color::WHITE),
             scroll: Some(ScrollConfig {
-                horizontal: Some(true),
-                sticky_right: Some(true),
+                horizontal: true,
+                sticky_right: true,
                 scrollbar_style: Some(ScrollbarStyle {
                     thumb_color: SCROLLBAR_THUMB_COLOR.lighten(0.3),
                     track_color: SCROLLBAR_TRACK_COLOR.lighten(0.3),
@@ -592,63 +592,6 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
 /// Handle settings-related messages
 pub fn handle_settings_message(state: &mut RootState, message: SettingsMessage) -> Option<Task<RootMessage>> {
     match message {
-        SettingsMessage::Load(path) => {
-            use raxis::runtime::task::{self, Task};
-            use tracing::{error, info};
-
-            info!("Loading settings from {}", path.display());
-            if path.exists() {
-                Some(Task::future(tokio::fs::read_to_string(path)).and_then(move |content| {
-                    use crate::rgui::run_on_start::registry_matches_settings;
-                    use crate::rgui::state::Settings;
-
-                    let mut settings: Settings = match serde_json::from_str::<Settings>(&content) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Failed to load settings: {}", e);
-                            Settings::default()
-                        }
-                    };
-
-                    let run_on_start = settings.run_on_start;
-                    match registry_matches_settings(run_on_start) {
-                        // settings are not guaranteed to match the registry
-                        // e.g. user moves the exe after enabling/disabling run on start
-                        // in case of mismatch, update the settings and delete registry key if appropriate
-                        Ok(false) => settings.run_on_start = !run_on_start,
-                        Ok(true) => {}
-                        _ => {}
-                    };
-
-                    // want to avoid having the app briefly flash up if set to start minimized
-                    // the app will therefore always start minimized and update display mode here as necessary
-                    let display_task = if settings.start_minimized {
-                        // TODO: Does this make sense or should it also consider onClose preference
-                        if settings.minimize_to_tray_on_minimize {
-                            Task::none()
-                        } else {
-                            task::minimize_window()
-                        }
-                    } else {
-                        task::show_window()
-                    };
-
-                    Task::batch(vec![
-                        display_task,
-                        Task::done(RootMessage::WebSocket(WebSocketMessage::SendPort(settings.ws_port))),
-                        Task::done(RootMessage::Settings(SettingsMessage::Activate(settings))),
-                    ])
-                }))
-            } else {
-                None
-            }
-        }
-
-        SettingsMessage::Activate(settings) => {
-            state.store.settings = settings;
-            None
-        }
-
         SettingsMessage::Save => save_settings(state),
 
         SettingsMessage::BackgroundImageSelected(path) => {
