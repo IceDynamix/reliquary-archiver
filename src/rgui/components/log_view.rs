@@ -161,9 +161,9 @@ pub fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
         width: Sizing::grow(),
         height: Sizing::fixed(150.0),
         scroll: Some(ScrollConfig {
-            horizontal: Some(true),
-            vertical: Some(true),
-            sticky_bottom: Some(true),
+            horizontal: true,
+            vertical: true,
+            sticky_bottom: true,
             scrollbar_style: Some(ScrollbarStyle {
                 thumb_color: SCROLLBAR_THUMB_COLOR,
                 track_color: SCROLLBAR_TRACK_COLOR,

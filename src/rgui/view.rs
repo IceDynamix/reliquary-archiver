@@ -185,9 +185,9 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
             .with_height(Sizing::grow())
             .with_child_gap(SPACE_MD)
             .with_scroll(ScrollConfig {
-                vertical: Some(true),
+                vertical: true,
                 // Safe area padding for the window controls
-                safe_area_padding: Some(BoxAmount::all(4.0).apply(|p| p.top = 34.0)),
+                safe_area_padding: BoxAmount::all(4.0).apply(|p| p.top = 34.0),
                 scrollbar_style: Some(ScrollbarStyle {
                     thumb_color: SCROLLBAR_THUMB_COLOR,
                     track_color: SCROLLBAR_TRACK_COLOR,

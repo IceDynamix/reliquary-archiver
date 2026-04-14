@@ -35,7 +35,7 @@ rfd = "0.17.2"
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
-raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "31059c1ed795e05df29de1c1cae80e7d6d9e2e7c", features = ["tokio"] }
+raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "4f688aa3789695972566204c1aa7265967d39496", features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
 # By default self_update makes its http requests with reqwest, which itself relies on tokio

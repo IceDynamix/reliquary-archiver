@@ -79,11 +79,6 @@ pub enum ExportMessage {
 /// Messages for settings persistence and configuration changes.
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
-    // Persistence
-    /// Load settings from the specified file path
-    Load(PathBuf),
-    /// Apply loaded settings to state
-    Activate(Settings),
     /// Persist current settings to disk
     Save,
 

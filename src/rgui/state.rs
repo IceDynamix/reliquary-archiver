@@ -250,6 +250,13 @@ impl RootState {
             ..self
         }
     }
+
+    pub fn with_settings(self, settings: Settings) -> Self {
+        Self {
+            store: Store { settings, ..self.store },
+            ..self
+        }
+    }
 }
 
 /// Application screen states.
