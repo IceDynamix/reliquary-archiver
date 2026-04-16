@@ -245,7 +245,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
             Task::run(archiver_worker(manager.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(
-                PortSource::Dynamic(WatchStream::from_changes(port_rx.clone())),
+                PortSource::Dynamic(WatchStream::new(port_rx.clone())),
                 manager.clone(),
                 selected_account_rx,
             ))
