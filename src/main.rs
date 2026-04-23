@@ -436,13 +436,12 @@ fn tracing_init(args: &Args) {
             .from_env_lossy()
     }
 
-    let subscriber = tracing_subscriber::fmt::fmt()
+    let (console_filter, handle) = reload::Layer::new(env_filter(args));
+    let console_log = tracing_subscriber::fmt::layer()
         .with_ansi(false)
-        .with_env_filter(env_filter(args))
         .with_writer(DualWriter::new(VecWriter::new(), io::stdout()))
-        .with_filter_reloading();
+        .with_filter(console_filter);
 
-    let handle = subscriber.reload_handle();
     *VEC_LAYER_HANDLE.lock().unwrap() = Some(Box::new(move |l| {
         handle.modify(|f| {
             *f = EnvFilter::builder()
@@ -469,9 +468,7 @@ fn tracing_init(args: &Args) {
         None
     };
 
-    let subscriber = subscriber.finish();
-
-    let subscriber = subscriber.with(file_log);
+    let subscriber = Registry::default().with(console_log).with(file_log);
 
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
