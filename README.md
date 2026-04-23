@@ -12,13 +12,22 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
 - Download latest release from [here](https://github.com/IceDynamix/reliquary-archiver/releases/)
 - **Launch the game and get to this screen. Do not go into the game yet**
   ![main menu start screen](./hsr_hyperdrive.jpg)
-- run the archiver executable and wait until it says "listening with a timeout"
-  ![archiver listening for timeout](./listening_for_timeout.png)
-- start the game
-- if successful, the archiver should output a file to `archiver_output.json`
-  ![archiver visual guide](./archiver_visual_guide.webp)
+- run the archiver executable and wait until it says "Waiting for login..."
+  ![archiver waiting for login](./waiting_for_login.png)
+  the download button will say "Export not ready" until you start the game
+- start the game by pressing "Click to Start"
+- if successful, the archiver should switch to "Connected!" and the download button should become available
+- click the download button and save the generated `archive_output-...json` file wherever you want
 
 you might have to disable your VPN or enable/disable wifi!
+
+if you were already in-game, you must log out and log back in.
+
+alternatively, if you already have a packet capture file:
+
+- click "Upload .pcap"
+- select a `.pcap`, `.pcapng`, or `.etl` file
+- click the download button once the export is ready
 
 ### cli usage
 
@@ -38,6 +47,8 @@ Options:
       --always-update            Update without asking for confirmation, only applicable on Windows
       --auth-token <AUTH_TOKEN>  Github Auth token to use when checking for updates, only applicable on Windows
   -e, --exit-after-capture       Don't wait for enter to be pressed after capturing
+  -H, --headless                 Run in headless mode (no GUI), only applicable when GUI feature is enabled
+  -d, --detach                   Detach from the parent terminal (run in background), only applicable on Windows
   -h, --help                     Print help
 
 Pcap Only:
