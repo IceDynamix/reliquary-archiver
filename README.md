@@ -17,11 +17,16 @@ made to be used with [fribbels hsr optimizer](https://github.com/fribbels/hsr-op
   the download button will say "Export not ready" until you start the game
 - start the game by pressing "Click to Start"
 - if successful, the archiver should switch to "Connected!" and the download button should become available
-- click the download button and save the generated `archive_output-...json` file wherever you want
+  ![archiver visual guide](./archiver_visual_guide.avif)
+- Options:
+  1. Live Import **(recommended)** - check that "Enable Live Import" is enabled in the optimizer "Import" section and that it says "Connected".
+  2. Manual Import - click the download button and save the generated `archive_output-...json` file wherever you want
 
-you might have to disable your VPN or enable/disable wifi!
-
-if you were already in-game, you must log out and log back in.
+Troubleshooting:
+- Please make sure you are fully entering the game; if you are still on the "Click to Start" train hyperdrive screen, you need to click to start.
+- Brave Shield is incompatible with Live Import, please make an exception for Fribbels
+- You might have to disable your VPN or enable/disable wifi!
+- If you were already in-game before launching the archiver, you must log out and log back in.
 
 alternatively, if you already have a packet capture file:
 
