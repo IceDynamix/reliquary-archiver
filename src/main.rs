@@ -20,7 +20,7 @@ use futures::lock::Mutex as FuturesMutex;
 use futures::{FutureExt, StreamExt, future, select};
 use reliquary::network::command::GameCommandError;
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
-use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, KcpError, NetworkError};
+use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, KcpError, NetworkError};
 use tokio::pin;
 use tracing::instrument::WithSubscriber;
 use tracing::level_filters::LevelFilter;
@@ -759,7 +759,13 @@ async fn live_capture(
                     Err(e) => {
                         warn!(%e);
                         match e {
-                            NetworkError::ConnectionPacket(_) => {
+                            NetworkError::ConnectionPacket(e) => {
+                                if let ConnectionPacketError::TransportLayerNotPresent = e {
+                                    warn!(
+                                        "This error tends to happen when using VPNs or similar programs. Please disable them and try again."
+                                    );
+                                }
+
                                 // Connection errors are not fatal as all network interfaces are funneled through the same stream
                                 // Just mark this source as poisoned and continue listening on other sources
                                 poisoned_sources.insert(packet.source_id);
