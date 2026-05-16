@@ -725,6 +725,9 @@ async fn live_capture(
                                         match e {
                                             GameCommandError::DecryptionKeyMissing => {
                                                 // version is not supported, there's no point in capturing
+                                                warn!(
+                                                    "This game version is not supported yet. It takes a few days for Reliquary Archiver to get updated to new versions. Please try again in a few days."
+                                                );
                                                 break 'recv;
                                             }
                                             GameCommandError::HeaderTooShort { .. } | GameCommandError::CommandTooShort { .. } => {
