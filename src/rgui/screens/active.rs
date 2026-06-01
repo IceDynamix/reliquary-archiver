@@ -131,14 +131,21 @@ impl ActiveScreen {
 
             return column![
                 maybe_text_shadow(
-                    Text::new("Out of Date")
+                    Text::new("Unsupported Game Version")
                         .with_font_size(24.0)
                         .with_color(TEXT_COLOR)
                         .with_paragraph_alignment(ParagraphAlignment::Center),
                     text_shadow_enabled,
                 ),
                 maybe_text_shadow(
-                    Text::new("Reliquary Archiver has not updated for the latest game version.")
+                    Text::new("This version of Reliquary Archiver is not yet compatible with the latest game version.")
+                        .with_font_size(16.0)
+                        .with_color(TEXT_COLOR)
+                        .with_paragraph_alignment(ParagraphAlignment::Center),
+                    text_shadow_enabled,
+                ),
+                maybe_text_shadow(
+                    Text::new("Every new game version requires an update, which may not be available yet.")
                         .with_font_size(16.0)
                         .with_color(TEXT_COLOR)
                         .with_paragraph_alignment(ParagraphAlignment::Center),
