@@ -15,11 +15,11 @@ use std::time::Duration;
 #[cfg(feature = "pcap")]
 use capture::PCAP_FILTER;
 use chrono::Local;
-use clap::Parser;
+use clap::{arg, Parser};
 use futures::lock::Mutex as FuturesMutex;
-use futures::{FutureExt, StreamExt, future, select};
-use reliquary::network::command::GameCommandError;
+use futures::{future, select, FutureExt, StreamExt};
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::GameCommandError;
 use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, KcpError, NetworkError};
 use tokio::pin;
 use tracing::instrument::WithSubscriber;
@@ -28,7 +28,7 @@ use tracing::{debug, error, info, instrument, warn};
 use tracing_subscriber::filter::Filtered;
 use tracing_subscriber::fmt::{MakeWriter, SubscriberBuilder};
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{EnvFilter, Layer, Registry, reload};
+use tracing_subscriber::{reload, EnvFilter, Layer, Registry};
 
 #[cfg(feature = "stream")]
 mod websocket;
@@ -39,9 +39,11 @@ mod rgui;
 #[cfg(windows)]
 mod update;
 
-use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
+use reliquary_archiver::export::Exporter;
+
+use crate::capture::{CaptureBackend, CaptureDevice, PacketCapture};
 
 mod capture;
 mod scopefns;
@@ -57,6 +59,11 @@ struct Args {
     #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,
+
+    /// Read packets from a streaming .pcap file instead of capturing live packets
+    #[cfg(feature = "pcap-parser")]
+    #[arg(long)]
+    pcap_file_live: Option<PathBuf>,
 
     /// Read packets from .etl file instead of capturing live packets
     #[cfg(feature = "pktmon")]
@@ -114,11 +121,14 @@ struct Args {
 
 #[derive(Debug, Clone)]
 enum CaptureMode {
+    #[cfg(any(feature = "pcap", feature = "pktmon"))]
     Live,
     #[cfg(feature = "pcap")]
     Pcap(PathBuf),
     #[cfg(feature = "pktmon")]
     Etl(PathBuf),
+    #[cfg(feature = "pcap-parser")]
+    PcapFileLive(PathBuf),
 }
 
 impl CaptureMode {
@@ -133,11 +143,21 @@ impl CaptureMode {
             return CaptureMode::Etl(path.clone());
         }
 
-        CaptureMode::Live
+        #[cfg(feature = "pcap-parser")]
+        if let Some(path) = &args.pcap_file_live {
+            return CaptureMode::PcapFileLive(path.clone());
+        }
+
+        #[cfg(any(feature = "pcap", feature = "pktmon"))]
+        {
+            CaptureMode::Live
+        }
+        #[cfg(all(not(feature = "pcap"), not(feature = "pktmon")))]
+        panic!("")
     }
 }
 
-#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
+#[cfg(not(any(feature = "pktmon", feature = "pcap", feature = "pcap-parser")))]
 compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
 
 #[cfg(all(not(windows), feature = "gui"))]
@@ -290,11 +310,14 @@ async fn capture(args: Args) {
 
         let capture_mode = CaptureMode::from_args(&args);
         let export = match capture_mode {
+            #[cfg(any(feature = "pcap", feature = "pktmon"))]
             CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer).await,
             #[cfg(feature = "pcap")]
             CaptureMode::Pcap(path) => capture_from_pcap(exporter, sniffer, path),
             #[cfg(feature = "pktmon")]
             CaptureMode::Etl(path) => capture_from_etl(exporter, sniffer, path),
+            #[cfg(feature = "pcap-parser")]
+            CaptureMode::PcapFileLive(_) => live_capture_wrapper(&args, exporter, sniffer).await,
         };
 
         if let Some(export) = export {
@@ -326,13 +349,17 @@ async fn capture(args: Args) {
                     Ok(file) => {
                         if let Err(e) = serde_json::to_writer_pretty(&file, &export) {
                             error!("Failed to write to {}: {}", output_file.display(), e);
+                            #[cfg(feature = "gui")]
                             pick_file!();
+                            #[cfg(not(feature = "gui"))]
+                            break;
                         }
                         info!("wrote output to {}", output_file.canonicalize().unwrap().display());
                         break;
                     }
                     Err(e) => {
                         error!("Failed to create file at {}: {}", output_file.display(), e);
+                        #[cfg(feature = "gui")]
                         pick_file!();
                     }
                 }
@@ -568,7 +595,7 @@ where
     use tokio::sync::watch;
 
     #[cfg(feature = "stream")]
-    use crate::websocket::{PortSource, start_websocket_server};
+    use crate::websocket::{start_websocket_server, PortSource};
     use crate::worker::MultiAccountManager;
 
     #[cfg(not(feature = "stream"))]
@@ -613,17 +640,26 @@ async fn live_capture(
     use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
     use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
 
-    let rx = {
+    let rx = (|| {
+        #[cfg(feature = "pcap-parser")]
+        #[allow(clippy::needless_return)]
+        if let Some(file) = args.pcap_file_live.clone() {
+            return capture::listen_on_all(capture::pcap_file::PcapFile::new(file));
+        } else {
+            #[cfg(all(not(feature = "pcap"), not(feature = "pktmon")))]
+            {
+                panic!()
+            }
+        }
         #[cfg(feature = "pcap")]
         {
             capture::listen_on_all(capture::pcap::PcapBackend)
         }
-
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
         {
             capture::listen_on_all(capture::pktmon::PktmonBackend)
         }
-    };
+    })();
 
     let packet_stream = rx.expect("Failed to start packet capture");
     let mut packet_stream = packet_stream.fuse();
@@ -833,10 +869,10 @@ async fn maybe_timeout(timeout: Option<Duration>) -> () {
 fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::windows::ffi::OsStrExt;
 
+    use windows::core::{w, PCWSTR};
     use windows::Win32::System::Console::GetConsoleWindow;
-    use windows::Win32::UI::Shell::{SEE_MASK_NO_CONSOLE, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
-    use windows::Win32::UI::WindowsAndMessaging::{GW_OWNER, GetWindow, SW_SHOWNORMAL};
-    use windows::core::{PCWSTR, w};
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER, SW_SHOWNORMAL};
 
     let args_str = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
 
