@@ -37,7 +37,7 @@ axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
 #pcap-parser = { optional = true, version = "0.17.0", features = ["data", "default"] }
 #pcap-file = { optional = true, version = "3.0.0-rc1" }
-pcaparse = { optional = true, path = "../../traceflight/pcaparse", features = ["async-trait", "tokio", "tokio-byteorder"] }
+pcaparse = { optional = true, git = "https://github.com/Amejonah1200/f-traceflight-pcaparse",  rev = "0e569e9ec7cb6e1d90c80ab1880c9b77815d45e3", features = ["async-trait", "tokio", "tokio-byteorder"] }
 raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "4f688aa3789695972566204c1aa7265967d39496", features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]

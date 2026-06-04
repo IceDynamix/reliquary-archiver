@@ -1783,6 +1783,7 @@ dependencies = [
 [[package]]
 name = "pcaparse"
 version = "0.2.0"
+source = "git+https://github.com/Amejonah1200/f-traceflight-pcaparse?rev=0e569e9ec7cb6e1d90c80ab1880c9b77815d45e3#0e569e9ec7cb6e1d90c80ab1880c9b77815d45e3"
 dependencies = [
  "async-trait",
  "byteorder",
