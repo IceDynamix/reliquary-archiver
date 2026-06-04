@@ -1,0 +1,90 @@
+use std::cell::RefCell;
+use std::error::Error;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::ErrorKind;
+use std::path::PathBuf;
+use std::pin::pin;
+use std::rc::Rc;
+use std::sync::{Arc, Mutex, RwLock};
+use async_stream::stream;
+use futures::{FutureExt, Stream, TryFutureExt};
+use pcaparse::Format;
+use crate::capture::{CaptureBackend, CaptureDevice, CaptureError, Packet, PacketCapture};
+
+#[derive(Debug)]
+pub struct PcapFile {
+    pub file: PathBuf,
+    already_read: Arc<RwLock<bool>>
+}
+
+impl PcapFile {
+    pub(crate) fn new(file: PathBuf) -> Self {
+        PcapFile {
+            file,
+            already_read: Arc::new(RwLock::new(false))
+        }
+    }
+}
+
+impl CaptureBackend for PcapFile {
+    type Device = PcapFile;
+
+    fn list_devices(&mut self) -> crate::capture::Result<Vec<Self::Device>> {
+        // HACK: due to CaptureBackend has no "start"
+        // it cannot really start listening to the incoming events
+        // TODO: uplift file opening to backend
+        if *self.already_read.read().unwrap() { return Ok(vec![]) }
+        self.file.exists().then(|| vec![PcapFile { file: self.file.clone(), already_read: self.already_read.clone() }]).ok_or_else(|| {
+            CaptureError::Device(Box::new(std::io::Error::new(
+                ErrorKind::NotFound,
+                format!("file {:?} doesn't exist", self.file),
+            )))
+        })
+    }
+}
+
+impl CaptureDevice for PcapFile {
+    type Capture = PcapFile;
+
+    fn name(&self) -> &str {
+        self.file.to_str().unwrap()
+    }
+
+    fn create_capture(&self) -> crate::capture::Result<Self::Capture> {
+        let mut lock = self.already_read.write().map_err(|e| CaptureError::Capture {has_captured: false, error: Box::from(e.to_string()) })?;
+        *lock = true;
+        Ok(PcapFile { file: self.file.clone(), already_read: self.already_read.clone() })
+    }
+}
+
+impl PacketCapture for PcapFile {
+    fn capture_packets(self) -> crate::capture::Result<impl Stream<Item = crate::capture::Result<Packet>> + Unpin + Send> {
+        let source_id = {
+            let mut hasher = DefaultHasher::new();
+            self.file.hash(&mut hasher);
+            hasher.finish()
+        };
+        Ok(Box::pin(stream! {
+            let capture = tokio::fs::File::open(self.file.clone())
+                .map_err(Box::<_>::from)
+                .and_then(async |file| pcaparse::unified::Reader::async_new(file).map_err(Box::<_>::from).await)
+                .map_err(CaptureError::Device);
+
+            match capture.await {
+                Ok(mut stream) => {
+                    while let Some(packet_result) = stream.async_next_packet().await {
+                        yield packet_result
+                            .map_err(|e| CaptureError::Capture { has_captured: true, error: Box::new(e)})
+                            .map(|p| Packet {
+                                source_id,
+                                data: p.data.to_vec(),
+                            });
+                    }
+                }
+                Err(err) => {
+                    yield Err(err);
+                }
+            }
+        }))
+    }
+}

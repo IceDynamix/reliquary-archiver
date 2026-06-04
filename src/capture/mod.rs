@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::fmt::{Debug, Display};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use futures::{Stream, StreamExt};
@@ -16,8 +15,10 @@ pub mod pktmon;
 
 #[cfg(feature = "pcap")]
 pub mod pcap;
+#[cfg(feature = "pcap-parser")]
+pub mod pcap_file;
 
-#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
+#[cfg(not(any(feature = "pktmon", feature = "pcap", feature = "pcap-parser")))]
 compile_error!("at least one of the features \"pktmon\" or \"pcap\" must be enabled");
 
 #[cfg(feature = "pktmon")]
@@ -74,11 +75,11 @@ pub fn normalize_offline_pcap_payload(linktype: ::pcap::Linktype, payload: &[u8]
 
 #[derive(Debug)]
 pub enum CaptureError {
-    #[cfg(feature = "pcap")]
-    DeviceError(Box<dyn Error + Send + Sync>),
+    #[cfg(any(feature = "pcap", feature = "pcap-parser"))]
+    Device(Box<dyn Error + Send + Sync>),
 
-    FilterError(Box<dyn Error + Send + Sync>),
-    CaptureError {
+    Filter(Box<dyn Error + Send + Sync>),
+    Capture {
         has_captured: bool,
         error: Box<dyn Error + Send + Sync>,
     },
@@ -86,18 +87,21 @@ pub enum CaptureError {
 
 impl Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.source().unwrap())
+        if let Some(source) = self.source() {
+            write!(f, "{}",  source)
+        } else {
+            write!(f, "None")
+        }
     }
 }
 
 impl Error for CaptureError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            #[cfg(feature = "pcap")]
-            CaptureError::DeviceError(e) => Some(e.as_ref()),
-
-            CaptureError::FilterError(e) => Some(e.as_ref()),
-            CaptureError::CaptureError { error, .. } => Some(error.as_ref()),
+            #[cfg(any(feature = "pcap", feature = "pcap-parser"))]
+            CaptureError::Device(e) => Some(e.as_ref()),
+            CaptureError::Filter(e) => Some(e.as_ref()),
+            CaptureError::Capture { error, .. } => Some(error.as_ref()),
             _ => None,
         }
     }
@@ -134,12 +138,12 @@ pub trait CaptureBackend: Send {
     type Device: CaptureDevice;
 
     /// List all available capture devices
-    fn list_devices(&self) -> Result<Vec<Self::Device>>;
+    fn list_devices(&mut self) -> Result<Vec<Self::Device>>;
 }
 
 /// Start capturing packets from all available devices using the specified backend
 #[instrument(skip_all)]
-pub fn listen_on_all<B: CaptureBackend + 'static>(backend: B) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
+pub fn listen_on_all<B: CaptureBackend + 'static>(mut backend: B) -> Result<Box<dyn Stream<Item = Result<Packet>> + Unpin>> {
     use std::collections::HashSet;
 
     use tokio::time::{Duration, interval};
@@ -209,5 +213,5 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(backend: B) -> Result<impl Str
         }
     });
 
-    Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+    Ok(Box::new(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)))
 }

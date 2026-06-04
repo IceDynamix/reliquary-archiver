@@ -20,7 +20,7 @@ pub struct PktmonCapture {
 impl CaptureBackend for PktmonBackend {
     type Device = PktmonCaptureDevice;
 
-    fn list_devices(&self) -> Result<Vec<Self::Device>> {
+    fn list_devices(&mut self) -> Result<Vec<Self::Device>> {
         // PktMon doesn't need device selection - it captures all interfaces
         Ok(vec![PktmonCaptureDevice])
     }
@@ -33,8 +33,8 @@ impl CaptureDevice for PktmonCaptureDevice {
         "pktmon"
     }
 
-    fn create_capture(&self) -> Result<Self::Capture> {
-        let mut capture = Capture::new().map_err(|e| CaptureError::CaptureError {
+    async fn create_capture(&self) -> Result<Self::Capture> {
+        let mut capture = Capture::new().map_err(|e| CaptureError::Capture {
             has_captured: false,
             error: Box::new(e),
         })?;
@@ -46,7 +46,7 @@ impl CaptureDevice for PktmonCaptureDevice {
             ..PktMonFilter::default()
         };
 
-        capture.add_filter(filter).map_err(|e| CaptureError::FilterError(Box::new(e)))?;
+        capture.add_filter(filter).map_err(|e| CaptureError::Filter(Box::new(e)))?;
 
         let filter = PktMonFilter {
             name: "UDP Filter".to_string(),
@@ -55,7 +55,7 @@ impl CaptureDevice for PktmonCaptureDevice {
             ..PktMonFilter::default()
         };
 
-        capture.add_filter(filter).map_err(|e| CaptureError::FilterError(Box::new(e)))?;
+        capture.add_filter(filter).map_err(|e| CaptureError::Filter(Box::new(e)))?;
 
         Ok(PktmonCapture { capture })
     }
@@ -64,7 +64,7 @@ impl CaptureDevice for PktmonCaptureDevice {
 impl PacketCapture for PktmonCapture {
     #[instrument(skip_all)]
     fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
-        self.capture.start().map_err(|e| CaptureError::CaptureError {
+        self.capture.start().map_err(|e| CaptureError::Capture {
             has_captured: false,
             error: Box::new(e),
         })?;
@@ -81,7 +81,7 @@ impl PacketCapture for PktmonCapture {
                     }
                 })
             })),
-            Err(e) => Err(CaptureError::CaptureError {
+            Err(e) => Err(CaptureError::Capture {
                 has_captured: false,
                 error: Box::new(e),
             }),

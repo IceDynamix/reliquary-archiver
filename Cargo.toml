@@ -31,10 +31,13 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
 open = "5.3.2"
-rfd = "0.17.2"
+rfd = { optional = true, version = "0.17.2" }
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
+#pcap-parser = { optional = true, version = "0.17.0", features = ["data", "default"] }
+#pcap-file = { optional = true, version = "3.0.0-rc1" }
+pcaparse = { optional = true, path = "../../traceflight/pcaparse", features = ["async-trait", "tokio", "tokio-byteorder"] }
 raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "662f22f2ef1c689478a1bb715902120200bd34ce", features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -68,6 +71,7 @@ default = ["pcap", "stream"]
 gui = [
     "stream",
     "dep:raxis",
+    "dep:rfd",
     "windows/Win32_Foundation",
     "windows/Win32_System_Console",
     "windows/Win32_System_Registry",
@@ -75,6 +79,7 @@ gui = [
 ]
 stream = ["dep:axum"]
 pcap = ["dep:pcap"]
+pcap-parser = ["dep:pcaparse"]
 pktmon = [
     "dep:pktmon",
     # windows dependencies necessary for admin detection and escalation
