@@ -97,7 +97,7 @@ pub trait CaptureBackend: Send {
 
 /// Start capturing packets from all available devices using the specified backend
 #[instrument(skip_all)]
-pub fn listen_on_all<B: CaptureBackend + 'static>(mut backend: B) -> Result<Box<dyn Stream<Item = Result<Packet>> + Unpin>> {
+pub fn listen_on_all<B: CaptureBackend + 'static>(mut backend: B) -> Result<Box<dyn Stream<Item = Result<Packet>> + Unpin + Send>> {
     use std::collections::HashSet;
 
     use tokio::time::{Duration, interval};
