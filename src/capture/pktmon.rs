@@ -33,7 +33,7 @@ impl CaptureDevice for PktmonCaptureDevice {
         "pktmon"
     }
 
-    async fn create_capture(&self) -> Result<Self::Capture> {
+    fn create_capture(&self) -> Result<Self::Capture> {
         let mut capture = Capture::new().map_err(|e| CaptureError::Capture {
             has_captured: false,
             error: Box::new(e),
