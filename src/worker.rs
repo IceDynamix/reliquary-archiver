@@ -374,6 +374,9 @@ async fn live_capture(
                 {
                     capture::listen_on_all(capture::pktmon::PktmonBackend)
                 }
+                
+                #[cfg(all(not(feature = "pcap"), not(feature = "pktmon")))]
+                compile_error!("feature 'gui' can only work if either feature 'pcap' or 'pktmon' is active.")
             };
 
             match result.map_err(|e| e.to_string()) {

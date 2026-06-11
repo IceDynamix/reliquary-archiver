@@ -1,10 +1,15 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
+use async_stream::stream;
+use futures::stream::BoxStream;
 use futures::{Stream, StreamExt};
 use tokio::pin;
 use tokio::sync::mpsc;
+use tokio::time::interval;
 use tokio_stream::StreamMap;
 use tracing::instrument;
 
@@ -42,7 +47,7 @@ pub enum CaptureError {
 impl Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(source) = self.source() {
-            write!(f, "{}",  source)
+            write!(f, "{}", source)
         } else {
             write!(f, "None")
         }
@@ -93,6 +98,37 @@ pub trait CaptureBackend: Send {
 
     /// List all available capture devices
     fn list_devices(&mut self) -> Result<Vec<Self::Device>>;
+
+    fn listen_new_devices(&mut self) -> BoxStream<'_, Result<Self::Device>> {
+        let mut set = HashSet::new();
+        stream! {
+            let mut check_interval = interval(Duration::from_secs(10));
+            loop {
+                match self.list_devices() {
+                    Ok(devices) => {
+                        set.retain(|device| {
+                            for d in &devices {
+                                if device == d.name() {
+                                    return true;
+                                }
+                            }
+                            false
+                        });
+                        for device in devices {
+                            let name = device.name().to_string();
+                            if !set.contains(name.as_str()) {
+                                set.insert(name);
+                                yield Ok(device);
+                            }
+                        }
+                    }
+                    Err(err) => yield Err(err),
+                }
+                check_interval.tick().await;
+            }
+        }
+        .boxed()
+    }
 }
 
 /// Start capturing packets from all available devices using the specified backend
@@ -100,22 +136,16 @@ pub trait CaptureBackend: Send {
 pub fn listen_on_all<B: CaptureBackend + 'static>(mut backend: B) -> Result<Box<dyn Stream<Item = Result<Packet>> + Unpin + Send>> {
     use std::collections::HashSet;
 
-    use tokio::time::{Duration, interval};
+    use tokio::time::{interval, Duration};
 
-    let devices = backend.list_devices()?;
     let mut merged_stream = StreamMap::new();
 
-    if devices.is_empty() {
-        tracing::warn!("Could not find any network devices");
-    }
-
     // Create a channel to forward packets
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (mut tx, rx) = mpsc::unbounded_channel();
 
     // Spawn task to manage stream and discover new devices
     tokio::spawn(async move {
-        let mut check_interval = interval(Duration::from_secs(10));
-
+        let mut new_devices = backend.listen_new_devices();
         loop {
             tokio::select! {
                 // Forward packets from merged stream
@@ -130,36 +160,36 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(mut backend: B) -> Result<Box<
                 }
 
                 // Check for new devices every 10 seconds
-                _ = check_interval.tick() => {
-                    match backend.list_devices() {
-                        Ok(devices) => {
-                            for device in devices {
-                                let device_name = device.name().to_owned();
+                res = new_devices.next() => {
+                    let device = match res {
+                        Some(Ok(device)) => device,
+                        Some(Err(e)) => {
+                            tracing::warn!("{:#?}", e);
+                            continue
+                        }
+                        // backend down
+                        None => {
+                            drop(tx);
+                            break
+                        }
+                    };
+                    let device_name = device.name().to_owned();
 
-                                // Only add if it's a new device
-                                if !merged_stream.contains_key(&device_name) {
-                                    tracing::info!("Discovered new device: {}", device_name);
-
-                                    match device.create_capture() {
-                                        Ok(mut capture) => {
-                                            match capture.capture_packets() {
-                                                Ok(stream) => {
-                                                    merged_stream.insert(device_name, stream);
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("Failed to create capture for new device {}: {:#?}", device_name, e);
-                                        }
-                                    }
+                    tracing::info!("Discovered new device: {}", device_name);
+                    
+                    match device.create_capture() {
+                        Ok(mut capture) => {
+                            match capture.capture_packets() {
+                                Ok(stream) => {
+                                    merged_stream.insert(device_name, stream);
+                                }
+                                Err(e) => {
+                                    tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
                                 }
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("Failed to list devices during periodic check: {:#?}", e);
+                            tracing::warn!("Failed to create capture for new device {}: {:#?}", device_name, e);
                         }
                     }
                 }
