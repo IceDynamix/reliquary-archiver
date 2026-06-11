@@ -1,28 +1,32 @@
-use std::cell::RefCell;
-use std::error::Error;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::ErrorKind;
 use std::path::PathBuf;
-use std::pin::pin;
-use std::rc::Rc;
-use std::sync::{Arc, Mutex, RwLock};
+
 use async_stream::stream;
-use futures::{FutureExt, Stream, TryFutureExt};
-use pcaparse::Format;
+use futures::stream::BoxStream;
+use futures::{stream, FutureExt, Stream, StreamExt, TryFutureExt};
+use notify::event::{CreateKind, EventAttributes, RemoveKind};
+use notify::{Event, EventHandler, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
+use tokio::sync::mpsc::UnboundedSender;
+
 use crate::capture::{CaptureBackend, CaptureDevice, CaptureError, Packet, PacketCapture};
 
 #[derive(Debug)]
 pub struct PcapFile {
     pub file: PathBuf,
-    already_read: Arc<RwLock<bool>>
 }
 
 impl PcapFile {
     pub(crate) fn new(file: PathBuf) -> Self {
-        PcapFile {
-            file,
-            already_read: Arc::new(RwLock::new(false))
-        }
+        PcapFile { file }
+    }
+}
+
+struct AsyncSyncWrapper(UnboundedSender<NotifyResult<Event>>);
+
+impl EventHandler for AsyncSyncWrapper {
+    fn handle_event(&mut self, event: NotifyResult<Event>) {
+        self.0.send(event);
     }
 }
 
@@ -33,13 +37,67 @@ impl CaptureBackend for PcapFile {
         // HACK: due to CaptureBackend has no "start"
         // it cannot really start listening to the incoming events
         // TODO: uplift file opening to backend
-        if *self.already_read.read().unwrap() { return Ok(vec![]) }
-        self.file.exists().then(|| vec![PcapFile { file: self.file.clone(), already_read: self.already_read.clone() }]).ok_or_else(|| {
-            CaptureError::Device(Box::new(std::io::Error::new(
+        self.file
+            .exists()
+            .then(|| vec![PcapFile { file: self.file.clone() }])
+            .ok_or_else(|| {
+                CaptureError::Device(Box::new(std::io::Error::new(
+                    ErrorKind::NotFound,
+                    format!("file {:?} doesn't exist", self.file),
+                )))
+            })
+    }
+
+    fn listen_new_devices(&mut self) -> BoxStream<'_, crate::capture::Result<Self::Device>> {
+        if !self.file.exists() {
+            return stream::iter(vec![Err(CaptureError::Device(Box::new(std::io::Error::new(
                 ErrorKind::NotFound,
                 format!("file {:?} doesn't exist", self.file),
-            )))
-        })
+            ))))])
+            .boxed();
+        }
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NotifyResult<Event>>();
+        let mut watcher = match notify::recommended_watcher(AsyncSyncWrapper(tx)) {
+            Ok(w) => w,
+            Err(err) => return stream::iter(vec![Err(CaptureError::Device(Box::new(err)))]).boxed(),
+        };
+
+        if let Err(err) = watcher.watch(&self.file, RecursiveMode::NonRecursive) {
+            return stream::iter(vec![Err(CaptureError::Device(Box::new(err)))]).boxed();
+        }
+        if !self.file.is_dir() {
+            stream! {
+                yield Ok(Event { kind: EventKind::Create(CreateKind::Any), paths: vec![self.file.clone()], attrs: EventAttributes::default() });
+                while let Some(event) = rx.recv().await {
+                    if let Ok(Event { kind: EventKind::Remove(RemoveKind::Any | RemoveKind::File), paths, .. }) = event {
+                        break
+                    }
+                }
+                drop(watcher);
+            }.boxed()
+        } else {
+            stream! {
+                while let Some(event) = rx.recv().await {
+                    yield event;
+                }
+                drop(watcher);
+            }.boxed()
+        }
+            .filter_map(async |res| match res {
+                Ok(Event {
+                       kind: EventKind::Create(CreateKind::File | CreateKind::Any),
+                       paths,
+                       ..
+                   }) => Some(Ok(PcapFile { file: paths[0].clone() })), // TODO: test it out properly
+                Ok(Event {
+                       kind: EventKind::Remove(RemoveKind::File | RemoveKind::Any),
+                       paths,
+                       ..
+                   }) => None,
+                Err(err) => Some(Err(CaptureError::Device(Box::new(err)))),
+                _ => None,
+            })
+            .boxed()
     }
 }
 
@@ -51,9 +109,7 @@ impl CaptureDevice for PcapFile {
     }
 
     fn create_capture(&self) -> crate::capture::Result<Self::Capture> {
-        let mut lock = self.already_read.write().map_err(|e| CaptureError::Capture {has_captured: false, error: Box::from(e.to_string()) })?;
-        *lock = true;
-        Ok(PcapFile { file: self.file.clone(), already_read: self.already_read.clone() })
+        Ok(PcapFile { file: self.file.clone() })
     }
 }
 
