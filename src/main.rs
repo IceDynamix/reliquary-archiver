@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::io;
+use std::{fs, io};
 use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -321,7 +321,7 @@ async fn capture(args: Args) {
         };
 
         if let Some(export) = export {
-            let file_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
+            let file_name = Local::now().format("archive_outputs/archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
             let mut output_file = match args.output {
                 Some(out) => out,
                 _ => PathBuf::from(file_name.clone()),
@@ -345,6 +345,9 @@ async fn capture(args: Args) {
             }
             info!("exporting collected data");
             loop {
+                if let Some(p) = output_file.parent() {
+                    fs::create_dir_all(p);
+                }
                 match File::create(&output_file) {
                     Ok(file) => {
                         if let Err(e) = serde_json::to_writer_pretty(&file, &export) {
