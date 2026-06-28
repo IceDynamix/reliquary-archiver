@@ -1,12 +1,14 @@
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Debug, Display};
+use std::io::ErrorKind;
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use async_stream::stream;
 use futures::stream::BoxStream;
-use futures::{Stream, StreamExt};
+use futures::{FutureExt, Stream, StreamExt};
+use pcaparse::PcapError;
 use tokio::pin;
 use tokio::sync::mpsc;
 use tokio::time::interval;
@@ -136,58 +138,70 @@ pub trait CaptureBackend: Send {
 pub fn listen_on_all<B: CaptureBackend + 'static>(mut backend: B) -> Result<Box<dyn Stream<Item = Result<Packet>> + Unpin + Send>> {
     use std::collections::HashSet;
 
-    use tokio::time::{interval, Duration};
-
-    let mut merged_stream = StreamMap::new();
+    use tokio::time::{Duration, interval};
 
     // Create a channel to forward packets
     let (mut tx, rx) = mpsc::unbounded_channel();
 
+    enum EventItem<D: CaptureDevice> {
+        NewPacket(Result<Packet>),
+        NewDevice(Result<D>),
+    }
+
     // Spawn task to manage stream and discover new devices
     tokio::spawn(async move {
-        let mut new_devices = backend.listen_new_devices();
+        let mut merged_stream = StreamMap::new();
+        merged_stream.insert(
+            "devices".to_string(),
+            backend.listen_new_devices().map(EventItem::NewDevice).boxed(),
+        );
         loop {
-            tokio::select! {
-                // Forward packets from merged stream
-                Some((_, item)) = merged_stream.next() => {
-                    if let Err(e) = &item {
-                        tracing::warn!(%e);
+            let Some((stream_name, item)) = merged_stream.next().await else {
+                break;
+            };
+
+            match item {
+                EventItem::NewPacket(res) => {
+                    if let Err(e) = &res {
+                        if let CaptureError::Capture { error, .. } = e {
+                            if let Some(PcapError::IoError(io_err)) = error.downcast_ref::<PcapError>() {
+                                if io_err.kind() == ErrorKind::UnexpectedEof {
+                                    tracing::info!("End of file reached for {}, device stopped.", stream_name);
+                                    merged_stream.remove(&stream_name);
+                                    continue
+                                }
+                            }
+                        }
+                        tracing::warn!("{:#?}", e);
                     }
 
-                    if tx.send(item).is_err() {
+                    if tx.send(res).is_err() {
+                        merged_stream.clear();
                         break; // Receiver dropped
                     }
                 }
 
-                // Check for new devices every 10 seconds
-                res = new_devices.next() => {
-                    let device = match res {
-                        Some(Ok(device)) => device,
-                        Some(Err(e)) => {
+                EventItem::NewDevice(res) => {
+                    let device: B::Device = match res {
+                        Ok(device) => device,
+                        Err(e) => {
                             tracing::warn!("{:#?}", e);
-                            continue
-                        }
-                        // backend down
-                        None => {
-                            drop(tx);
-                            break
+                            continue;
                         }
                     };
                     let device_name = device.name().to_owned();
 
                     tracing::info!("Discovered new device: {}", device_name);
-                    
+
                     match device.create_capture() {
-                        Ok(mut capture) => {
-                            match capture.capture_packets() {
-                                Ok(stream) => {
-                                    merged_stream.insert(device_name, stream);
-                                }
-                                Err(e) => {
-                                    tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
-                                }
+                        Ok(mut capture) => match capture.capture_packets() {
+                            Ok(stream) => {
+                                merged_stream.insert(format!("device/{}", device_name), stream.map(EventItem::NewPacket).boxed());
                             }
-                        }
+                            Err(e) => {
+                                tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
+                            }
+                        },
                         Err(e) => {
                             tracing::warn!("Failed to create capture for new device {}: {:#?}", device_name, e);
                         }

@@ -56,48 +56,7 @@ impl CaptureBackend for PcapFile {
             ))))])
             .boxed();
         }
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<NotifyResult<Event>>();
-        let mut watcher = match notify::recommended_watcher(AsyncSyncWrapper(tx)) {
-            Ok(w) => w,
-            Err(err) => return stream::iter(vec![Err(CaptureError::Device(Box::new(err)))]).boxed(),
-        };
-
-        if let Err(err) = watcher.watch(&self.file, RecursiveMode::NonRecursive) {
-            return stream::iter(vec![Err(CaptureError::Device(Box::new(err)))]).boxed();
-        }
-        if !self.file.is_dir() {
-            stream! {
-                yield Ok(Event { kind: EventKind::Create(CreateKind::Any), paths: vec![self.file.clone()], attrs: EventAttributes::default() });
-                while let Some(event) = rx.recv().await {
-                    if let Ok(Event { kind: EventKind::Remove(RemoveKind::Any | RemoveKind::File), paths, .. }) = event {
-                        break
-                    }
-                }
-                drop(watcher);
-            }.boxed()
-        } else {
-            stream! {
-                while let Some(event) = rx.recv().await {
-                    yield event;
-                }
-                drop(watcher);
-            }.boxed()
-        }
-            .filter_map(async |res| match res {
-                Ok(Event {
-                       kind: EventKind::Create(CreateKind::File | CreateKind::Any),
-                       paths,
-                       ..
-                   }) => Some(Ok(PcapFile { file: paths[0].clone() })), // TODO: test it out properly
-                Ok(Event {
-                       kind: EventKind::Remove(RemoveKind::File | RemoveKind::Any),
-                       paths,
-                       ..
-                   }) => None,
-                Err(err) => Some(Err(CaptureError::Device(Box::new(err)))),
-                _ => None,
-            })
-            .boxed()
+        stream::iter(Some(Ok(PcapFile { file: self.file.clone() }))).boxed()
     }
 }
 
