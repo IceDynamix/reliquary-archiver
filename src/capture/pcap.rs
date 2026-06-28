@@ -20,9 +20,9 @@ pub struct PcapCapture {
 impl CaptureBackend for PcapBackend {
     type Device = PcapDevice;
 
-    fn list_devices(&self) -> Result<Vec<Self::Device>> {
+    fn list_devices(&mut self) -> Result<Vec<Self::Device>> {
         Ok(PcapDevice::list()
-            .map_err(|e| CaptureError::DeviceError(Box::new(e)))?
+            .map_err(|e| CaptureError::Device(Box::new(e)))?
             .into_iter()
             .filter(|d| matches!(d.flags.connection_status, pcap::ConnectionStatus::Connected))
             .filter(|d| !d.addresses.is_empty())
@@ -40,25 +40,25 @@ impl CaptureDevice for PcapDevice {
 
     fn create_capture(&self) -> Result<Self::Capture> {
         let mut capture = Capture::from_device(self.clone())
-            .map_err(|e| CaptureError::DeviceError(Box::new(e)))?
+            .map_err(|e| CaptureError::Device(Box::new(e)))?
             .immediate_mode(true)
             .promisc(true)
             .timeout(1000)
             .buffer_size(1024 * 1024 * 16) // 16MB
             .open()
-            .map_err(|e| CaptureError::CaptureError {
+            .map_err(|e| CaptureError::Capture {
                 has_captured: false,
                 error: Box::new(e),
             })?;
 
-        let mut capture = capture.setnonblock().map_err(|e| CaptureError::CaptureError {
+        let mut capture = capture.setnonblock().map_err(|e| CaptureError::Capture {
             has_captured: false,
             error: Box::new(e),
         })?;
 
         capture
             .filter(PCAP_FILTER, true)
-            .map_err(|e| CaptureError::FilterError(Box::new(e)))?;
+            .map_err(|e| CaptureError::Filter(Box::new(e)))?;
 
         let mut hasher = DefaultHasher::new();
         self.name.hash(&mut hasher);
@@ -92,40 +92,39 @@ impl PacketCapture for PcapCapture {
     fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>>> {
         let mut has_captured = false;
 
-        return match self.capture.stream(Codec { source_id: self.id }) {
-            Ok(stream) => Ok(Box::pin(
-                stream
-                    .take_while(move |r| {
-                        let result = match &r {
-                            Err(pcap::Error::PcapError(error_msg)) => {
-                                // Check if this is a device removal error
-                                if error_msg.contains("ERROR_DEVICE_REMOVED") {
-                                    warn!(%error_msg, %self.device.name, "Device removed, terminating capture stream");
-                                    false // Stop the stream immediately
-                                } else {
-                                    true // Continue for other errors
-                                }
-                            }
-                            _ => true, // Continue for Ok packets
-                        };
-
-                        async move { result }
-                    })
-                    .map(move |r| match r {
-                        Ok(p) => {
-                            has_captured = true;
-                            Ok(p)
-                        }
-                        Err(e) => Err(CaptureError::CaptureError {
-                            has_captured,
-                            error: Box::new(e),
-                        }),
-                    }),
-            )),
-            Err(e) => Err(CaptureError::CaptureError {
+        self.capture
+            .stream(Codec { source_id: self.id })
+            .map_err(|e| CaptureError::Capture {
                 has_captured: false,
                 error: Box::new(e),
-            }),
-        };
+            })
+            .map(|stream| {
+                Box::pin(
+                    stream
+                        .take_while(move |r| {
+                            let result = match &r {
+                                // Check if this is a device removal error
+                                Err(pcap::Error::PcapError(error_msg)) if error_msg.contains("ERROR_DEVICE_REMOVED") => {
+                                    warn!(%error_msg, %self.device.name, "Device removed, terminating capture stream");
+                                    false // Stop the stream immediately
+
+                                }
+                                _ => true, // Continue for Ok packets
+                            };
+
+                            async move { result }
+                        })
+                        .map(move |r| match r {
+                            Ok(p) => {
+                                has_captured = true;
+                                Ok(p)
+                            }
+                            Err(e) => Err(CaptureError::Capture {
+                                has_captured,
+                                error: Box::new(e),
+                            }),
+                        }),
+                )
+            })
     }
 }

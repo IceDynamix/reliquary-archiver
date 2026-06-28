@@ -1,11 +1,21 @@
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Debug, Display};
-use std::sync::Arc;
+use std::io::ErrorKind;
 use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
-use futures::{Stream, StreamExt};
-use tokio::pin;
-use tokio::sync::mpsc;
+use async_stream::stream;
+use futures::{
+    FutureExt,
+    Stream,
+    StreamExt,
+    stream::BoxStream};
+use tokio::{
+    pin,
+    sync::mpsc,
+    time::interval,
+};
 use tokio_stream::StreamMap;
 use tracing::instrument;
 
@@ -16,8 +26,10 @@ pub mod pktmon;
 
 #[cfg(feature = "pcap")]
 pub mod pcap;
+#[cfg(feature = "pcap-parser")]
+pub mod pcap_file;
 
-#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
+#[cfg(not(any(feature = "pktmon", feature = "pcap", feature = "pcap-parser")))]
 compile_error!("at least one of the features \"pktmon\" or \"pcap\" must be enabled");
 
 #[cfg(feature = "pktmon")]
@@ -28,11 +40,11 @@ pub const PCAP_FILTER: &str = "udp portrange 23301-23302";
 
 #[derive(Debug)]
 pub enum CaptureError {
-    #[cfg(feature = "pcap")]
-    DeviceError(Box<dyn Error + Send + Sync>),
+    #[cfg(any(feature = "pcap", feature = "pcap-parser"))]
+    Device(Box<dyn Error + Send + Sync>),
 
-    FilterError(Box<dyn Error + Send + Sync>),
-    CaptureError {
+    Filter(Box<dyn Error + Send + Sync>),
+    Capture {
         has_captured: bool,
         error: Box<dyn Error + Send + Sync>,
     },
@@ -40,18 +52,21 @@ pub enum CaptureError {
 
 impl Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.source().unwrap())
+        if let Some(source) = self.source() {
+            write!(f, "{}", source)
+        } else {
+            write!(f, "None")
+        }
     }
 }
 
 impl Error for CaptureError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            #[cfg(feature = "pcap")]
-            CaptureError::DeviceError(e) => Some(e.as_ref()),
-
-            CaptureError::FilterError(e) => Some(e.as_ref()),
-            CaptureError::CaptureError { error, .. } => Some(error.as_ref()),
+            #[cfg(any(feature = "pcap", feature = "pcap-parser"))]
+            CaptureError::Device(e) => Some(e.as_ref()),
+            CaptureError::Filter(e) => Some(e.as_ref()),
+            CaptureError::Capture { error, .. } => Some(error.as_ref()),
             _ => None,
         }
     }
@@ -88,74 +103,102 @@ pub trait CaptureBackend: Send {
     type Device: CaptureDevice;
 
     /// List all available capture devices
-    fn list_devices(&self) -> Result<Vec<Self::Device>>;
+    fn list_devices(&mut self) -> Result<Vec<Self::Device>>;
+
+    fn listen_new_devices(&mut self) -> BoxStream<'_, Result<Self::Device>> {
+        let mut set = HashSet::new();
+        stream! {
+            let mut check_interval = interval(Duration::from_secs(10));
+            loop {
+                match self.list_devices() {
+                    Ok(devices) => {
+                        set.retain(|device| {
+                            for d in &devices {
+                                if device == d.name() {
+                                    return true;
+                                }
+                            }
+                            false
+                        });
+                        for device in devices {
+                            let name = device.name().to_string();
+                            if !set.contains(name.as_str()) {
+                                set.insert(name);
+                                yield Ok(device);
+                            }
+                        }
+                    }
+                    Err(err) => yield Err(err),
+                }
+                check_interval.tick().await;
+            }
+        }
+        .boxed()
+    }
 }
 
 /// Start capturing packets from all available devices using the specified backend
 #[instrument(skip_all)]
-pub fn listen_on_all<B: CaptureBackend + 'static>(backend: B) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
+pub fn listen_on_all<B: CaptureBackend + 'static>(mut backend: B) -> Result<Box<dyn Stream<Item = Result<Packet>> + Unpin + Send>> {
     use std::collections::HashSet;
 
     use tokio::time::{Duration, interval};
 
-    let devices = backend.list_devices()?;
-    let mut merged_stream = StreamMap::new();
-
-    if devices.is_empty() {
-        tracing::warn!("Could not find any network devices");
-    }
-
     // Create a channel to forward packets
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (mut tx, rx) = mpsc::unbounded_channel();
+
+    enum EventItem<D: CaptureDevice> {
+        NewPacket(Result<Packet>),
+        NewDevice(Result<D>),
+    }
 
     // Spawn task to manage stream and discover new devices
     tokio::spawn(async move {
-        let mut check_interval = interval(Duration::from_secs(10));
-
+        let mut merged_stream = StreamMap::new();
+        merged_stream.insert(
+            "devices".to_string(),
+            backend.listen_new_devices().map(EventItem::NewDevice).boxed(),
+        );
         loop {
-            tokio::select! {
-                // Forward packets from merged stream
-                Some((_, item)) = merged_stream.next() => {
-                    if let Err(e) = &item {
-                        tracing::warn!(%e);
+            let Some((stream_name, item)) = merged_stream.next().await else {
+                break;
+            };
+
+            match item {
+                EventItem::NewPacket(res) => {
+                    if let Err(e) = &res {
+                        tracing::warn!("{:#?}", e);
                     }
 
-                    if tx.send(item).is_err() {
+                    if tx.send(res).is_err() {
+                        merged_stream.clear();
                         break; // Receiver dropped
                     }
                 }
 
-                // Check for new devices every 10 seconds
-                _ = check_interval.tick() => {
-                    match backend.list_devices() {
-                        Ok(devices) => {
-                            for device in devices {
-                                let device_name = device.name().to_owned();
-
-                                // Only add if it's a new device
-                                if !merged_stream.contains_key(&device_name) {
-                                    tracing::info!("Discovered new device: {}", device_name);
-
-                                    match device.create_capture() {
-                                        Ok(mut capture) => {
-                                            match capture.capture_packets() {
-                                                Ok(stream) => {
-                                                    merged_stream.insert(device_name, stream);
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("Failed to create capture for new device {}: {:#?}", device_name, e);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                EventItem::NewDevice(res) => {
+                    let device: B::Device = match res {
+                        Ok(device) => device,
                         Err(e) => {
-                            tracing::warn!("Failed to list devices during periodic check: {:#?}", e);
+                            tracing::warn!("{:#?}", e);
+                            continue;
+                        }
+                    };
+                    let device_name = device.name().to_owned();
+
+                    tracing::info!("Discovered new device: {}", device_name);
+
+                    match device.create_capture() {
+                        Ok(mut capture) => match capture.capture_packets() {
+                            Ok(stream) => {
+                                merged_stream.insert(format!("device/{}", device_name), stream.map(EventItem::NewPacket).boxed());
+                            }
+                            Err(e) => {
+                                tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!("Failed to create capture for new device {}: {:#?}", device_name, e);
                         }
                     }
                 }
@@ -163,5 +206,5 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(backend: B) -> Result<impl Str
         }
     });
 
-    Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+    Ok(Box::new(tokio_stream::wrappers::UnboundedReceiverStream::new(rx)))
 }

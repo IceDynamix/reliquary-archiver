@@ -137,6 +137,7 @@ impl MultiAccountManager {
                 self.uid_to_conv.insert(uid, conv_id);
 
                 // Get the new exporter and spawn subscription
+                #[cfg(feature = "stream")]
                 if let Some(exporter) = self.get_account_exporter(uid) {
                     self.spawn_exporter_subscription(uid, exporter);
                 }
@@ -155,6 +156,7 @@ impl MultiAccountManager {
             self.uid_to_conv.insert(uid, conv_id);
 
             // Get the exporter and spawn subscription
+            #[cfg(feature = "stream")]
             if let Some(exporter) = self.get_account_exporter(uid) {
                 self.spawn_exporter_subscription(uid, exporter);
             }
@@ -187,6 +189,7 @@ impl MultiAccountManager {
     }
 
     /// Spawn a task to forward events from an exporter's channel to the manager's unified event channel
+    #[cfg(feature = "stream")]
     fn spawn_exporter_subscription(&mut self, uid: u32, exporter: Arc<Mutex<OptimizerExporter>>) {
         let event_tx = self.event_tx.clone();
 
@@ -223,6 +226,7 @@ impl MultiAccountManager {
 }
 
 #[instrument(skip_all)]
+#[cfg(any(feature = "gui"))]
 pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<Item = WorkerEvent> {
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
         let (sender, mut receiver) = mpsc::channel(100);
@@ -350,6 +354,7 @@ fn capture_from_pcap(pcap_path: std::path::PathBuf) -> Vec<capture::Packet> {
 }
 
 #[instrument(skip_all)]
+#[cfg(any(feature = "gui"))]
 async fn live_capture(
     manager: Arc<Mutex<MultiAccountManager>>,
     mut sniffer: GameSniffer,
@@ -369,6 +374,9 @@ async fn live_capture(
                 {
                     capture::listen_on_all(capture::pktmon::PktmonBackend)
                 }
+                
+                #[cfg(all(not(feature = "pcap"), not(feature = "pktmon")))]
+                compile_error!("feature 'gui' can only work if either feature 'pcap' or 'pktmon' is active.")
             };
 
             match result.map_err(|e| e.to_string()) {

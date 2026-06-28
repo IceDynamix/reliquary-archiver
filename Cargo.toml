@@ -31,11 +31,15 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
 open = "5.3.2"
-rfd = "0.17.2"
+rfd = { optional = true, version = "0.17.2" }
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
+#pcap-parser = { optional = true, version = "0.17.0", features = ["data", "default"] }
+#pcap-file = { optional = true, version = "3.0.0-rc1" }
+pcaparse = { optional = true, git = "https://github.com/Amejonah1200/f-traceflight-pcaparse",  rev = "0e569e9ec7cb6e1d90c80ab1880c9b77815d45e3", features = ["async-trait", "tokio", "tokio-byteorder"] }
 raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "4f688aa3789695972566204c1aa7265967d39496", features = ["tokio"] }
+notify = { optional = true, version =  "8.2.0" }
 
 [target.'cfg(windows)'.dependencies]
 # By default self_update makes its http requests with reqwest, which itself relies on tokio
@@ -43,9 +47,9 @@ raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "4f
 # therefore when self_update calls update(), a second tokio runtime is spawned which leads to a crash
 # self_update added a ureq feature but has not yet pushed to crates.io
 # (latest release is 0.42.0 which is over a year old as of writing this)
-self_update = { git = "https://github.com/jaemk/self_update", rev = "9ec008b4d66627d578966231cfd87a87bf4c7083", features = ["ureq", "rustls"], default-features = false}
+self_update = { git = "https://github.com/jaemk/self_update", rev = "9ec008b4d66627d578966231cfd87a87bf4c7083", features = ["ureq", "rustls"], default-features = false }
 pktmon = { optional = true, version = "0.6.2", features = ["tokio"] }
-windows = { optional = true, version = "0.61"}
+windows = { optional = true, version = "0.61" }
 windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
@@ -73,6 +77,7 @@ default = ["pcap", "stream"]
 gui = [
     "stream",
     "dep:raxis",
+    "dep:rfd",
     "windows/Win32_Foundation",
     "windows/Win32_System_Console",
     "windows/Win32_System_Registry",
@@ -80,6 +85,7 @@ gui = [
 ]
 stream = ["dep:axum"]
 pcap = ["dep:pcap"]
+pcap-parser = ["dep:pcaparse", "dep:notify"]
 pktmon = [
     "dep:pktmon",
     # windows dependencies necessary for admin detection and escalation
