@@ -7,6 +7,7 @@ use futures::stream::BoxStream;
 use futures::{stream, FutureExt, Stream, StreamExt, TryFutureExt};
 use notify::event::{CreateKind, EventAttributes, RemoveKind};
 use notify::{Event, EventHandler, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
+use pcaparse::PcapError;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capture::{CaptureBackend, CaptureDevice, CaptureError, Packet, PacketCapture};
@@ -79,6 +80,7 @@ impl PacketCapture for PcapFile {
             self.file.hash(&mut hasher);
             hasher.finish()
         };
+
         Ok(Box::pin(stream! {
             let capture = tokio::fs::File::open(self.file.clone())
                 .map_err(Box::<_>::from)
@@ -88,12 +90,16 @@ impl PacketCapture for PcapFile {
             match capture.await {
                 Ok(mut stream) => {
                     while let Some(packet_result) = stream.async_next_packet().await {
-                        yield packet_result
-                            .map_err(|e| CaptureError::Capture { has_captured: true, error: Box::new(e)})
-                            .map(|p| Packet {
+                        match packet_result {
+                            Ok(packet) => yield Ok(Packet {
                                 source_id,
-                                data: p.data.to_vec(),
-                            });
+                                data: packet.data.to_vec(),
+                            }),
+                            Err(PcapError::IoError(err)) if err.kind() == ErrorKind::UnexpectedEof => {
+                                break;
+                            }
+                            Err(err) => yield Err(CaptureError::Capture { has_captured: true, error: Box::new(err)}),
+                        }
                     }
                 }
                 Err(err) => {
