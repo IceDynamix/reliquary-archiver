@@ -6,12 +6,16 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use async_stream::stream;
-use futures::stream::BoxStream;
-use futures::{FutureExt, Stream, StreamExt};
-use pcaparse::PcapError;
-use tokio::pin;
-use tokio::sync::mpsc;
-use tokio::time::interval;
+use futures::{
+    FutureExt,
+    Stream,
+    StreamExt,
+    stream::BoxStream};
+use tokio::{
+    pin,
+    sync::mpsc,
+    time::interval,
+};
 use tokio_stream::StreamMap;
 use tracing::instrument;
 
@@ -163,15 +167,6 @@ pub fn listen_on_all<B: CaptureBackend + 'static>(mut backend: B) -> Result<Box<
             match item {
                 EventItem::NewPacket(res) => {
                     if let Err(e) = &res {
-                        if let CaptureError::Capture { error, .. } = e {
-                            if let Some(PcapError::IoError(io_err)) = error.downcast_ref::<PcapError>() {
-                                if io_err.kind() == ErrorKind::UnexpectedEof {
-                                    tracing::info!("End of file reached for {}, device stopped.", stream_name);
-                                    merged_stream.remove(&stream_name);
-                                    continue
-                                }
-                            }
-                        }
                         tracing::warn!("{:#?}", e);
                     }
 
