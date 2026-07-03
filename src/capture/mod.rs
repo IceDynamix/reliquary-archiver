@@ -26,6 +26,52 @@ pub const PORT_RANGE: (u16, u16) = (23301, 23302);
 #[cfg(feature = "pcap")]
 pub const PCAP_FILTER: &str = "udp portrange 23301-23302";
 
+#[cfg(feature = "pcap")]
+pub fn normalize_offline_pcap_payload(linktype: ::pcap::Linktype, payload: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    fn frame_ip_payload(payload: &[u8], ethertype: u16) -> Vec<u8> {
+        // Use a synthetic Ethernet header so the downstream sniffer can parse RAW/IP captures.
+        let mut framed = Vec::with_capacity(14 + payload.len());
+        framed.extend_from_slice(&[0u8; 12]);
+        framed.extend_from_slice(&ethertype.to_be_bytes());
+        framed.extend_from_slice(payload);
+        framed
+    }
+
+    let link_name = linktype.get_name().ok();
+    let is_ethernet = linktype == ::pcap::Linktype::ETHERNET || link_name.as_deref() == Some("EN10MB");
+    let is_ipv4 = linktype == ::pcap::Linktype::IPV4 || link_name.as_deref() == Some("IPV4");
+    let is_ipv6 = linktype == ::pcap::Linktype::IPV6 || link_name.as_deref() == Some("IPV6");
+    let is_raw_ip = linktype == ::pcap::Linktype::RAW || linktype.0 == 12 || link_name.as_deref() == Some("RAW");
+
+    if is_ethernet {
+        return Ok(payload.to_vec());
+    }
+
+    if payload.is_empty() {
+        return Err("packet payload is empty".to_string());
+    }
+
+    if is_ipv4 {
+        return Ok(frame_ip_payload(payload, 0x0800));
+    }
+
+    if is_ipv6 {
+        return Ok(frame_ip_payload(payload, 0x86DD));
+    }
+
+    if is_raw_ip {
+        let version = payload[0] >> 4;
+        return match version {
+            4 => Ok(frame_ip_payload(payload, 0x0800)),
+            6 => Ok(frame_ip_payload(payload, 0x86DD)),
+            _ => Err(format!("RAW packet does not start with IPv4/IPv6 header (version={version})")),
+        };
+    }
+
+    let link_name = link_name.unwrap_or_else(|| "UNKNOWN".to_string());
+    Err(format!("unsupported pcap datalink {link_name} ({})", linktype.0))
+}
+
 #[derive(Debug)]
 pub enum CaptureError {
     #[cfg(feature = "pcap")]

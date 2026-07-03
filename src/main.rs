@@ -13,13 +13,13 @@ use std::sync::{Arc, LazyLock, LockResult, Mutex, TryLockResult};
 use std::time::Duration;
 
 #[cfg(feature = "pcap")]
-use capture::PCAP_FILTER;
+use capture::{normalize_offline_pcap_payload, PCAP_FILTER};
 use chrono::Local;
 use clap::Parser;
 use futures::lock::Mutex as FuturesMutex;
-use futures::{FutureExt, StreamExt, future, select};
-use reliquary::network::command::GameCommandError;
+use futures::{future, select, FutureExt, StreamExt};
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::GameCommandError;
 use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, KcpError, NetworkError};
 use tokio::pin;
 use tracing::instrument::WithSubscriber;
@@ -28,7 +28,7 @@ use tracing::{debug, error, info, instrument, warn};
 use tracing_subscriber::filter::Filtered;
 use tracing_subscriber::fmt::{MakeWriter, SubscriberBuilder};
 use tracing_subscriber::prelude::*;
-use tracing_subscriber::{EnvFilter, Layer, Registry, reload};
+use tracing_subscriber::{reload, EnvFilter, Layer, Registry};
 
 #[cfg(feature = "stream")]
 mod websocket;
@@ -39,9 +39,9 @@ mod rgui;
 #[cfg(windows)]
 mod update;
 
-use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
+use reliquary_archiver::export::Exporter;
 
 mod capture;
 mod scopefns;
@@ -430,8 +430,8 @@ fn tracing_init(args: &Args) {
                     2 => "debug",
                     _ => "trace",
                 }
-                .parse()
-                .unwrap(),
+                    .parse()
+                    .unwrap(),
             )
             .from_env_lossy()
     }
@@ -522,10 +522,15 @@ where
 {
     info!("Capturing from pcap file: {}", pcap_path.display());
     let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
+    let linktype = capture.get_datalink();
     capture.filter(PCAP_FILTER, false).unwrap();
 
     while let Ok(packet) = capture.next_packet() {
-        match file_process_packet(&mut exporter, &mut sniffer, packet.data.to_vec()) {
+        let payload = match normalize_offline_pcap_payload(linktype, packet.data) {
+            Ok(payload) => payload,
+            Err(_) => continue,
+        };
+        match file_process_packet(&mut exporter, &mut sniffer, payload) {
             ProcessResult::Continue => {}
             ProcessResult::Stop => break,
         }
@@ -568,7 +573,7 @@ where
     use tokio::sync::watch;
 
     #[cfg(feature = "stream")]
-    use crate::websocket::{PortSource, start_websocket_server};
+    use crate::websocket::{start_websocket_server, PortSource};
     use crate::worker::MultiAccountManager;
 
     #[cfg(not(feature = "stream"))]
@@ -834,9 +839,9 @@ fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows::Win32::System::Console::GetConsoleWindow;
-    use windows::Win32::UI::Shell::{SEE_MASK_NO_CONSOLE, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
-    use windows::Win32::UI::WindowsAndMessaging::{GW_OWNER, GetWindow, SW_SHOWNORMAL};
-    use windows::core::{PCWSTR, w};
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SEE_MASK_NO_CONSOLE, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER, SW_SHOWNORMAL};
+    use windows::core::{w, PCWSTR};
 
     let args_str = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
 

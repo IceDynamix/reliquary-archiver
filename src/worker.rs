@@ -73,7 +73,7 @@ impl<Output, Intermediate> MappedSender<Output, Intermediate> {
 /// This is a more ergonomic [`stream::unfold`], which allows you to go
 /// from the "world of futures" to the "world of streams" by simply looping
 /// and publishing to an async channel from inside a [`Future`].
-pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> impl Stream<Item = T> {
+pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> impl Stream<Item=T> {
     let (sender, receiver) = mpsc::channel(size);
 
     let runner = stream::once(f(sender)).filter_map(|_| async { None });
@@ -223,7 +223,7 @@ impl MultiAccountManager {
 }
 
 #[instrument(skip_all)]
-pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<Item = WorkerEvent> {
+pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<Item=WorkerEvent> {
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
         let (sender, mut receiver) = mpsc::channel(100);
 
@@ -328,10 +328,11 @@ pub enum SnifferMetric {
 fn capture_from_pcap(pcap_path: std::path::PathBuf) -> Vec<capture::Packet> {
     use std::hash::{DefaultHasher, Hasher};
 
-    use crate::capture::PCAP_FILTER;
+    use crate::capture::{PCAP_FILTER, normalize_offline_pcap_payload};
 
     info!("Capturing from pcap file: {}", pcap_path.display());
     let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
+    let linktype = capture.get_datalink();
     capture.filter(PCAP_FILTER, false).unwrap();
 
     let mut hasher = DefaultHasher::new();
@@ -340,9 +341,13 @@ fn capture_from_pcap(pcap_path: std::path::PathBuf) -> Vec<capture::Packet> {
 
     let mut packets = Vec::new();
     while let Ok(packet) = capture.next_packet() {
+        let payload = match normalize_offline_pcap_payload(linktype, packet.data) {
+            Ok(payload) => payload,
+            Err(_) => continue,
+        };
         packets.push(capture::Packet {
             source_id,
-            data: packet.data.to_vec(),
+            data: payload,
         });
     }
 
