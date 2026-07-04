@@ -73,7 +73,7 @@ impl<Output, Intermediate> MappedSender<Output, Intermediate> {
 /// This is a more ergonomic [`stream::unfold`], which allows you to go
 /// from the "world of futures" to the "world of streams" by simply looping
 /// and publishing to an async channel from inside a [`Future`].
-pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> impl Stream<Item=T> {
+pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> impl Stream<Item = T> {
     let (sender, receiver) = mpsc::channel(size);
 
     let runner = stream::once(f(sender)).filter_map(|_| async { None });
@@ -223,7 +223,7 @@ impl MultiAccountManager {
 }
 
 #[instrument(skip_all)]
-pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<Item=WorkerEvent> {
+pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<Item = WorkerEvent> {
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
         let (sender, mut receiver) = mpsc::channel(100);
 
