@@ -13,7 +13,7 @@ use std::sync::{Arc, LazyLock, LockResult, Mutex, TryLockResult};
 use std::time::Duration;
 
 #[cfg(feature = "pcap")]
-use capture::PCAP_FILTER;
+use capture::{normalize_offline_pcap_payload, PCAP_FILTER};
 use chrono::Local;
 use clap::Parser;
 use futures::lock::Mutex as FuturesMutex;
@@ -522,10 +522,15 @@ where
 {
     info!("Capturing from pcap file: {}", pcap_path.display());
     let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
+    let linktype = capture.get_datalink();
     capture.filter(PCAP_FILTER, false).unwrap();
 
     while let Ok(packet) = capture.next_packet() {
-        match file_process_packet(&mut exporter, &mut sniffer, packet.data.to_vec()) {
+        let payload = match normalize_offline_pcap_payload(linktype, packet.data) {
+            Ok(payload) => payload,
+            Err(_) => continue,
+        };
+        match file_process_packet(&mut exporter, &mut sniffer, payload) {
             ProcessResult::Continue => {}
             ProcessResult::Stop => break,
         }
