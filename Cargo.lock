@@ -808,7 +808,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1943,7 +1943,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2040,7 +2040,7 @@ checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 [[package]]
 name = "raxis"
 version = "0.2.0"
-source = "git+https://github.com/emmachase/raxis?rev=4f688aa3789695972566204c1aa7265967d39496#4f688aa3789695972566204c1aa7265967d39496"
+source = "git+https://github.com/emmachase/raxis?rev=662f22f2ef1c689478a1bb715902120200bd34ce#662f22f2ef1c689478a1bb715902120200bd34ce"
 dependencies = [
  "async-stream",
  "const_format",
@@ -2065,7 +2065,7 @@ dependencies = [
 [[package]]
 name = "raxis-core"
 version = "0.1.0"
-source = "git+https://github.com/emmachase/raxis?rev=4f688aa3789695972566204c1aa7265967d39496#4f688aa3789695972566204c1aa7265967d39496"
+source = "git+https://github.com/emmachase/raxis?rev=662f22f2ef1c689478a1bb715902120200bd34ce#662f22f2ef1c689478a1bb715902120200bd34ce"
 dependencies = [
  "windows 0.61.3",
  "windows-core 0.61.2",
@@ -2075,7 +2075,7 @@ dependencies = [
 [[package]]
 name = "raxis-proc-macro"
 version = "0.1.0"
-source = "git+https://github.com/emmachase/raxis?rev=4f688aa3789695972566204c1aa7265967d39496#4f688aa3789695972566204c1aa7265967d39496"
+source = "git+https://github.com/emmachase/raxis?rev=662f22f2ef1c689478a1bb715902120200bd34ce#662f22f2ef1c689478a1bb715902120200bd34ce"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2307,7 +2307,7 @@ dependencies = [
  "errno 0.3.14",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2561,7 +2561,7 @@ version = "1.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4db69cba1110affc0e9f7bcd48bbf87b3f4fc7c61fc9155afd4c469eb3d6c1b"
 dependencies = [
- "errno 0.3.14",
+ "errno 0.2.8",
  "libc",
 ]
 
@@ -2709,7 +2709,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
