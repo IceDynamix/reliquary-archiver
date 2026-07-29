@@ -1,6 +1,6 @@
 [package]
 name = "reliquary-archiver"
-version = "0.16.0"
+version = "0.17.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/IceDynamix/reliquary-archiver"
@@ -22,7 +22,7 @@ serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = "2.12.1"
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v21.0.0", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v22.0.0", features = [
     "proto-rqa",
 ] }
 ctrlc = "3.4.5"
@@ -35,7 +35,7 @@ rfd = "0.17.2"
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
-raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "4f688aa3789695972566204c1aa7265967d39496", features = ["tokio"] }
+raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "662f22f2ef1c689478a1bb715902120200bd34ce", features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
 # By default self_update makes its http requests with reqwest, which itself relies on tokio
@@ -50,7 +50,7 @@ windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v21.0.0", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v22.0.0", features = [
     "proto-rqa",
 ] }
 
