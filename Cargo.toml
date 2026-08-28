@@ -22,7 +22,7 @@ serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = "2.12.1"
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v23.0.0", features = [
+reliquary = { path = "../reliquary", features = [
     "proto-rqa",
 ] }
 ctrlc = "3.4.5"
@@ -38,19 +38,14 @@ pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
 raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "662f22f2ef1c689478a1bb715902120200bd34ce", features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
-# By default self_update makes its http requests with reqwest, which itself relies on tokio
-# main is an async function that lives within an already existing tokio runtime
-# therefore when self_update calls update(), a second tokio runtime is spawned which leads to a crash
-# self_update added a ureq feature but has not yet pushed to crates.io
-# (latest release is 0.42.0 which is over a year old as of writing this)
-self_update = { git = "https://github.com/jaemk/self_update", rev = "9ec008b4d66627d578966231cfd87a87bf4c7083", features = ["ureq", "rustls"], default-features = false}
+self_update = {version = "0.44.0", features = ['ureq', 'rustls'], default-features = false}
 pktmon = { optional = true, version = "0.6.2", features = ["tokio"] }
 windows = { optional = true, version = "0.61"}
 windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v23.0.0", features = [
+reliquary = { path = "../reliquary", features = [
     "proto-rqa",
 ] }
 
