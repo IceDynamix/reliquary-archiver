@@ -139,7 +139,7 @@ pub fn spawn_updated_version() -> Result<(), Box<dyn std::error::Error + Send + 
     let mut command = Command::new(current_exe);
     command.args(env::args().skip(1)).env("NO_SELF_UPDATE", "1");
 
-    command.spawn().and_then(|mut c| c.wait())?;
+    command.spawn()?;
 
     std::process::exit(0);
 }
