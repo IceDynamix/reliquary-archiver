@@ -20,21 +20,17 @@ mkdir -p "$USER_DIR/bin" \
   "$(dirname $DESKTOP_DEST)" \
   "$(dirname $ICON_DEST)"
 
-envsubst "$APP_ID" <<'EOF' >"$APP_DIR/AppRun"
+export APP_ID
+envsubst '$APP_ID' <<'EOF' >"$APP_DIR/AppRun"
 #!/bin/bash
 set -e
 
 HERE="$(dirname -- "$(readlink -f -- "$0")")"
-APP_PATH="$HERE/usr/bin/$APP_ID"
-
-if [ -z "$1" ]; then
-  "$APP_PATH" --help
-  exit 1
-fi
-
 export LD_LIBRARY_PATH="$HERE"/usr/lib
-exec "$APP_ID" "$@"
+exec "$HERE/usr/bin/$APP_ID" "$@"
 EOF
+export -n APP_ID
+
 chmod +x "$APP_DIR/AppRun"
 cat "$APP_DIR/AppRun"
 echo
@@ -48,6 +44,7 @@ Icon=$APP_ID
 Terminal=true
 Categories=Utility;
 EOF
+
 chmod +x "$DESKTOP_DEST"
 cat "$DESKTOP_DEST"
 
