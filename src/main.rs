@@ -306,6 +306,7 @@ async fn capture(args: Args) {
 
             macro_rules! pick_file {
                 () => {
+                    #[cfg(feature = "gui")]
                     if let Some(new_path) = rfd::FileDialog::new()
                         .set_title("Select output file location")
                         .set_file_name(&file_name)
@@ -314,10 +315,9 @@ async fn capture(args: Args) {
                     {
                         output_file = new_path;
                         continue;
-                    } else {
+                    }
                         error!("No alternative path selected, aborting write");
                         break;
-                    }
                 };
             }
             info!("exporting collected data");
