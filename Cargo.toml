@@ -22,7 +22,7 @@ serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = "2.12.1"
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v23.0.0", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v24.0.0", features = [
     "proto-rqa",
 ] }
 ctrlc = "3.4.5"
@@ -31,7 +31,7 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
 open = "5.3.2"
-rfd = "0.17.2"
+rfd = { optional = true, version = "0.17.2" }
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
@@ -45,7 +45,7 @@ windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v23.0.0", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v24.0.0", features = [
     "proto-rqa",
 ] }
 
@@ -68,6 +68,7 @@ default = ["pcap", "stream"]
 gui = [
     "stream",
     "dep:raxis",
+    "dep:rfd",
     "windows/Win32_Foundation",
     "windows/Win32_System_Console",
     "windows/Win32_System_Registry",
