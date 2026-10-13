@@ -22,6 +22,9 @@
 //! - [`kit`]: Low-level UI building blocks (icons, modals, toggles, tooltips)
 //! - [`run_on_start`]: Windows startup registry integration
 
+// TODO: the GUI only builds on Windows, remove this once its unused code has been cleaned up there
+#![allow(unused)]
+
 use async_stream::stream;
 use raxis::runtime::Backdrop;
 use raxis::runtime::task::{self, Task};

@@ -17,40 +17,13 @@ use raxis::widgets::text::{ParagraphAlignment, Text, TextAlignment};
 use raxis::widgets::widget;
 use raxis::{HookManager, svg, svg_path, w_id};
 
-use crate::rgui::kit::tooltip::{error_tooltip, info_tooltip, success_tooltip, warning_tooltip};
+use crate::rgui::kit::format_byte_size;
+use crate::rgui::kit::tooltip::warning_tooltip;
 use crate::rgui::state::{FileContainer, FileExtensions};
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_MUTED,
 };
 use crate::scopefns::Also;
-
-/// Messages for file download operations.
-#[derive(Debug, Clone)]
-pub enum Message {
-    PickPathForFile(FileContainer),
-    SaveFile(FileContainer, PathBuf),
-}
-
-/// Result of processing a file download message.
-#[derive(Debug)]
-pub enum Action {
-    /// No action needed
-    None,
-    /// Run an async task
-    Run(Task<Message>),
-}
-
-/// Formats a file size in bytes to a human-readable string.
-fn format_file_size(size: usize) -> String {
-    let size_f = size as f64;
-    if size < 1024 {
-        format!("{} B", size)
-    } else if size < 1024 * 1024 {
-        format!("{:.2} KB", size_f / 1024.0)
-    } else {
-        format!("{:.2} MB", size_f / 1024.0 / 1024.0)
-    }
-}
 
 /// Creates a download arrow icon with the specified stroke color.
 fn download_arrow_icon<M>(stroke: Color) -> Element<M> {
@@ -101,7 +74,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
                             let file = file.clone();
                             move |picked_file| {
                                 if let Err(e) = std::fs::write(picked_file.path(), &file.content) {
-                                    eprintln!("Failed to save file: {}", e);
+                                    tracing::error!("Failed to save file: {}", e);
                                 }
                             }
                         }),
@@ -126,7 +99,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         Element {
             children: vec![
                 Text::new(file.name.clone()).with_font_size(14.0).into(),
-                Text::new(format_file_size(file.content.len()))
+                Text::new(format_byte_size(file.content.len()))
                     .with_font_size(12.0)
                     .with_color(TEXT_MUTED)
                     .into(),
@@ -163,11 +136,6 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         }),
         child_gap: SPACE_SM,
         cross_align_items: Alignment::Center,
-        // children: {
-        //     let mut children = button_elements;
-        //     children.push(file_info);
-        //     children
-        // },
         children: vec![download_button, file_info],
         snap: true,
         ..Default::default()

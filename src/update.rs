@@ -2,20 +2,24 @@
 
 use std::env;
 use std::process::Command;
+#[cfg(feature = "gui")]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use self_update::cargo_crate_version;
 use tracing::info;
 
 /// Flag to indicate that the updated version should be spawned after GUI exits
-pub static SPAWN_UPDATED_VERSION: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "gui")]
+static SPAWN_UPDATED_VERSION: AtomicBool = AtomicBool::new(false);
 
 /// Set the flag to spawn updated version after GUI exits
+#[cfg(feature = "gui")]
 pub fn request_spawn_after_exit() {
     SPAWN_UPDATED_VERSION.store(true, Ordering::SeqCst);
 }
 
 /// Check if we should spawn the updated version
+#[cfg(feature = "gui")]
 pub fn should_spawn_after_exit() -> bool {
     SPAWN_UPDATED_VERSION.load(Ordering::SeqCst)
 }
@@ -77,6 +81,7 @@ pub fn update_interactive(auth_token: Option<&str>, no_confirm: bool) -> Result<
 
 /// Perform the update (should be called after user confirms)
 /// Returns true if the update was successful and the app should restart
+#[cfg(feature = "gui")]
 pub fn update_noninteractive() -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
     let mut update_builder = configure_builder();
     update_builder.show_download_progress(false).show_output(false).no_confirm(true);
@@ -92,14 +97,15 @@ pub fn update_noninteractive() -> Result<bool, Box<dyn std::error::Error + Send 
 }
 
 /// Information about an available update
+#[cfg(feature = "gui")]
 #[derive(Debug, Clone)]
 pub struct UpdateInfo {
     pub current_version: String,
     pub latest_version: String,
-    pub download_url: String,
 }
 
 /// Check if an update is available without prompting or downloading
+#[cfg(feature = "gui")]
 pub fn check_for_update() -> Result<Option<UpdateInfo>, Box<dyn std::error::Error + Send + Sync>> {
     use self_update::backends::github::ReleaseList;
 
@@ -124,12 +130,9 @@ pub fn check_for_update() -> Result<Option<UpdateInfo>, Box<dyn std::error::Erro
         return Ok(None);
     }
 
-    let asset = latest_release.asset_for(TARGET, identifier).unwrap();
-
     Ok(Some(UpdateInfo {
         current_version: current_version.to_string(),
         latest_version: latest_version.clone(),
-        download_url: asset.download_url.clone(),
     }))
 }
 

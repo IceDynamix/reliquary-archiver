@@ -112,23 +112,39 @@ pub fn handle_export_message(state: &mut RootState, message: ExportMessage) -> O
             None
         }
 
-        ExportMessage::Refresh => {
-            if let Some(sender) = state.worker_sender.as_ref() {
-                let mut sender = sender.clone();
-                let uid = state.store.selected_account;
-                Some(
-                    Task::future(async move {
-                        let (tx, rx) = oneshot::channel();
-                        sender.send(worker::WorkerCommand::MakeExport { uid, sender: tx }).await;
-                        rx.await.unwrap()
-                    })
-                    .and_then(|e| Task::done(RootMessage::new_export(e))),
-                )
-            } else {
-                None
-            }
-        }
+        ExportMessage::Refresh => Some(refresh_export_task(state, state.store.selected_account)),
     }
+}
+
+/// Asks the worker for a fresh export of the account (`None` = any account) and publishes it once it's ready.
+fn refresh_export_task(state: &RootState, uid: Option<u32>) -> Task<RootMessage> {
+    let Some(mut sender) = state.worker_sender.clone() else {
+        return Task::none();
+    };
+
+    Task::future(async move {
+        let (tx, rx) = oneshot::channel();
+        sender.send(worker::WorkerCommand::MakeExport { uid, sender: tx }).await.ok();
+        rx.await.ok().flatten()
+    })
+    .and_then(|export| Task::done(RootMessage::new_export(export)))
+}
+
+/// Reads the current export statistics of the account and publishes them.
+fn export_stats_task(state: &RootState, uid: u32) -> Task<RootMessage> {
+    let manager = state.manager.clone();
+
+    Task::future(async move {
+        let exporter = manager.lock().await.get_account_exporter(uid);
+        let stats = match exporter {
+            Some(exporter) => {
+                let exporter = exporter.lock().await;
+                ExportStats::new(&exporter)
+            }
+            None => ExportStats::default(),
+        };
+        RootMessage::export_stats(stats)
+    })
 }
 
 // ============================================================================
@@ -145,93 +161,25 @@ pub fn handle_account_message(state: &mut RootState, message: AccountMessage) ->
             state.store.accounts.insert(uid, AccountInfo { uid });
 
             // Always auto-switch to newly discovered account
-            state.store.selected_account = Some(uid);
-            state.selected_account_tx.send(Some(uid)).ok();
-            // Mark export as out of date
-            state.store.export_out_of_date = true;
-
-            // Refresh stats and trigger export
-            let manager = state.manager.clone();
-            let worker_sender = state.worker_sender.clone();
-            Some(Task::batch(vec![
-                // Update stats immediately
-                Task::future(async move {
-                    let mgr = manager.lock().await;
-                    let stats = if let Some(exporter) = mgr.get_account_exporter(uid) {
-                        let exp = exporter.lock().await;
-                        ExportStats::new(&exp)
-                    } else {
-                        ExportStats::default()
-                    };
-                    RootMessage::export_stats(stats)
-                }),
-                // Then trigger export refresh
-                Task::future(async move {
-                    if let Some(mut sender) = worker_sender {
-                        let (tx, rx) = futures::channel::oneshot::channel();
-                        sender
-                            .send(crate::worker::WorkerCommand::MakeExport {
-                                uid: Some(uid),
-                                sender: tx,
-                            })
-                            .await
-                            .ok();
-
-                        if let Ok(Some(export)) = rx.await {
-                            return RootMessage::Export(ExportMessage::New(export));
-                        }
-                    }
-                    RootMessage::TriggerRender
-                }),
-            ]))
+            Some(select_account(state, uid))
         }
 
         AccountMessage::Select(uid) => {
             // Only select if account exists
-            if state.store.accounts.contains_key(&uid) {
-                state.store.selected_account = Some(uid);
-                state.selected_account_tx.send(Some(uid)).ok();
-                // Mark export as out of date since we switched accounts
-                state.store.export_out_of_date = true;
-
-                // Refresh stats and trigger export for the newly selected account
-                let manager = state.manager.clone();
-                let worker_sender = state.worker_sender.clone();
-                return Some(Task::batch(vec![
-                    // Update stats immediately
-                    Task::future(async move {
-                        let mgr = manager.lock().await;
-                        let stats = if let Some(exporter) = mgr.get_account_exporter(uid) {
-                            let exp = exporter.lock().await;
-                            ExportStats::new(&exp)
-                        } else {
-                            ExportStats::default()
-                        };
-                        RootMessage::export_stats(stats)
-                    }),
-                    // Then trigger export refresh
-                    Task::future(async move {
-                        if let Some(mut sender) = worker_sender {
-                            let (tx, rx) = futures::channel::oneshot::channel();
-                            sender
-                                .send(crate::worker::WorkerCommand::MakeExport {
-                                    uid: Some(uid),
-                                    sender: tx,
-                                })
-                                .await
-                                .ok();
-
-                            if let Ok(Some(export)) = rx.await {
-                                return RootMessage::Export(ExportMessage::New(export));
-                            }
-                        }
-                        RootMessage::TriggerRender
-                    }),
-                ]));
-            }
-            None
+            state.store.accounts.contains_key(&uid).then(|| select_account(state, uid))
         }
     }
+}
+
+/// Makes the account the one shown in the GUI and streamed over the WebSocket.
+fn select_account(state: &mut RootState, uid: u32) -> Task<RootMessage> {
+    state.store.selected_account = Some(uid);
+    state.selected_account_tx.send(Some(uid)).ok();
+    // Mark export as out of date since it belongs to whatever was selected before
+    state.store.export_out_of_date = true;
+
+    // Refresh stats and trigger export for the newly selected account
+    Task::batch(vec![export_stats_task(state, uid), refresh_export_task(state, Some(uid))])
 }
 
 // ============================================================================
@@ -384,16 +332,7 @@ pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) ->
         }
         worker::WorkerEvent::AccountReconnected { uid } => {
             // Refresh stats for this account
-            let manager = state.manager.clone();
-            return Task::future(async move {
-                let mgr = manager.lock().await;
-                if let Some(exporter) = mgr.get_account_exporter(uid) {
-                    let exporter = exporter.lock().await;
-                    RootMessage::export_stats(ExportStats::new(&exporter))
-                } else {
-                    RootMessage::export_stats(ExportStats::default())
-                }
-            });
+            return export_stats_task(state, uid);
         }
         worker::WorkerEvent::Metric(metric) => {
             handle_sniffer_metric(state, metric);
@@ -419,18 +358,7 @@ pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) ->
             };
 
             // Update stats from the manager
-            let manager = state.manager.clone();
-            let stats_task = Task::future(async move {
-                let mgr = manager.lock().await;
-                if let Some(exporter) = mgr.get_account_exporter(uid) {
-                    let exp = exporter.lock().await;
-                    RootMessage::export_stats(ExportStats::new(&exp))
-                } else {
-                    RootMessage::export_stats(ExportStats::default())
-                }
-            });
-
-            return Task::batch([export_task, stats_task]);
+            return Task::batch([export_task, export_stats_task(state, uid)]);
         }
     }
 
@@ -501,38 +429,9 @@ impl<Message: Send + 'static> ScreenAction<Message> {
         match self {
             Self::None => Task::none(),
             Self::Run(task) => task.map(wrapper),
-            Self::RefreshExport => {
-                if let Some(sender) = state.worker_sender.as_ref() {
-                    let mut sender = sender.clone();
-                    let uid = state.store.selected_account;
-                    Task::future(async move {
-                        let (tx, rx) = oneshot::channel();
-                        sender.send(worker::WorkerCommand::MakeExport { uid, sender: tx }).await;
-                        rx.await.unwrap()
-                    })
-                    .and_then(|e| Task::done(RootMessage::new_export(e)))
-                } else {
-                    Task::none()
-                }
-            }
             #[cfg(feature = "pcap")]
-            Self::ProcessCapture(path) => Task::future(async move {
-                use reliquary::network::GameSniffer;
-                use reliquary_archiver::export::Exporter;
-                use reliquary_archiver::export::database::{Database, get_database};
-
-                use crate::capture_from_pcap;
-
-                tokio::task::spawn_blocking(move || {
-                    let sniffer = GameSniffer::new();
-                    let exporter = reliquary_archiver::export::fribbels::OptimizerExporter::new();
-
-                    capture_from_pcap(exporter, sniffer, path)
-                })
-                .await
-                .expect("Failed to process pcap")
-            })
-            .and_then(|e| Task::done(RootMessage::new_export(e))),
+            Self::ProcessCapture(path) => Task::future(crate::session::export_from_file(crate::capture::SourceSpec::PcapFile(path)))
+                .and_then(|e| Task::done(RootMessage::new_export(e))),
         }
     }
 }
