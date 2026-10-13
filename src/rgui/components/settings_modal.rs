@@ -153,6 +153,37 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
     .with_width(Sizing::grow())
 }
 
+/// Renders an on/off setting with its label and a description underneath.
+///
+/// `id` identifies the toggle's state and has to be unique per row (use `w_id!()` at the callsite).
+fn toggle_row(
+    id: u64,
+    label: &'static str,
+    description: &'static str,
+    enabled: bool,
+    on_toggle: fn(bool) -> SettingsMessage,
+) -> Element<RootMessage> {
+    let toggle = Toggle::new(enabled)
+        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
+        .with_toggle_handler(move |enabled, _, shell| {
+            shell.publish(RootMessage::Settings(on_toggle(enabled)));
+        })
+        .as_element(id);
+
+    column![
+        row![
+            Text::new(label).with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
+            spacer(),
+            toggle
+        ]
+        .with_width(Sizing::grow())
+        .with_cross_align_items(Alignment::Center),
+        Text::new(description).with_font_size(11.0).with_color(TEXT_MUTED).as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
+    .with_width(Sizing::grow())
+}
+
 /// Settings modal panel tabs.
 #[derive(Clone, PartialEq)]
 enum SettingsModalPanel {
@@ -340,29 +371,13 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow());
 
-    // Text shadow section
-    let text_shadow_toggle = Toggle::new(state.store.settings.text_shadow_enabled)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::TextShadowToggled(enabled)));
-        })
-        .as_element(w_id!());
-
-    let text_shadow_section = column![
-        row![
-            Text::new("Text Shadow").with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
-            spacer(),
-            text_shadow_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("Add a text-shadow to text for better readability")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
+    let text_shadow_section = toggle_row(
+        w_id!(),
+        "Text Shadow",
+        "Add a text-shadow to text for better readability",
+        state.store.settings.text_shadow_enabled,
+        SettingsMessage::TextShadowToggled,
+    );
 
     let update_check_button = Button::new()
         .with_click_handler(|_, s| {
@@ -383,134 +398,45 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
         .with_height(Sizing::grow())
         .with_border_radius(BORDER_RADIUS);
 
-    let update_unprompted_toggle = Toggle::new(state.store.settings.always_update)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::AlwaysUpdateToggled(enabled)));
-        })
-        .as_element(w_id!());
+    let update_unprompted_section = toggle_row(
+        w_id!(),
+        "Update Automatically",
+        "When an update is available, update automatically without waiting for confirmation",
+        state.store.settings.always_update,
+        SettingsMessage::AlwaysUpdateToggled,
+    );
 
-    let update_unprompted_section = column![
-        row![
-            Text::new("Update Automatically")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            update_unprompted_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("When an update is available, update automatically without waiting for confirmation")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
+    let minimize_on_close_section = toggle_row(
+        w_id!(),
+        "Minimize to Tray on Close",
+        "Hide to system tray instead of closing when clicking the X button",
+        state.store.settings.minimize_to_tray_on_close,
+        SettingsMessage::MinimizeToTrayOnCloseToggled,
+    );
 
-    // Minimize to tray on close section
-    let minimize_on_close_toggle = Toggle::new(state.store.settings.minimize_to_tray_on_close)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::MinimizeToTrayOnCloseToggled(enabled)));
-        })
-        .as_element(w_id!());
+    let minimize_on_minimize_section = toggle_row(
+        w_id!(),
+        "Minimize to Tray on Minimize",
+        "Hide to system tray instead of taskbar when minimizing",
+        state.store.settings.minimize_to_tray_on_minimize,
+        SettingsMessage::MinimizeToTrayOnMinimizeToggled,
+    );
 
-    let minimize_on_close_section = column![
-        row![
-            Text::new("Minimize to Tray on Close")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            minimize_on_close_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("Hide to system tray instead of closing when clicking the X button")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
+    let run_on_start_section = toggle_row(
+        w_id!(),
+        "Run on startup",
+        "Run automatically when your computer starts",
+        state.store.settings.run_on_start,
+        SettingsMessage::RunOnStartToggled,
+    );
 
-    // Minimize to tray on minimize section
-    let minimize_on_minimize_toggle = Toggle::new(state.store.settings.minimize_to_tray_on_minimize)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::MinimizeToTrayOnMinimizeToggled(enabled)));
-        })
-        .as_element(w_id!());
-
-    let minimize_on_minimize_section = column![
-        row![
-            Text::new("Minimize to Tray on Minimize")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            minimize_on_minimize_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("Hide to system tray instead of taskbar when minimizing")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
-
-    let run_on_start_toggle = Toggle::new(state.store.settings.run_on_start)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::RunOnStartToggled(enabled)));
-        })
-        .as_element(w_id!());
-
-    let run_on_start_section = column![
-        row![
-            Text::new("Run on startup").with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
-            spacer(),
-            run_on_start_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("Run automatically when your computer starts")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
-
-    let start_minimized_toggle = Toggle::new(state.store.settings.start_minimized)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::StartMinimizedToggled(enabled)));
-        })
-        .as_element(w_id!());
-
-    let start_minimized_section = column![
-        row![
-            Text::new("Start minimized")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            start_minimized_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("The app will launch already minimized to the taskbar/system tray")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
+    let start_minimized_section = toggle_row(
+        w_id!(),
+        "Start minimized",
+        "The app will launch already minimized to the taskbar/system tray",
+        state.store.settings.start_minimized,
+        SettingsMessage::StartMinimizedToggled,
+    );
 
     let graphics_settings_content = column![bg_image_section, fit_mode_section, opacity_section, text_shadow_section];
 

@@ -1,4 +1,4 @@
-use tracing::error;
+use tracing::{error, warn};
 
 /// Formats character ID as location string for relics and light cones
 pub fn format_location(avatar_id: u32) -> String {
@@ -6,21 +6,24 @@ pub fn format_location(avatar_id: u32) -> String {
 }
 
 /// Converts slot type from game format to export format
-pub fn slot_type_to_export(s: &str) -> &'static str {
-    match s {
+pub fn slot_type_to_export(s: &str) -> Option<&'static str> {
+    Some(match s {
         "HEAD" => "Head",
         "HAND" => "Hands",
         "BODY" => "Body",
         "FOOT" => "Feet",
         "NECK" => "Planar Sphere",
         "OBJECT" => "Link Rope",
-        _ => panic!("Unknown slot: {}", s),
-    }
+        _ => {
+            warn!(slot = s, "unknown relic slot");
+            return None;
+        }
+    })
 }
 
 /// Converts main stat property from game format to export format
-pub fn main_stat_to_export(s: &str) -> &'static str {
-    match s {
+pub fn main_stat_to_export(s: &str) -> Option<&'static str> {
+    Some(match s {
         "HPDelta" => "HP",
         "AttackDelta" => "ATK",
         "HPAddedRatio" => "HP",
@@ -40,13 +43,16 @@ pub fn main_stat_to_export(s: &str) -> &'static str {
         "ImaginaryAddedRatio" => "Imaginary DMG Boost",
         "BreakDamageAddedRatioBase" => "Break Effect",
         "SPRatioBase" => "Energy Regeneration Rate",
-        _ => panic!("Unknown main stat: {}", s),
-    }
+        _ => {
+            warn!(main_stat = s, "unknown main stat");
+            return None;
+        }
+    })
 }
 
 /// Converts sub stat property from game format to export format
-pub fn sub_stat_to_export(s: &str) -> &'static str {
-    match s {
+pub fn sub_stat_to_export(s: &str) -> Option<&'static str> {
+    Some(match s {
         "HPDelta" => "HP",
         "AttackDelta" => "ATK",
         "HPAddedRatio" => "HP_",
@@ -60,15 +66,16 @@ pub fn sub_stat_to_export(s: &str) -> &'static str {
         "StatusResistanceBase" => "Effect RES_",
         "BreakDamageAddedRatioBase" => "Break Effect_",
         _ => {
-            panic!("Unknown sub stat: {}", s)
+            warn!(sub_stat = s, "unknown sub stat");
+            return None;
         }
-    }
+    })
 }
 
 /// Converts avatar base type to path for characters
 pub fn avatar_path_lookup(db: &crate::export::database::Database, avatar_id: u32) -> Option<&'static str> {
-    let hero_config = db.avatar_config.get(&avatar_id);
-    let avatar_base_type = hero_config.unwrap().AvatarBaseType.as_str();
+    let hero_config = db.avatar_config.get(&avatar_id)?;
+    let avatar_base_type = hero_config.AvatarBaseType.as_str();
     match avatar_base_type {
         "Knight" => Some("Preservation"),
         "Rogue" => Some("Hunt"),

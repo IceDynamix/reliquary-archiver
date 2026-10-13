@@ -1,15 +1,22 @@
+//! Packet sources.
+//!
+//! Everything that can produce game traffic implements [`PacketSource`], which opens into a
+//! [`PacketStream`] of Ethernet frames. Callers describe what they want with a [`SourceSpec`]
+//! and call [`open_source`]; which backend ends up serving it is decided here and nowhere else.
+//!
+//! Live backends only need to implement [`DeviceBackend`], [`DeviceSource`] takes care of
+//! device discovery and merging. File based sources implement [`PacketSource`] directly.
+
 use std::error::Error;
 use std::fmt::{Debug, Display};
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::path::PathBuf;
 
-use futures::{Stream, StreamExt};
-use tokio::pin;
+use futures::StreamExt;
+use futures::stream::BoxStream;
 use tokio::sync::mpsc;
 use tokio_stream::StreamMap;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tracing::instrument;
-
-use crate::scopefns::Also;
 
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
@@ -72,142 +79,234 @@ pub fn normalize_offline_pcap_payload(linktype: ::pcap::Linktype, payload: &[u8]
     Err(format!("unsupported pcap datalink {link_name} ({})", linktype.0))
 }
 
+type BoxError = Box<dyn Error + Send + Sync>;
+
 #[derive(Debug)]
 pub enum CaptureError {
-    #[cfg(feature = "pcap")]
-    DeviceError(Box<dyn Error + Send + Sync>),
-
-    FilterError(Box<dyn Error + Send + Sync>),
-    CaptureError {
-        has_captured: bool,
-        error: Box<dyn Error + Send + Sync>,
-    },
+    /// The device or file could not be opened
+    Device(BoxError),
+    /// The packet filter could not be applied
+    Filter(BoxError),
+    /// Reading packets failed
+    Capture(BoxError),
 }
 
 impl Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.source().unwrap())
+        match self {
+            CaptureError::Device(e) => write!(f, "could not open capture source: {e}"),
+            CaptureError::Filter(e) => write!(f, "could not apply capture filter: {e}"),
+            CaptureError::Capture(e) => write!(f, "capture failed: {e}"),
+        }
     }
 }
 
 impl Error for CaptureError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            #[cfg(feature = "pcap")]
-            CaptureError::DeviceError(e) => Some(e.as_ref()),
-
-            CaptureError::FilterError(e) => Some(e.as_ref()),
-            CaptureError::CaptureError { error, .. } => Some(error.as_ref()),
-            _ => None,
+            CaptureError::Device(e) | CaptureError::Filter(e) | CaptureError::Capture(e) => Some(e.as_ref()),
         }
     }
 }
 
 pub type Result<T> = std::result::Result<T, CaptureError>;
 
-/// Represents a captured network packet
+/// Represents a captured network packet (an Ethernet frame)
 #[derive(Debug, Clone)]
 pub struct Packet {
     pub source_id: u64,
     pub data: Vec<u8>,
 }
 
-/// Trait for implementing different packet capture backends
-pub trait PacketCapture: Send {
-    /// Start capturing packets and send them through the channel
-    fn capture_packets(self) -> Result<impl Stream<Item = Result<Packet>> + Unpin + Send>;
+/// A stream of captured packets. Ends when the source is exhausted, which never happens for live captures.
+pub type PacketStream = BoxStream<'static, Result<Packet>>;
+
+/// Anything that can produce game traffic
+pub trait PacketSource: Send + 'static {
+    /// Start reading packets from this source
+    fn open(self: Box<Self>) -> Result<PacketStream>;
 }
 
-/// Trait for creating packet capture instances
-pub trait CaptureDevice: Send + Debug {
-    type Capture: PacketCapture;
-
-    /// Get the name of the device
-    fn name(&self) -> &str;
-
-    /// Create a new capture instance from this device
-    fn create_capture(&self) -> Result<Self::Capture>;
+/// Describes where packets should be read from
+#[derive(Debug, Clone)]
+pub enum SourceSpec {
+    /// Capture live traffic from the network
+    Live,
+    /// Read a recorded .pcap file
+    #[cfg(feature = "pcap")]
+    PcapFile(PathBuf),
+    /// Read a recorded .etl file
+    #[cfg(feature = "pktmon")]
+    EtlFile(PathBuf),
 }
 
-/// Get all available capture devices for a specific backend
-pub trait CaptureBackend: Send {
-    type Device: CaptureDevice;
+impl SourceSpec {
+    pub fn is_live(&self) -> bool {
+        matches!(self, SourceSpec::Live)
+    }
+}
+
+/// Open the packet source described by `spec`
+pub fn open_source(spec: &SourceSpec) -> Result<PacketStream> {
+    let source: Box<dyn PacketSource> = match spec {
+        SourceSpec::Live => live_source(),
+        #[cfg(feature = "pcap")]
+        SourceSpec::PcapFile(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
+        #[cfg(feature = "pktmon")]
+        SourceSpec::EtlFile(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
+    };
+
+    source.open()
+}
+
+fn live_source() -> Box<dyn PacketSource> {
+    #[cfg(feature = "pcap")]
+    {
+        Box::new(DeviceSource(pcap::PcapBackend))
+    }
+
+    #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+    {
+        Box::new(DeviceSource(pktmon::PktmonBackend))
+    }
+}
+
+/// A live capture backend that reads from one or more network devices
+pub trait DeviceBackend: Send + 'static {
+    type Device: Send;
 
     /// List all available capture devices
     fn list_devices(&self) -> Result<Vec<Self::Device>>;
+
+    /// Get the name of the device
+    fn device_name(device: &Self::Device) -> String;
+
+    /// Start capturing packets on the device
+    fn open_device(device: &Self::Device) -> Result<PacketStream>;
 }
 
-/// Start capturing packets from all available devices using the specified backend
-#[instrument(skip_all)]
-pub fn listen_on_all<B: CaptureBackend + 'static>(backend: B) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
-    use std::collections::HashSet;
+/// Captures from all devices of a [`DeviceBackend`], picking up devices that appear later
+pub struct DeviceSource<B>(pub B);
 
-    use tokio::time::{Duration, interval};
+impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
+    #[instrument(skip_all)]
+    fn open(self: Box<Self>) -> Result<PacketStream> {
+        use tokio::time::{Duration, interval};
 
-    let devices = backend.list_devices()?;
-    let mut merged_stream = StreamMap::new();
+        let backend = self.0;
 
-    if devices.is_empty() {
-        tracing::warn!("Could not find any network devices");
-    }
+        if backend.list_devices()?.is_empty() {
+            tracing::warn!("Could not find any network devices");
+        }
 
-    // Create a channel to forward packets
-    let (tx, rx) = mpsc::unbounded_channel();
+        // Create a channel to forward packets
+        let (tx, rx) = mpsc::unbounded_channel();
 
-    // Spawn task to manage stream and discover new devices
-    tokio::spawn(async move {
-        let mut check_interval = interval(Duration::from_secs(10));
+        // Spawn task to manage stream and discover new devices
+        tokio::spawn(async move {
+            let mut merged_stream = StreamMap::new();
+            let mut check_interval = interval(Duration::from_secs(10));
 
-        loop {
-            tokio::select! {
-                // Forward packets from merged stream
-                Some((_, item)) = merged_stream.next() => {
-                    if let Err(e) = &item {
-                        tracing::warn!(%e);
-                    }
-
-                    if tx.send(item).is_err() {
-                        break; // Receiver dropped
-                    }
-                }
-
-                // Check for new devices every 10 seconds
-                _ = check_interval.tick() => {
-                    match backend.list_devices() {
-                        Ok(devices) => {
-                            for device in devices {
-                                let device_name = device.name().to_owned();
-
-                                // Only add if it's a new device
-                                if !merged_stream.contains_key(&device_name) {
-                                    tracing::info!("Discovered new device: {}", device_name);
-
-                                    match device.create_capture() {
-                                        Ok(mut capture) => {
-                                            match capture.capture_packets() {
-                                                Ok(stream) => {
-                                                    merged_stream.insert(device_name, stream);
-                                                }
-                                                Err(e) => {
-                                                    tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!("Failed to create capture for new device {}: {:#?}", device_name, e);
-                                        }
-                                    }
-                                }
-                            }
+            loop {
+                tokio::select! {
+                    // Forward packets from merged stream
+                    Some((_, item)) = merged_stream.next() => {
+                        if let Err(e) = &item {
+                            tracing::warn!(%e);
                         }
-                        Err(e) => {
-                            tracing::warn!("Failed to list devices during periodic check: {:#?}", e);
+
+                        if tx.send(item).is_err() {
+                            break; // Receiver dropped
                         }
                     }
+
+                    // Check for new devices every 10 seconds
+                    _ = check_interval.tick() => add_new_devices(&backend, &mut merged_stream),
                 }
             }
-        }
-    });
+        });
 
-    Ok(tokio_stream::wrappers::UnboundedReceiverStream::new(rx))
+        Ok(UnboundedReceiverStream::new(rx).boxed())
+    }
+}
+
+fn add_new_devices<B: DeviceBackend>(backend: &B, streams: &mut StreamMap<String, PacketStream>) {
+    let devices = match backend.list_devices() {
+        Ok(devices) => devices,
+        Err(e) => {
+            tracing::warn!("Failed to list devices during periodic check: {:#?}", e);
+            return;
+        }
+    };
+
+    for device in devices {
+        let device_name = B::device_name(&device);
+        if streams.contains_key(&device_name) {
+            continue;
+        }
+
+        tracing::info!("Discovered new device: {}", device_name);
+
+        match B::open_device(&device) {
+            Ok(stream) => {
+                streams.insert(device_name, stream);
+            }
+            Err(e) => {
+                tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
+            }
+        }
+    }
+}
+
+/// Runs a blocking packet reader on a worker thread and exposes what it reads as a stream.
+///
+/// `read` is handed a callback to pass packets to, which returns `false` once nobody is listening anymore.
+fn blocking_stream(read: impl FnOnce(&mut dyn FnMut(Packet) -> bool) + Send + 'static) -> PacketStream {
+    let (tx, rx) = mpsc::channel(1024);
+
+    tokio::task::spawn_blocking(move || read(&mut |packet| tx.blocking_send(Ok(packet)).is_ok()));
+
+    ReceiverStream::new(rx).boxed()
+}
+
+/// Derives a stable source id for packets read from a file
+fn file_source_id(path: &std::path::Path) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(all(test, feature = "pcap"))]
+mod tests {
+    use ::pcap::Linktype;
+
+    use super::normalize_offline_pcap_payload;
+
+    #[test]
+    fn ethernet_frames_are_passed_through() {
+        let frame = vec![1, 2, 3, 4];
+        assert_eq!(normalize_offline_pcap_payload(Linktype::ETHERNET, &frame).unwrap(), frame);
+    }
+
+    #[test]
+    fn raw_ip_packets_get_a_synthetic_ethernet_header() {
+        let ipv4 = [0x45, 0, 0, 20];
+        let framed = normalize_offline_pcap_payload(Linktype::RAW, &ipv4).unwrap();
+        assert_eq!(framed.len(), 14 + ipv4.len());
+        assert_eq!(&framed[12..14], &[0x08, 0x00]);
+        assert_eq!(&framed[14..], &ipv4);
+
+        let ipv6 = [0x60, 0, 0, 0];
+        let framed = normalize_offline_pcap_payload(Linktype::RAW, &ipv6).unwrap();
+        assert_eq!(&framed[12..14], &[0x86, 0xDD]);
+    }
+
+    #[test]
+    fn unusable_packets_are_rejected() {
+        assert!(normalize_offline_pcap_payload(Linktype::RAW, &[]).is_err());
+        assert!(normalize_offline_pcap_payload(Linktype::RAW, &[0x10]).is_err());
+        assert!(normalize_offline_pcap_payload(Linktype::NULL, &[0x45]).is_err());
+    }
 }

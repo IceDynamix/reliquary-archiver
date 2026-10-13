@@ -1,10 +1,10 @@
-use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::future;
+use std::path::PathBuf;
 
 use ::pktmon::filter::{PktMonFilter, TransportProtocol};
-use ::pktmon::{Capture, PacketPayload};
-use futures::SinkExt;
-use futures::executor::block_on;
+use ::pktmon::{Capture, EtlCapture, PacketPayload};
+use futures::StreamExt;
+use tracing::{info, instrument, warn};
 
 use super::*;
 
@@ -13,78 +13,83 @@ pub struct PktmonBackend;
 #[derive(Debug)]
 pub struct PktmonCaptureDevice;
 
-pub struct PktmonCapture {
-    capture: Capture,
-}
-
-impl CaptureBackend for PktmonBackend {
+impl DeviceBackend for PktmonBackend {
     type Device = PktmonCaptureDevice;
 
     fn list_devices(&self) -> Result<Vec<Self::Device>> {
         // PktMon doesn't need device selection - it captures all interfaces
         Ok(vec![PktmonCaptureDevice])
     }
-}
 
-impl CaptureDevice for PktmonCaptureDevice {
-    type Capture = PktmonCapture;
-
-    fn name(&self) -> &str {
-        "pktmon"
+    fn device_name(_device: &Self::Device) -> String {
+        "pktmon".to_string()
     }
 
-    fn create_capture(&self) -> Result<Self::Capture> {
-        let mut capture = Capture::new().map_err(|e| CaptureError::CaptureError {
-            has_captured: false,
-            error: Box::new(e),
-        })?;
-
-        let filter = PktMonFilter {
-            name: "UDP Filter".to_string(),
-            transport_protocol: Some(TransportProtocol::UDP),
-            port: PORT_RANGE.0.into(),
-            ..PktMonFilter::default()
-        };
-
-        capture.add_filter(filter).map_err(|e| CaptureError::FilterError(Box::new(e)))?;
-
-        let filter = PktMonFilter {
-            name: "UDP Filter".to_string(),
-            transport_protocol: Some(TransportProtocol::UDP),
-            port: PORT_RANGE.1.into(),
-            ..PktMonFilter::default()
-        };
-
-        capture.add_filter(filter).map_err(|e| CaptureError::FilterError(Box::new(e)))?;
-
-        Ok(PktmonCapture { capture })
-    }
-}
-
-impl PacketCapture for PktmonCapture {
     #[instrument(skip_all)]
-    fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>> + Unpin> {
-        self.capture.start().map_err(|e| CaptureError::CaptureError {
-            has_captured: false,
-            error: Box::new(e),
-        })?;
+    fn open_device(_device: &Self::Device) -> Result<PacketStream> {
+        let mut capture = Capture::new().map_err(|e| CaptureError::Capture(Box::new(e)))?;
 
-        return match self.capture.stream() {
-            Ok(stream) => Ok(stream.filter_map(|packet| {
-                Box::pin(async move {
-                    match packet.payload {
-                        PacketPayload::Ethernet(payload) => Some(Ok(Packet {
-                            source_id: packet.component_id as u64,
-                            data: payload,
-                        })),
-                        _ => None,
-                    }
+        for port in [PORT_RANGE.0, PORT_RANGE.1] {
+            let filter = PktMonFilter {
+                name: "UDP Filter".to_string(),
+                transport_protocol: Some(TransportProtocol::UDP),
+                port: port.into(),
+                ..PktMonFilter::default()
+            };
+
+            capture.add_filter(filter).map_err(|e| CaptureError::Filter(Box::new(e)))?;
+        }
+
+        capture.start().map_err(|e| CaptureError::Capture(Box::new(e)))?;
+
+        let stream = capture.stream().map_err(|e| CaptureError::Capture(Box::new(e)))?;
+
+        Ok(stream
+            .filter_map(|packet| {
+                future::ready(match packet.payload {
+                    PacketPayload::Ethernet(payload) => Some(Ok(Packet {
+                        source_id: packet.component_id as u64,
+                        data: payload,
+                    })),
+                    _ => None,
                 })
-            })),
-            Err(e) => Err(CaptureError::CaptureError {
-                has_captured: false,
-                error: Box::new(e),
-            }),
-        };
+            })
+            .boxed())
+    }
+}
+
+/// Reads packets from a recorded .etl file
+pub struct EtlFileSource {
+    path: PathBuf,
+}
+
+impl EtlFileSource {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl PacketSource for EtlFileSource {
+    #[instrument(skip_all)]
+    fn open(self: Box<Self>) -> Result<PacketStream> {
+        info!("Capturing from etl file: {}", self.path.display());
+        let mut capture = EtlCapture::new(&self.path).map_err(|e| CaptureError::Device(Box::new(e)))?;
+        capture.start().map_err(|e| CaptureError::Capture(Box::new(e)))?;
+
+        let source_id = file_source_id(&self.path);
+
+        Ok(blocking_stream(move |send| {
+            while let Ok(packet) = capture.next_packet() {
+                if let PacketPayload::Ethernet(data) = packet.payload {
+                    if !send(Packet { source_id, data }) {
+                        break;
+                    }
+                }
+            }
+
+            if let Err(e) = capture.stop() {
+                warn!(%e, "could not stop etl capture");
+            }
+        }))
     }
 }
