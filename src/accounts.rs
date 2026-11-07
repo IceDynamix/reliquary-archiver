@@ -107,12 +107,9 @@ impl MultiAccountManager {
         self.uid_to_conv.get(&uid).and_then(|conv_id| self.exporters.get(conv_id)).cloned()
     }
 
-    /// Get all accounts (uid, exporter) pairs
-    pub fn get_all_accounts(&self) -> Vec<(u32, Arc<Mutex<OptimizerExporter>>)> {
-        self.uid_to_conv
-            .iter()
-            .filter_map(|(uid, conv_id)| self.exporters.get(conv_id).map(|exp| (*uid, exp.clone())))
-            .collect()
+    /// Get the exporter of any one account, for when the caller doesn't care which
+    pub fn get_first_account_exporter(&self) -> Option<Arc<Mutex<OptimizerExporter>>> {
+        self.uid_to_conv.values().find_map(|conv_id| self.exporters.get(conv_id)).cloned()
     }
 
     /// Check if a conversation is still active (has an exporter)

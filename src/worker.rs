@@ -1,25 +1,17 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures::channel::{mpsc, oneshot};
-use futures::executor::block_on;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
-use futures::stream::FusedStream;
-use futures::{FutureExt, Stream, StreamExt, select, stream};
-use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
-use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
-use reliquary::network::command::{GameCommand, GameCommandError};
-use reliquary::network::{ConnectionPacket, GamePacket, GameSniffer, NetworkError};
+use futures::{Stream, StreamExt, stream};
 use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::database::{Database, get_database};
-use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
-use tokio::pin;
+use reliquary_archiver::export::fribbels::{Export, OptimizerEvent};
 use tracing::{info, instrument, warn};
 
 pub use crate::accounts::{AccountEvent, MultiAccountManager};
-use crate::capture;
+use crate::capture::{self, SourceSpec};
+use crate::session::{CaptureSession, SessionEvent};
 
 #[derive(Debug, Clone)]
 pub enum WorkerEvent {
@@ -31,32 +23,13 @@ pub enum WorkerEvent {
 }
 
 pub enum WorkerCommand {
-    Abort,
     MakeExport {
         uid: Option<u32>, // None = first account
         sender: oneshot::Sender<Option<Export>>,
     },
-
-    #[cfg(feature = "pcap")]
-    ProcessRecorded(std::path::PathBuf),
 }
 
 pub type WorkerHandle = mpsc::Sender<WorkerCommand>;
-
-struct MappedSender<Output, Intermediate> {
-    sender: mpsc::Sender<Output>,
-    f: fn(Intermediate) -> Output,
-}
-
-impl<Output, Intermediate> MappedSender<Output, Intermediate> {
-    fn new(sender: mpsc::Sender<Output>, f: fn(Intermediate) -> Output) -> Self {
-        Self { sender, f }
-    }
-
-    fn send(&mut self, item: Intermediate) -> futures::sink::Send<'_, mpsc::Sender<Output>, Output> {
-        self.sender.send((self.f)(item))
-    }
-}
 
 /// Creates a new [`Stream`] that produces the items sent from a [`Future`]
 /// to the [`mpsc::Sender`] provided to the closure.
@@ -77,22 +50,7 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
         let (sender, mut receiver) = mpsc::channel(100);
 
-        let database = get_database();
-        let sniffer = GameSniffer::new();
-
-        let (mut recorded_tx, recorded_rx) = mpsc::channel(100);
-
-        let abort_signal = {
-            let manager = manager.clone();
-            let output = output.clone();
-
-            tokio::spawn(live_capture(
-                manager,
-                sniffer,
-                MappedSender::new(output, WorkerEvent::Metric),
-                recorded_rx,
-            ))
-        };
+        tokio::spawn(live_capture(manager.clone(), output.clone()));
 
         // Subscribe to manager's unified event channel
         let mut manager_rx = manager.lock().await.subscribe();
@@ -120,46 +78,27 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
 
                 cmd = receiver.select_next_some() => {
                     match cmd {
-                        WorkerCommand::Abort => {
-                            abort_signal.abort();
-                        }
                         WorkerCommand::MakeExport { uid, sender: response_sender } => {
-                            let export = if let Some(target_uid) = uid {
-                                // Export specific account
-                                let exporter_opt = manager.lock().await.get_account_exporter(target_uid);
-                                if let Some(exporter) = exporter_opt
-                                && let exporter = exporter.lock().await
-                                && exporter.is_initialized() {
-                                    exporter.export()
-                                } else {
-                                    None
-                                }
-                            } else {
-                                // Export first account
-                                let accounts = manager.lock().await.get_all_accounts();
-                                if let Some((_, exporter)) = accounts.first()
-                                && let exporter = exporter.lock().await
-                                && exporter.is_initialized() {
-                                    exporter.export()
-                                } else {
-                                    None
-                                }
-                            };
-                            response_sender.send(export).ok();
-                        }
-
-                        #[cfg(feature = "pcap")]
-                        WorkerCommand::ProcessRecorded(pcap_path) => {
-                            let packets = capture_from_pcap(pcap_path);
-                            info!("processing {} packets", packets.len());
-                            recorded_tx.send_all(&mut futures::stream::iter(packets.into_iter().map(Ok))).await.ok();
-                            info!("processed packets");
+                            response_sender.send(make_export(&manager, uid).await).ok();
                         }
                     }
                 }
             }
         }
     })
+}
+
+async fn make_export(manager: &Mutex<MultiAccountManager>, uid: Option<u32>) -> Option<Export> {
+    let exporter = {
+        let manager = manager.lock().await;
+        match uid {
+            Some(uid) => manager.get_account_exporter(uid),
+            None => manager.get_first_account_exporter(),
+        }
+    }?;
+
+    let exporter = exporter.lock().await;
+    if exporter.is_initialized() { exporter.export() } else { None }
 }
 
 #[derive(Debug, Clone)]
@@ -172,157 +111,57 @@ pub enum SnifferMetric {
     NetworkError,
 }
 
-#[instrument(skip_all)]
-#[cfg(feature = "pcap")]
-fn capture_from_pcap(pcap_path: std::path::PathBuf) -> Vec<capture::Packet> {
-    use std::hash::{DefaultHasher, Hasher};
+fn worker_event(event: SessionEvent) -> Option<WorkerEvent> {
+    let metric = match event {
+        SessionEvent::AccountSeen { uid } => return Some(WorkerEvent::AccountDiscovered { uid }),
+        SessionEvent::LoginFinished => return None,
+        SessionEvent::ConnectionEstablished => SnifferMetric::ConnectionEstablished,
+        SessionEvent::Disconnected => SnifferMetric::ConnectionDisconnected,
+        SessionEvent::PacketsDecoded(count) => SnifferMetric::GameCommandsReceived(count),
+        SessionEvent::DecryptionKeyMissing => SnifferMetric::DecryptionKeyMissing,
+        SessionEvent::DecodeError | SessionEvent::Fatal => SnifferMetric::NetworkError,
+    };
 
-    use crate::capture::{PCAP_FILTER, normalize_offline_pcap_payload};
-
-    info!("Capturing from pcap file: {}", pcap_path.display());
-    let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
-    let linktype = capture.get_datalink();
-    capture.filter(PCAP_FILTER, false).unwrap();
-
-    let mut hasher = DefaultHasher::new();
-    hasher.write(pcap_path.display().to_string().as_bytes());
-    let source_id = hasher.finish();
-
-    let mut packets = Vec::new();
-    while let Ok(packet) = capture.next_packet() {
-        let payload = match normalize_offline_pcap_payload(linktype, packet.data) {
-            Ok(payload) => payload,
-            Err(_) => continue,
-        };
-        packets.push(capture::Packet {
-            source_id,
-            data: payload,
-        });
-    }
-
-    packets
+    Some(WorkerEvent::Metric(metric))
 }
 
 #[instrument(skip_all)]
-async fn live_capture(
-    manager: Arc<Mutex<MultiAccountManager>>,
-    mut sniffer: GameSniffer,
-    mut metric_tx: MappedSender<WorkerEvent, SnifferMetric>,
-    mut recorded_rx: mpsc::Receiver<capture::Packet>,
-) {
+async fn live_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc::Sender<WorkerEvent>) {
+    // The GUI keeps capturing for as long as it runs, a single bad packet shouldn't cost it a network interface
+    let mut session = CaptureSession::new(manager, false);
+
     // Outer loop to restart capture when it exits
     loop {
-        let live_rx = {
-            match capture::open_source(&capture::SourceSpec::Live).map_err(|e| e.to_string()) {
-                Ok(rx) => rx,
-                Err(err_msg) => {
-                    warn!(error = %err_msg, "Failed to start packet capture, retrying in 1 second...");
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
+        let mut packets = match capture::open_source(&SourceSpec::Live) {
+            Ok(packets) => packets,
+            Err(e) => {
+                warn!(error = %e, "Failed to start packet capture, retrying in 1 second...");
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
             }
         };
-        let mut live_rx = live_rx.fuse();
 
         info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
 
-        'recv: loop {
-            // We have to drop the Err before we cross an await point since StdErr is not Send
-            let packet = {
-                let packet = select! {
-                    data = live_rx.next() => match data {
-                        Some(data) => data,
-                        None => {
-                            warn!("live capture stream ended unexpectedly");
-                            break 'recv;
-                        }
-                    },
-
-                    data = recorded_rx.select_next_some() => Ok(data),
-                };
-
-                match packet {
-                    Ok(packet) => packet,
-                    Err(e) => {
-                        warn!(%e);
-                        continue;
-                    }
+        while let Some(packet) = packets.next().await {
+            let packet = match packet {
+                Ok(packet) => packet,
+                Err(e) => {
+                    warn!(%e);
+                    continue;
                 }
             };
 
-            metric_tx.send(SnifferMetric::NetworkPacketReceived).await.ok();
+            output.send(WorkerEvent::Metric(SnifferMetric::NetworkPacketReceived)).await.ok();
 
-            match sniffer.receive_packet(packet.data) {
-                Ok(packets) => {
-                    metric_tx.send(SnifferMetric::GameCommandsReceived(packets.len())).await.ok();
-
-                    for packet in packets {
-                        match packet {
-                            GamePacket::Connection(c) => match c {
-                                ConnectionPacket::HandshakeEstablished { conv_id } => {
-                                    info!(conv_id, "detected connection established");
-                                    metric_tx.send(SnifferMetric::ConnectionEstablished).await.ok();
-
-                                    if cfg!(all(feature = "pcap", windows)) {
-                                        info!(
-                                            "If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest"
-                                        );
-                                    }
-                                }
-                                ConnectionPacket::Disconnected => {
-                                    info!("detected connection disconnected");
-                                    metric_tx.send(SnifferMetric::ConnectionDisconnected).await.ok();
-                                }
-                                _ => {}
-                            },
-                            GamePacket::Commands { conv_id, result } => match result {
-                                Ok(command) => {
-                                    if command.command_id == PlayerLoginScRsp {
-                                        info!(conv_id, "detected login start");
-                                    }
-
-                                    // Route command to the correct exporter
-                                    let exporter = {
-                                        let mut mgr = manager.lock().await;
-                                        mgr.get_or_create_exporter(conv_id)
-                                    };
-
-                                    // Check if this is a UID discovery packet and register it if so
-                                    if command.command_id == PlayerGetTokenScRsp {
-                                        if let Ok(token_rsp) = command.parse_proto::<PlayerGetTokenScRspProto>() {
-                                            let uid = token_rsp.uid;
-                                            let mut mgr = manager.lock().await;
-                                            let is_new = mgr.register_uid(conv_id, uid);
-
-                                            metric_tx.sender.send(WorkerEvent::AccountDiscovered { uid }).await.ok();
-                                        }
-                                    }
-
-                                    exporter.lock().await.read_command(command);
-                                }
-                                Err(e) => {
-                                    warn!(conv_id, %e);
-                                    if let GameCommandError::DecryptionKeyMissing = e {
-                                        metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
-                                    } else {
-                                        metric_tx.send(SnifferMetric::NetworkError).await.ok();
-                                    }
-                                }
-                            },
-                        }
-                    }
-                }
-                Err(e) => {
-                    warn!(%e);
-                    if let NetworkError::GameCommand(GameCommandError::DecryptionKeyMissing) = e {
-                        metric_tx.send(SnifferMetric::DecryptionKeyMissing).await.ok();
-                    } else {
-                        metric_tx.send(SnifferMetric::NetworkError).await.ok();
-                    }
+            for event in session.handle_packet(packet).await {
+                if let Some(event) = worker_event(event) {
+                    output.send(event).await.ok();
                 }
             }
         }
 
+        warn!("live capture stream ended unexpectedly");
         info!("capture ended, restarting...");
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
