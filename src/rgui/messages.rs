@@ -20,7 +20,7 @@ use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::update::UpdateMessage;
 use crate::rgui::state::{ExportStats, ImageFit, Settings};
-use crate::worker;
+use crate::rgui::worker;
 
 // ============================================================================
 // WebSocket Messages

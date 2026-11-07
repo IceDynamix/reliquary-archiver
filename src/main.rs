@@ -19,15 +19,10 @@ mod update;
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
 mod elevation;
 
-#[cfg(feature = "gui")]
-mod worker;
-
 mod accounts;
 mod capture;
 mod cli;
 mod logging;
-#[cfg(feature = "gui")]
-mod scopefns;
 mod session;
 
 // The GUI reads the log buffer to display it

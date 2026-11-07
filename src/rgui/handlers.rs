@@ -19,8 +19,9 @@ use crate::rgui::messages::{
     AccountMessage, ExportMessage, LogMessage, RootMessage, ScreenAction, WebSocketMessage, WebSocketStatus, WindowMessage,
 };
 use crate::rgui::state::{AccountInfo, ActiveScreen, ExportStats, FileContainer, FileExtensions, RootState, Screen, WaitingScreen};
+use crate::rgui::worker;
 use crate::websocket::PortCommand;
-use crate::{LOG_BUFFER, VEC_LAYER_HANDLE, worker};
+use crate::{LOG_BUFFER, VEC_LAYER_HANDLE};
 
 // ============================================================================
 // Settings Path Helper

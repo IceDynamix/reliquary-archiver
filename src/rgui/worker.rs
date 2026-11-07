@@ -10,7 +10,7 @@ use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent};
 use tracing::{error, info, instrument, warn};
 
-pub use crate::accounts::{AccountEvent, MultiAccountManager};
+use crate::accounts::{AccountEvent, MultiAccountManager};
 use crate::capture::{self, SourceSpec};
 use crate::session::{CaptureSession, SessionEvent};
 

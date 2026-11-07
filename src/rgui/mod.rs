@@ -21,6 +21,7 @@
 //! - [`screens`]: Screen-specific views (waiting, active)
 //! - [`kit`]: Low-level UI building blocks (icons, modals, toggles, tooltips)
 //! - [`run_on_start`]: Windows startup registry integration
+//! - [`worker`]: Background task running the packet capture
 
 // TODO: the GUI only builds on Windows, remove this once its unused code has been cleaned up there
 #![allow(unused)]
@@ -35,9 +36,9 @@ use tokio_stream::wrappers::WatchStream;
 
 use crate::LOG_NOTIFY;
 use crate::rgui::components::update::UpdateMessage;
-use crate::scopefns::Also;
+use crate::rgui::scopefns::Also;
+use crate::rgui::worker::archiver_worker;
 use crate::websocket::{PortCommand, PortSource, start_websocket_server};
-use crate::worker::archiver_worker;
 
 // Module declarations
 pub mod components;
@@ -45,10 +46,12 @@ pub mod handlers;
 pub mod kit;
 pub mod messages;
 pub mod run_on_start;
+mod scopefns;
 pub mod screens;
 pub mod state;
 pub mod theme;
 pub mod view;
+pub mod worker;
 
 // Re-exports for public API
 pub use handlers::{
@@ -202,8 +205,8 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use futures::lock::Mutex;
     use reliquary_archiver::export::database::get_database;
 
+    use crate::accounts::MultiAccountManager;
     use crate::rgui::components::update;
-    use crate::worker::MultiAccountManager;
 
     let (settings, settings_needs_save) = load_settings_sync();
     let start_minimized = settings.start_minimized;
