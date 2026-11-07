@@ -175,10 +175,10 @@ pub struct ExportStats {
 impl ExportStats {
     pub fn new(exporter: &OptimizerExporter) -> Self {
         Self {
-            relics: exporter.relics.len(),
-            characters: exporter.characters.len(),
-            light_cones: exporter.light_cones.len(),
-            materials: exporter.materials.len(),
+            relics: exporter.relics().len(),
+            characters: exporter.characters().len(),
+            light_cones: exporter.light_cones().len(),
+            materials: exporter.materials().len(),
         }
     }
 }
