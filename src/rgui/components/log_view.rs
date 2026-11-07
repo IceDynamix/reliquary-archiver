@@ -45,6 +45,15 @@ pub fn short_size(size: usize) -> String {
     }
 }
 
+/// Cuts a line down to at most `max_len` bytes without splitting a character.
+fn truncate_line(line: &str, max_len: usize) -> &str {
+    let mut end = max_len.min(line.len());
+    while !line.is_char_boundary(end) {
+        end -= 1;
+    }
+    &line[..end]
+}
+
 struct InvalidateOnBoundsChanged<Message, E: Fn(&raxis::widgets::Event, &mut raxis::Shell<Message>) -> Option<Task<Message>>> {
     _marker: std::marker::PhantomData<Message>,
     event_listener: E,
@@ -193,7 +202,10 @@ pub fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                         if matches!(key, VKey::C | VKey::X) && modifiers.ctrl {
                             if let Some(selection_range) = selection_state.borrow_mut().take() {
                                 let lines = LOG_BUFFER.lock().unwrap();
-                                let selected_lines = lines[selection_range.start..selection_range.end].to_vec();
+                                // The buffer may have been trimmed since the selection was made
+                                let end = selection_range.end.min(lines.len());
+                                let start = selection_range.start.min(end);
+                                let selected_lines = lines[start..end].to_vec();
 
                                 return Some(task::effect(task::Action::Clipboard(ClipboardAction::Set(
                                     selected_lines.join("\n"),
@@ -244,7 +256,7 @@ pub fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                             height: Sizing::fixed(line_height_no_gap),
                             background_color: if is_selected { Some(SELECTION_COLOR) } else { None },
                             children: vec![
-                                Text::new(lines[i][0..truncate_threshold].to_string())
+                                Text::new(truncate_line(&lines[i], truncate_threshold).to_string())
                                     .with_word_wrap(false)
                                     .with_font_family(FontIdentifier::System("Lucida Console".to_string()))
                                     .with_assisted_width((MONO_CHAR_WIDTH * truncate_threshold as f64) as f32)
