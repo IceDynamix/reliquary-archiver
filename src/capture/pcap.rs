@@ -1,74 +1,69 @@
+use std::future;
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::sync::atomic::Ordering;
 
-use ::pcap::{self, Active, Capture, Device as PcapDevice};
-use futures::executor::block_on;
-use futures::{SinkExt, StreamExt, TryStreamExt};
+use ::pcap::{self, Capture, Device as PcapDevice};
+use futures::StreamExt;
 use pcap::PacketCodec;
-use tracing::{debug, instrument, warn};
+use tracing::{instrument, warn};
 
 use super::*;
 
 pub struct PcapBackend;
 
-pub struct PcapCapture {
-    capture: Capture<Active>,
-    device: PcapDevice,
-    id: u64,
-}
-
-impl CaptureBackend for PcapBackend {
+impl DeviceBackend for PcapBackend {
     type Device = PcapDevice;
 
     fn list_devices(&self) -> Result<Vec<Self::Device>> {
         Ok(PcapDevice::list()
-            .map_err(|e| CaptureError::DeviceError(Box::new(e)))?
+            .map_err(|e| CaptureError::Device(Box::new(e)))?
             .into_iter()
             .filter(|d| matches!(d.flags.connection_status, pcap::ConnectionStatus::Connected))
             .filter(|d| !d.addresses.is_empty())
             .filter(|d| !d.flags.is_loopback())
             .collect::<Vec<_>>())
     }
-}
 
-impl CaptureDevice for PcapDevice {
-    type Capture = PcapCapture;
-
-    fn name(&self) -> &str {
-        &self.name
+    fn device_name(device: &Self::Device) -> String {
+        device.name.clone()
     }
 
-    fn create_capture(&self) -> Result<Self::Capture> {
-        let mut capture = Capture::from_device(self.clone())
-            .map_err(|e| CaptureError::DeviceError(Box::new(e)))?
+    #[instrument(skip_all, fields(device = device.desc))]
+    fn open_device(device: &Self::Device) -> Result<PacketStream> {
+        let capture = Capture::from_device(device.clone())
+            .map_err(|e| CaptureError::Device(Box::new(e)))?
             .immediate_mode(true)
             .promisc(true)
             .timeout(1000)
             .buffer_size(1024 * 1024 * 16) // 16MB
             .open()
-            .map_err(|e| CaptureError::CaptureError {
-                has_captured: false,
-                error: Box::new(e),
-            })?;
+            .map_err(|e| CaptureError::Capture(Box::new(e)))?;
 
-        let mut capture = capture.setnonblock().map_err(|e| CaptureError::CaptureError {
-            has_captured: false,
-            error: Box::new(e),
-        })?;
+        let mut capture = capture.setnonblock().map_err(|e| CaptureError::Capture(Box::new(e)))?;
 
-        capture
-            .filter(PCAP_FILTER, true)
-            .map_err(|e| CaptureError::FilterError(Box::new(e)))?;
+        capture.filter(PCAP_FILTER, true).map_err(|e| CaptureError::Filter(Box::new(e)))?;
 
         let mut hasher = DefaultHasher::new();
-        self.name.hash(&mut hasher);
-        let id = hasher.finish();
+        device.name.hash(&mut hasher);
+        let source_id = hasher.finish();
 
-        Ok(PcapCapture {
-            capture,
-            device: self.clone(),
-            id,
-        })
+        let device_name = device.name.clone();
+        let stream = capture
+            .stream(Codec { source_id })
+            .map_err(|e| CaptureError::Capture(Box::new(e)))?;
+
+        Ok(stream
+            .take_while(move |r| {
+                future::ready(match r {
+                    // Check if this is a device removal error
+                    Err(pcap::Error::PcapError(error_msg)) if error_msg.contains("ERROR_DEVICE_REMOVED") => {
+                        warn!(%error_msg, %device_name, "Device removed, terminating capture stream");
+                        false // Stop the stream immediately
+                    }
+                    _ => true, // Continue for Ok packets and other errors
+                })
+            })
+            .map(|r| r.map_err(|e| CaptureError::Capture(Box::new(e))))
+            .boxed())
     }
 }
 
@@ -84,48 +79,5 @@ impl PacketCodec for Codec {
             source_id: self.source_id,
             data: pkt.data.to_vec(),
         }
-    }
-}
-
-impl PacketCapture for PcapCapture {
-    #[instrument(skip_all, fields(device = self.device.desc))]
-    fn capture_packets(mut self) -> Result<impl Stream<Item = Result<Packet>>> {
-        let mut has_captured = false;
-
-        return match self.capture.stream(Codec { source_id: self.id }) {
-            Ok(stream) => Ok(Box::pin(
-                stream
-                    .take_while(move |r| {
-                        let result = match &r {
-                            Err(pcap::Error::PcapError(error_msg)) => {
-                                // Check if this is a device removal error
-                                if error_msg.contains("ERROR_DEVICE_REMOVED") {
-                                    warn!(%error_msg, %self.device.name, "Device removed, terminating capture stream");
-                                    false // Stop the stream immediately
-                                } else {
-                                    true // Continue for other errors
-                                }
-                            }
-                            _ => true, // Continue for Ok packets
-                        };
-
-                        async move { result }
-                    })
-                    .map(move |r| match r {
-                        Ok(p) => {
-                            has_captured = true;
-                            Ok(p)
-                        }
-                        Err(e) => Err(CaptureError::CaptureError {
-                            has_captured,
-                            error: Box::new(e),
-                        }),
-                    }),
-            )),
-            Err(e) => Err(CaptureError::CaptureError {
-                has_captured: false,
-                error: Box::new(e),
-            }),
-        };
     }
 }
