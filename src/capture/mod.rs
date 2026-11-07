@@ -277,3 +277,36 @@ fn file_source_id(path: &std::path::Path) -> u64 {
     path.hash(&mut hasher);
     hasher.finish()
 }
+
+#[cfg(all(test, feature = "pcap"))]
+mod tests {
+    use ::pcap::Linktype;
+
+    use super::normalize_offline_pcap_payload;
+
+    #[test]
+    fn ethernet_frames_are_passed_through() {
+        let frame = vec![1, 2, 3, 4];
+        assert_eq!(normalize_offline_pcap_payload(Linktype::ETHERNET, &frame).unwrap(), frame);
+    }
+
+    #[test]
+    fn raw_ip_packets_get_a_synthetic_ethernet_header() {
+        let ipv4 = [0x45, 0, 0, 20];
+        let framed = normalize_offline_pcap_payload(Linktype::RAW, &ipv4).unwrap();
+        assert_eq!(framed.len(), 14 + ipv4.len());
+        assert_eq!(&framed[12..14], &[0x08, 0x00]);
+        assert_eq!(&framed[14..], &ipv4);
+
+        let ipv6 = [0x60, 0, 0, 0];
+        let framed = normalize_offline_pcap_payload(Linktype::RAW, &ipv6).unwrap();
+        assert_eq!(&framed[12..14], &[0x86, 0xDD]);
+    }
+
+    #[test]
+    fn unusable_packets_are_rejected() {
+        assert!(normalize_offline_pcap_payload(Linktype::RAW, &[]).is_err());
+        assert!(normalize_offline_pcap_payload(Linktype::RAW, &[0x10]).is_err());
+        assert!(normalize_offline_pcap_payload(Linktype::NULL, &[0x45]).is_err());
+    }
+}
