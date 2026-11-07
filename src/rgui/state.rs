@@ -19,7 +19,6 @@ use tracing::level_filters::LevelFilter;
 use crate::accounts::MultiAccountManager;
 use crate::rgui::components::update::UpdateState;
 use crate::rgui::messages::WebSocketStatus;
-use crate::rgui::worker;
 use crate::websocket::PortCommand;
 
 /// Information about a detected account.
@@ -214,8 +213,6 @@ pub struct StatsStore {
 pub struct RootState {
     /// Multi-account manager for handling multiple exporters
     pub manager: Arc<Mutex<MultiAccountManager>>,
-    /// Channel to send commands to the background worker
-    pub worker_sender: Option<worker::WorkerHandle>,
     /// Channel to broadcast GUI's selected account to WebSocket (UI state, not lifecycle events)
     pub selected_account_tx: watch::Sender<Option<u32>>,
     /// Central data store
@@ -235,7 +232,6 @@ impl RootState {
         let (selected_account_tx, _) = watch::channel(None);
         Self {
             manager,
-            worker_sender: None,
             selected_account_tx,
             store: Store::default(),
             screen: Screen::default(),

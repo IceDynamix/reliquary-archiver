@@ -9,9 +9,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use chrono::Local;
-use futures::channel::oneshot;
-use futures::sink::SinkExt;
 use raxis::runtime::task::{self, Task};
+use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::OptimizerEvent;
 use tracing::info;
 
@@ -117,16 +116,21 @@ pub fn handle_export_message(state: &mut RootState, message: ExportMessage) -> O
     }
 }
 
-/// Asks the worker for a fresh export of the account (`None` = any account) and publishes it once it's ready.
+/// Exports the account (`None` = any account) and publishes the export, once everything needed for one has been captured.
 fn refresh_export_task(state: &RootState, uid: Option<u32>) -> Task<RootMessage> {
-    let Some(mut sender) = state.worker_sender.clone() else {
-        return Task::none();
-    };
+    let manager = state.manager.clone();
 
     Task::future(async move {
-        let (tx, rx) = oneshot::channel();
-        sender.send(worker::WorkerCommand::MakeExport { uid, sender: tx }).await.ok();
-        rx.await.ok().flatten()
+        let exporter = {
+            let manager = manager.lock().await;
+            match uid {
+                Some(uid) => manager.get_account_exporter(uid),
+                None => manager.get_first_account_exporter(),
+            }
+        }?;
+
+        let exporter = exporter.lock().await;
+        if exporter.is_initialized() { exporter.export() } else { None }
     })
     .and_then(|export| Task::done(RootMessage::new_export(export)))
 }
@@ -323,12 +327,9 @@ pub fn handle_connection_check(state: &mut RootState, now: Instant) -> Option<Ta
 
 /// Handles events from the background worker thread.
 ///
-/// Processes worker readiness, sniffer metrics, and export events.
+/// Processes account discoveries, sniffer metrics, and export events.
 pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) -> Task<RootMessage> {
     match event {
-        worker::WorkerEvent::Ready(sender) => {
-            state.worker_sender = Some(sender);
-        }
         worker::WorkerEvent::AccountReconnected { uid } => {
             // Refresh stats for this account
             return export_stats_task(state, uid);

@@ -2,12 +2,12 @@ use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures::channel::{mpsc, oneshot};
+use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use futures::{FutureExt, Stream, StreamExt, stream};
-use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::fribbels::{Export, OptimizerEvent};
+use reliquary_archiver::export::fribbels::OptimizerEvent;
+use tokio::sync::broadcast::error::RecvError;
 use tracing::{error, info, instrument, warn};
 
 use crate::accounts::{AccountEvent, MultiAccountManager};
@@ -16,21 +16,11 @@ use crate::session::{CaptureSession, SessionEvent};
 
 #[derive(Debug, Clone)]
 pub enum WorkerEvent {
-    Ready(mpsc::Sender<WorkerCommand>),
     AccountDiscovered { uid: u32 },
     AccountReconnected { uid: u32 },
     ExportEvent { uid: u32, event: OptimizerEvent },
     Metric(SnifferMetric),
 }
-
-pub enum WorkerCommand {
-    MakeExport {
-        uid: Option<u32>, // None = first account
-        sender: oneshot::Sender<Option<Export>>,
-    },
-}
-
-pub type WorkerHandle = mpsc::Sender<WorkerCommand>;
 
 /// Creates a new [`Stream`] that produces the items sent from a [`Future`]
 /// to the [`mpsc::Sender`] provided to the closure.
@@ -49,8 +39,6 @@ pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> i
 #[instrument(skip_all)]
 pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<Item = WorkerEvent> {
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
-        let (sender, mut receiver) = mpsc::channel(100);
-
         tokio::spawn({
             let capture = live_capture(manager.clone(), output.clone());
 
@@ -65,50 +53,29 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
         // Subscribe to manager's unified event channel
         let mut manager_rx = manager.lock().await.subscribe();
 
-        output
-            .send(WorkerEvent::Ready(sender.clone()))
-            .await
-            .expect("Worker Stream was closed before ready state?");
-
+        // Forward events from manager's unified event channel
         loop {
-            tokio::select! {
-                // Forward events from manager's unified event channel
-                Ok(event) = manager_rx.recv() => {
-                    match event {
-                        // The capture loop already reports every login as AccountDiscovered
-                        AccountEvent::Discovered { .. } => {}
-                        AccountEvent::Reconnected { uid } => {
-                            output.send(WorkerEvent::AccountReconnected { uid }).await.ok();
-                        }
-                        AccountEvent::ExporterEvent { uid, event } => {
-                            output.send(WorkerEvent::ExportEvent { uid, event }).await.ok();
-                        }
-                    }
+            let event = match manager_rx.recv().await {
+                Ok(event) => event,
+                Err(RecvError::Lagged(skipped)) => {
+                    warn!(skipped, "worker fell behind on account events, some were dropped");
+                    continue;
                 }
+                Err(RecvError::Closed) => break,
+            };
 
-                cmd = receiver.select_next_some() => {
-                    match cmd {
-                        WorkerCommand::MakeExport { uid, sender: response_sender } => {
-                            response_sender.send(make_export(&manager, uid).await).ok();
-                        }
-                    }
+            match event {
+                // The capture loop already reports every login as AccountDiscovered
+                AccountEvent::Discovered { .. } => {}
+                AccountEvent::Reconnected { uid } => {
+                    output.send(WorkerEvent::AccountReconnected { uid }).await.ok();
+                }
+                AccountEvent::ExporterEvent { uid, event } => {
+                    output.send(WorkerEvent::ExportEvent { uid, event }).await.ok();
                 }
             }
         }
     })
-}
-
-async fn make_export(manager: &Mutex<MultiAccountManager>, uid: Option<u32>) -> Option<Export> {
-    let exporter = {
-        let manager = manager.lock().await;
-        match uid {
-            Some(uid) => manager.get_account_exporter(uid),
-            None => manager.get_first_account_exporter(),
-        }
-    }?;
-
-    let exporter = exporter.lock().await;
-    if exporter.is_initialized() { exporter.export() } else { None }
 }
 
 #[derive(Debug, Clone)]
