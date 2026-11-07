@@ -73,16 +73,11 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
 
     let task = route(state, message);
 
-    let save = if hold_save {
-        None
-    } else {
-        state.settings_file.save_if_changed(&state.store.settings)
-    };
-
-    match (task, save) {
-        (Some(task), Some(save)) => Some(Task::batch([task, save])),
-        (task, save) => task.or(save),
+    if !hold_save {
+        state.settings_file.save_if_changed(&state.store.settings);
     }
+
+    task
 }
 
 /// Dispatches messages to their handlers
@@ -168,6 +163,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
         let selected_account_rx = state.selected_account_tx.subscribe();
 
         Some(Task::batch(vec![
+            Task::future(state.settings_file.writer()).discard(),
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
             Task::run(archiver_worker(manager.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(

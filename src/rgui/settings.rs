@@ -4,10 +4,9 @@
 //! GUI starts, and [`rgui::update`](crate::rgui::update) saves them whenever a message leaves them
 //! different from what was saved last, so code that changes settings doesn't have to save them.
 
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
 
-use raxis::runtime::task::Task;
+use tokio::sync::watch;
 
 use crate::rgui::run_on_start::registry_matches_settings;
 
@@ -80,84 +79,85 @@ fn settings_path(appdata: PathBuf) -> PathBuf {
     appdata.join("reliquary-archiver").join("settings.json")
 }
 
-/// Counter for generating unique temp file names within this process.
-static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 /// The settings file, and what it holds.
+///
+/// A single writer task, [`SettingsFile::writer`], writes the settings whenever they change. Changes
+/// that come in while it is writing are combined, and the latest settings always win.
 pub struct SettingsFile {
-    /// The settings that were last saved
-    saved: Settings,
+    path: Option<PathBuf>,
+    /// The settings that were last handed to the writer
+    to_save: watch::Sender<Settings>,
+    /// Never read, so the writer's clone of it sees every change made since the file was loaded
+    changes: watch::Receiver<Settings>,
 }
 
 impl SettingsFile {
-    /// `saved` is what the file holds
-    fn new(saved: Settings) -> Self {
-        Self { saved }
+    /// `saved` is what the file at `path` holds
+    fn new(path: Option<PathBuf>, saved: Settings) -> Self {
+        let (to_save, changes) = watch::channel(saved);
+        Self { path, to_save, changes }
     }
 
     /// Saves the settings if they changed since they were last saved
-    pub fn save_if_changed<M: Send + 'static>(&mut self, settings: &Settings) -> Option<Task<M>> {
-        if self.saved == *settings {
-            return None;
-        }
+    pub fn save_if_changed(&self, settings: &Settings) {
+        self.to_save.send_if_modified(|to_save| {
+            if to_save == settings {
+                return false;
+            }
 
-        self.saved = settings.clone();
-        save(settings)
+            *to_save = settings.clone();
+            true
+        });
+    }
+
+    /// Writes the settings whenever they change, for as long as the app runs
+    pub fn writer(&self) -> impl Future<Output = ()> + Send + 'static {
+        let path = self.path.clone();
+        let mut changes = self.changes.clone();
+
+        async move {
+            let Some(path) = path else {
+                return;
+            };
+
+            while changes.changed().await.is_ok() {
+                let settings = changes.borrow_and_update().clone();
+                write(&path, &settings).await;
+            }
+        }
     }
 }
 
-/// Persists the current settings to disk asynchronously.
+/// Writes the settings to the file at `path`.
 ///
-/// Settings are saved atomically to the user's local app data folder as JSON.
-/// We write to a temporary file first, then rename it to avoid corruption
-/// if the application crashes or is killed during the write.
-///
-/// Each save uses a unique temp filename (process ID + counter) to prevent
-/// race conditions if multiple saves happen concurrently.
-fn save<M: Send + 'static>(settings: &Settings) -> Option<Task<M>> {
-    let settings = settings.clone();
-    // Generate unique temp filename to avoid races between concurrent saves
-    let unique_id = SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
+/// They are written to a temporary file first, which then replaces the settings file, so the
+/// settings file is never left half written if the application crashes or is killed meanwhile.
+async fn write(path: &Path, settings: &Settings) {
+    // The process id keeps two running instances from writing to the same temporary file
+    let temp_path = path.with_extension(format!("json.{}.tmp", std::process::id()));
 
-    let Some(appdata) = raxis::get_local_app_data() else {
-        tracing::error!("Could not determine local app data path, settings not saved");
-        return None;
+    if let Err(e) = tokio::fs::create_dir_all(path.parent().unwrap()).await {
+        tracing::error!("Failed to create settings directory: {}", e);
+        return;
+    }
+
+    let json = match serde_json::to_string_pretty(settings) {
+        Ok(json) => json,
+        Err(e) => {
+            tracing::error!("Failed to serialize settings: {}", e);
+            return;
+        }
     };
 
-    let path = settings_path(appdata);
+    if let Err(e) = tokio::fs::write(&temp_path, &json).await {
+        tracing::error!("Failed to write settings to temp file: {}", e);
+        return;
+    }
 
-    Some(
-        Task::future(async move {
-            let temp_path = path.with_extension(format!("json.{}.{}.tmp", pid, unique_id));
-
-            if let Err(e) = tokio::fs::create_dir_all(path.parent().unwrap()).await {
-                tracing::error!("Failed to create settings directory: {}", e);
-                return;
-            }
-
-            let json = match serde_json::to_string_pretty(&settings) {
-                Ok(json) => json,
-                Err(e) => {
-                    tracing::error!("Failed to serialize settings: {}", e);
-                    return;
-                }
-            };
-
-            // Write to temporary file first (unique per save operation)
-            if let Err(e) = tokio::fs::write(&temp_path, &json).await {
-                tracing::error!("Failed to write settings to temp file: {}", e);
-                return;
-            }
-
-            // Atomically rename temp file to actual settings file
-            if let Err(e) = tokio::fs::rename(&temp_path, &path).await {
-                tracing::error!("Failed to rename temp settings file: {}", e);
-                let _ = tokio::fs::remove_file(&temp_path).await;
-            }
-        })
-        .discard(),
-    )
+    if let Err(e) = tokio::fs::rename(&temp_path, path).await {
+        tracing::error!("Failed to rename temp settings file: {}", e);
+        let _ = tokio::fs::remove_file(&temp_path).await;
+    }
 }
 
 /// Loads settings synchronously from disk before the GUI initializes.
@@ -169,14 +169,13 @@ fn save<M: Send + 'static>(settings: &Settings) -> Option<Task<M>> {
 /// Returns the settings to use and the settings file. Without a usable settings file, the
 /// defaults are used and nothing is written until a setting is changed.
 pub fn load() -> (Settings, SettingsFile) {
-    let defaults = || (Settings::default(), SettingsFile::new(Settings::default()));
-
     let Some(appdata) = raxis::get_local_app_data() else {
-        tracing::warn!("Could not determine local app data path, using default settings");
-        return defaults();
+        tracing::warn!("Could not determine local app data path, using default settings that won't be saved");
+        return (Settings::default(), SettingsFile::new(None, Settings::default()));
     };
 
     let path = settings_path(appdata);
+    let defaults = || (Settings::default(), SettingsFile::new(Some(path.clone()), Settings::default()));
 
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
@@ -197,7 +196,7 @@ pub fn load() -> (Settings, SettingsFile) {
             return defaults();
         }
     };
-    let file = SettingsFile::new(settings.clone());
+    let file = SettingsFile::new(Some(path.clone()), settings.clone());
 
     // Reconcile run_on_start setting with registry state.
     // e.g. user moves the exe after enabling/disabling run on start — in case
