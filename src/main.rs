@@ -1,5 +1,4 @@
 #![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
-#![allow(unused)]
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -20,13 +19,16 @@ mod update;
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
 mod elevation;
 
+#[cfg(feature = "gui")]
+mod worker;
+
 mod accounts;
 mod capture;
 mod cli;
 mod logging;
+#[cfg(feature = "gui")]
 mod scopefns;
 mod session;
-mod worker;
 
 // The GUI reads the log buffer to display it
 #[cfg(feature = "gui")]
