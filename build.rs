@@ -11,7 +11,8 @@ use reliquary::resource::{ResourceMap, TextMapEntry};
 use ureq::serde::Serialize;
 use ureq::serde::de::DeserializeOwned;
 
-const API_RESOURCE_URL: &str = "https://gitlab.com/api/v4/projects/Dimbreath%2Fturnbasedgamedata/repository/files";
+const GITLAB_FILES_API_PATH: &str = "projects/Dimbreath%2Fturnbasedgamedata/repository/files";
+const GITHUB_RAW_URL: &str = "https://raw.githubusercontent.com/DimbreathBot/TurnBasedGameData/main";
 
 macro_rules! download_config {
     ($t:ty, $ex:expr, [$($url:expr),+ $(,)?]) => {
@@ -34,11 +35,11 @@ macro_rules! download_config {
     };
 
     ($t:ty, $ex:expr) => {
-        download_config!($t, $ex, [&resource_url::<$t>()]);
+        download_config!($t, $ex, [&resource_path::<$t>()]);
     };
 
     ($t:ty) => {
-        download_config!($t, |_| {}, [&resource_url::<$t>()]);
+        download_config!($t, |_| {}, [&resource_path::<$t>()]);
     };
 }
 
@@ -56,7 +57,7 @@ macro_rules! download_config_and_store_text_hashes {
     };
 
     ($t:ty, $field:ident, $hashes:ident) => {
-        download_config_and_store_text_hashes!($t, $field, $hashes, [&resource_url::<$t>()]);
+        download_config_and_store_text_hashes!($t, $field, $hashes, [&resource_path::<$t>()]);
     };
 }
 
@@ -81,16 +82,16 @@ fn main() {
     let mut text_hashes: HashSet<TextMapEntry> = HashSet::new();
 
     download_config_and_store_text_hashes!(AvatarConfigMap, AvatarName, text_hashes, [
-        &resource_url::<AvatarConfigMap>(),
-        &resource_url_of("AvatarConfigLD.json"),
+        &resource_path::<AvatarConfigMap>(),
+        &resource_path_of("AvatarConfigLD.json"),
     ]);
     download_config_and_store_text_hashes!(EquipmentConfigMap, EquipmentName, text_hashes);
     download_config_and_store_text_hashes!(RelicSetConfigMap, SetName, text_hashes);
     download_config_and_store_partial_text_hashes!(ItemConfigMap, ItemName, text_hashes);
 
     download_config!(AvatarSkillTreeConfigMap, [
-        &resource_url::<AvatarSkillTreeConfigMap>(),
-        &resource_url_of("AvatarSkillTreeConfigLD.json"),
+        &resource_path::<AvatarSkillTreeConfigMap>(),
+        &resource_path_of("AvatarSkillTreeConfigLD.json"),
     ]);
     download_config!(MultiplePathAvatarConfigMap);
     download_config!(RelicConfigMap);
@@ -112,9 +113,7 @@ fn save_text_map(hashes: &HashSet<TextMapEntry>, language: &str) {
 
     let file_name = format!("TextMap{language}.json");
 
-    let encoded_path = format!("TextMap%2F{file_name}");
-    let text_map_url = format!("{API_RESOURCE_URL}/{encoded_path}/raw?ref=main");
-    let text_map: HashMap<String, String> = download_as_json::<HashMap<String, String>>(&text_map_url)
+    let text_map: HashMap<String, String> = download_as_json::<HashMap<String, String>>(&format!("TextMap/{file_name}"))
         .into_iter()
         .filter(|(k, _)| hashes.contains(k))
         .collect();
@@ -122,51 +121,84 @@ fn save_text_map(hashes: &HashSet<TextMapEntry>, language: &str) {
     write_to_out(text_map, &file_name);
 }
 
-fn resource_url<T: ResourceMap>() -> String {
-    resource_url_of(T::get_json_name())
+fn resource_path<T: ResourceMap>() -> String {
+    resource_path_of(T::get_json_name())
 }
 
-fn resource_url_of(name: &str) -> String {
-    let encoded_path = format!("ExcelOutput%2F{name}");
-    format!("{API_RESOURCE_URL}/{encoded_path}/raw?ref=main")
+fn resource_path_of(name: &str) -> String {
+    format!("ExcelOutput/{name}")
 }
 
-fn download_as_json<T: DeserializeOwned>(url: &str) -> T {
-    // Try glab CLI first (authenticated, avoids rate limits), fall back to ureq
-    if let Some(data) = download_with_glab(url) {
-        return ureq::serde_json::from_str(&data)
-            .unwrap_or_else(|e| panic!("Failed to parse json from {url}: {e}"));
+/// Downloads a file from the game data repo, given its path within the repo.
+///
+/// Tries GitLab through glab (authenticated, avoids rate limits), then GitLab
+/// unauthenticated, then the GitHub mirror.
+fn download_as_json<T: DeserializeOwned>(path: &str) -> T {
+    let gitlab_api_path = format!("{GITLAB_FILES_API_PATH}/{}/raw?ref=main", path.replace('/', "%2F"));
+
+    if let Some(value) = download_with_glab(&gitlab_api_path) {
+        return value;
     }
 
-    ureq::get(url)
-        .call()
-        .unwrap_or_else(|e| panic!("Failed to download {url}: {e}"))
-        .into_json()
-        .unwrap_or_else(|_| panic!("Failed to read json from url: {}", url))
+    let urls = [
+        format!("https://gitlab.com/api/v4/{gitlab_api_path}"),
+        format!("{GITHUB_RAW_URL}/{path}"),
+    ];
+    let mut errors = Vec::new();
+    for url in &urls {
+        match download_with_ureq(url) {
+            Ok(value) => return value,
+            Err(e) => {
+                println!("cargo:warning=failed to download {url}: {e}");
+                errors.push(format!("{url}: {e}"));
+            }
+        }
+    }
+
+    panic!("Failed to download {path} from any source:\n{}", errors.join("\n"));
 }
 
-fn download_with_glab(url: &str) -> Option<String> {
-    let api_path = url.strip_prefix("https://gitlab.com/api/v4/")?;
+fn download_with_ureq<T: DeserializeOwned>(url: &str) -> Result<T, String> {
+    ureq::get(url)
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_json()
+        .map_err(|e| format!("invalid json: {e}"))
+}
+
+fn download_with_glab<T: DeserializeOwned>(api_path: &str) -> Option<T> {
     if !glab_available() {
         return None;
     }
 
     // --hostname, since glab would otherwise use this repo's (GitHub) remote
-    let output = match std::process::Command::new("glab").args(["api", "--hostname", "gitlab.com", api_path]).output() {
+    let output = match std::process::Command::new("glab")
+        .args(["api", "--hostname", "gitlab.com", api_path])
+        .output()
+    {
         Ok(output) => output,
         Err(e) => {
-            println!("cargo:warning=glab failed to run ({e}), downloading {url} unauthenticated");
+            println!("cargo:warning=glab failed to run ({e}), downloading {api_path} unauthenticated");
             return None;
         }
     };
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        println!("cargo:warning=glab api failed ({}), downloading {url} unauthenticated", stderr.trim());
+        println!(
+            "cargo:warning=glab api failed ({}), downloading {api_path} unauthenticated",
+            stderr.trim()
+        );
         return None;
     }
 
-    String::from_utf8(output.stdout).ok()
+    match ureq::serde_json::from_slice(&output.stdout) {
+        Ok(value) => Some(value),
+        Err(e) => {
+            println!("cargo:warning=glab returned invalid json ({e}), downloading {api_path} unauthenticated");
+            None
+        }
+    }
 }
 
 fn glab_available() -> bool {
