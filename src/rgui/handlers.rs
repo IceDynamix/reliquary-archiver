@@ -14,6 +14,7 @@ use tracing::info;
 
 use crate::capture::SourceSpec;
 use crate::logging;
+use crate::rgui::components::update::{self, UpdateMessage};
 use crate::rgui::messages::{AccountMessage, ExportMessage, LogMessage, RootMessage, WebSocketMessage, WebSocketStatus, WindowMessage};
 use crate::rgui::state::{AccountInfo, ExportStats, FileContainer, FileExtensions, RootState};
 use crate::rgui::worker::WorkerEvent;
@@ -144,9 +145,7 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
         }
 
         WebSocketMessage::SendPort(port) => {
-            if let Some(ref sender) = state.ws_port_sender {
-                let _ = sender.send(PortCommand::Open(port));
-            }
+            state.ws_port_sender.send(PortCommand::Open(port)).ok();
 
             // Modify settings but don't save yet to minimize odds of saving on a bad port
             state.store.settings.ws_port = port;
@@ -154,9 +153,7 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
         }
 
         WebSocketMessage::Close => {
-            if let Some(ref sender) = state.ws_port_sender {
-                let _ = sender.send(PortCommand::Close);
-            }
+            state.ws_port_sender.send(PortCommand::Close).ok();
             None
         }
 
@@ -340,4 +337,27 @@ fn handle_session_event(state: &mut RootState, event: SessionEvent) {
         // Logins reach the GUI through the account manager, as WorkerEvent::AccountLoggedIn
         SessionEvent::AccountSeen { .. } | SessionEvent::LoginFinished => {}
     }
+}
+
+// ============================================================================
+// Update Message Handler
+// ============================================================================
+
+/// Handles update checker messages.
+///
+/// Closes the WebSocket server when the user confirms an update, and exits once the update is ready to restart.
+pub fn handle_update_message(state: &mut RootState, message: UpdateMessage) -> Option<Task<RootMessage>> {
+    let close_websocket = if matches!(message, UpdateMessage::Confirm) {
+        Task::done(RootMessage::WebSocket(WebSocketMessage::Close))
+    } else {
+        Task::none()
+    };
+
+    let update_task = match update::handle_message(message, &mut state.store.update_state, state.store.settings.always_update) {
+        update::HandleResult::None => Task::none(),
+        update::HandleResult::Task(update_task) => update_task.map(RootMessage::Update),
+        update::HandleResult::ExitForRestart => return Some(task::exit_application()),
+    };
+
+    Some(close_websocket.chain(update_task))
 }
