@@ -253,77 +253,83 @@ impl OptimizerExporter {
         self.database.equipment_config.get(&item_id).is_some()
     }
 
+    /// The star rating of a light cone or character that can be pulled from a banner
+    fn gacha_item_grade(&self, item_id: u32) -> Option<u32> {
+        let rarity = if let Some(lc_config) = self.database.equipment_config.get(&item_id) {
+            &lc_config.Rarity
+        } else {
+            &self.database.avatar_config.get(&item_id)?.Rarity
+        };
+
+        match rarity.as_str() {
+            "CombatPowerLightconeRarity5" | "CombatPowerAvatarRarityType5" => Some(5),
+            "CombatPowerLightconeRarity4" | "CombatPowerAvatarRarityType4" => Some(4),
+            "CombatPowerLightconeRarity3" => Some(3),
+            _ => None,
+        }
+    }
+
     pub fn handle_gacha_info(&mut self, gacha_info: GetGachaInfoScRsp) {
         for banner in gacha_info.gacha_info_list {
-            self.banners.insert(banner.gacha_id, BannerInfo {
-                rate_up_item_list: banner.item_detail_list,
-                banner_type: match banner.gacha_id {
-                    1001 => BannerType::Standard,
-                    _ => {
-                        if self.is_lightcone(*banner.prize_item_list.first().unwrap()) {
-                            BannerType::LightCone
-                        } else {
-                            BannerType::Character
-                        }
-                    }
+            let banner_type = match banner.gacha_id {
+                1001 => BannerType::Standard,
+                _ if banner.prize_item_list.first().is_some_and(|item_id| self.is_lightcone(*item_id)) => BannerType::LightCone,
+                _ => BannerType::Character,
+            };
+
+            self.banners.insert(
+                banner.gacha_id,
+                BannerInfo {
+                    rate_up_item_list: banner.item_detail_list,
+                    banner_type,
                 },
-            });
+            );
         }
     }
 
     pub fn handle_gacha(&mut self, gacha: DoGachaScRsp) -> Option<OptimizerEvent> {
-        if let Some(banner) = self.banners.get(&gacha.gacha_id) {
-            let mut gacha_result = GachaResult {
-                banner_id: gacha.gacha_id,
-                banner_type: banner.banner_type,
-                pity_4: PityUpdate::AddPity { amount: 0 },
-                pity_5: PityUpdate::AddPity { amount: 0 },
-                pull_results: Vec::new(),
+        let Some(banner) = self.banners.get(&gacha.gacha_id) else {
+            warn!(gacha_id = &gacha.gacha_id, "gacha info not found");
+            return None;
+        };
+
+        let mut gacha_result = GachaResult {
+            banner_id: gacha.gacha_id,
+            banner_type: banner.banner_type,
+            pity_4: PityUpdate::AddPity { amount: 0 },
+            pity_5: PityUpdate::AddPity { amount: 0 },
+            pull_results: Vec::new(),
+        };
+
+        for item in gacha.gacha_item_list {
+            let item_id = item.gacha_item.item_id;
+            gacha_result.pull_results.push(item_id);
+
+            // Guessing the rarity would report a wrong pity, which is worse than not reporting the pull
+            let Some(grade) = self.gacha_item_grade(item_id) else {
+                warn!(item_id, "pulled an item of unknown rarity, skipping gacha result");
+                return None;
             };
 
-            for item in gacha.gacha_item_list {
-                gacha_result.pull_results.push(item.gacha_item.item_id);
+            let was_rate_up = banner.rate_up_item_list.contains(&item_id);
+            let next_is_guarantee = !was_rate_up;
 
-                let grade = if let Some(lc_config) = self.database.equipment_config.get(&item.gacha_item.item_id) {
-                    match lc_config.Rarity.as_str() {
-                        "CombatPowerLightconeRarity5" => 5,
-                        "CombatPowerLightconeRarity4" => 4,
-                        "CombatPowerLightconeRarity3" => 3,
-                        _ => panic!("Unknown light cone rarity: {}", lc_config.Rarity),
-                    }
-                } else if let Some(avatar_config) = self.database.avatar_config.get(&item.gacha_item.item_id) {
-                    match avatar_config.Rarity.as_str() {
-                        "CombatPowerAvatarRarityType5" => 5,
-                        "CombatPowerAvatarRarityType4" => 4,
-                        _ => panic!("Unknown avatar rarity: {}", avatar_config.Rarity),
-                    }
-                } else {
-                    panic!("item not found: {}", item.gacha_item.item_id);
-                };
-
-                let was_rate_up = banner.rate_up_item_list.contains(&item.gacha_item.item_id);
-                let next_is_guarantee = !was_rate_up;
-
-                match grade {
-                    5 => {
-                        gacha_result.pity_4.increment();
-                        gacha_result.pity_5.reset(next_is_guarantee);
-                    }
-                    4 => {
-                        gacha_result.pity_4.reset(next_is_guarantee);
-                        gacha_result.pity_5.increment();
-                    }
-                    _ => {
-                        gacha_result.pity_4.increment();
-                        gacha_result.pity_5.increment();
-                    }
+            match grade {
+                5 => {
+                    gacha_result.pity_4.increment();
+                    gacha_result.pity_5.reset(next_is_guarantee);
+                }
+                4 => {
+                    gacha_result.pity_4.reset(next_is_guarantee);
+                    gacha_result.pity_5.increment();
+                }
+                _ => {
+                    gacha_result.pity_4.increment();
+                    gacha_result.pity_5.increment();
                 }
             }
-
-            Some(OptimizerEvent::GachaResult(gacha_result))
-        } else {
-            warn!(gacha_id = &gacha.gacha_id, "gacha info not found");
-            None
         }
+
+        Some(OptimizerEvent::GachaResult(gacha_result))
     }
 }

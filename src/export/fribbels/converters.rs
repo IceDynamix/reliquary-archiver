@@ -36,10 +36,10 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
 
     let set_id = relic_config.SetID;
     let set_config = db.relic_set_config.get(&set_id)?;
-    let main_affix_config = db
-        .relic_main_affix_config
-        .get(&relic_config.MainAffixGroup, &proto.main_affix_id)
-        .unwrap();
+    let Some(main_affix_config) = db.relic_main_affix_config.get(&relic_config.MainAffixGroup, &proto.main_affix_id) else {
+        warn!(main_affix_id = proto.main_affix_id, "unknown main affix, skipping relic");
+        return None;
+    };
 
     let id = proto.unique_id;
     let level = proto.level;
@@ -51,9 +51,9 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
         .map(|s| s.to_string())
         .unwrap_or("".to_string());
 
-    let slot = slot_type_to_export(&relic_config.Type);
+    let slot = slot_type_to_export(&relic_config.Type)?;
     let rarity = relic_config.MaxLevel / 3;
-    let mainstat = main_stat_to_export(&main_affix_config.Property).to_string();
+    let mainstat = main_stat_to_export(&main_affix_config.Property)?.to_string();
     let location = format_location(proto.equip_avatar_id);
 
     debug!(rarity, set_name, slot, slot, mainstat, location, "detected");
@@ -109,7 +109,7 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
 #[tracing::instrument(name = "substat", skip_all)]
 pub fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Substat> {
     let cfg = db.relic_sub_affix_config.get(&rarity, &substat.affix_id)?;
-    let key = sub_stat_to_export(&cfg.Property).to_string();
+    let key = sub_stat_to_export(&cfg.Property)?.to_string();
 
     let mut value = substat.cnt as f32 * *cfg.BaseValue + substat.step as f32 * *cfg.StepValue;
 
