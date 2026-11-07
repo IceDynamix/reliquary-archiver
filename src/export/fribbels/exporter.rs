@@ -1,14 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
-use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
-use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
-use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
-use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
-use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
-use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
-use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
-use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
 use reliquary::network::command::{GameCommand, command_id};
 #[cfg(feature = "stream")]
 use tokio::sync::broadcast;
@@ -118,6 +110,14 @@ impl OptimizerExporter {
     }
 }
 
+/// Parses the payload of a command, logging if it doesn't have the expected shape
+fn parse<T: protobuf::Message>(command: &GameCommand, description: &str) -> Option<T> {
+    command
+        .parse_proto()
+        .inspect_err(|error| warn!(%error, "could not parse {description} command"))
+        .ok()
+}
+
 impl Exporter for OptimizerExporter {
     type Export = Export;
 
@@ -131,93 +131,51 @@ impl Exporter for OptimizerExporter {
                 self.reset();
 
                 debug!("detected uid");
-                let cmd = command.parse_proto::<PlayerGetTokenScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_token(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse token command");
-                    }
+                if let Some(cmd) = parse(&command, "token") {
+                    self.handle_token(cmd);
                 }
             }
             command_id::PlayerLoginScRsp => {
                 debug!("detected login info packet");
-                let cmd = command.parse_proto::<PlayerLoginScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_login(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse login info data command");
-                    }
+                if let Some(cmd) = parse(&command, "login info data") {
+                    self.handle_login(cmd);
                 }
             }
             command_id::GetBagScRsp => {
                 debug!("detected inventory packet");
-                let cmd = command.parse_proto::<GetBagScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_inventory(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse inventory data command");
-                    }
+                if let Some(cmd) = parse(&command, "inventory data") {
+                    self.handle_inventory(cmd);
                 }
             }
             command_id::GetAvatarDataScRsp => {
                 debug!("detected character packet");
-                let cmd = command.parse_proto::<GetAvatarDataScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_characters(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse character data command");
-                    }
+                if let Some(cmd) = parse(&command, "character data") {
+                    self.handle_characters(cmd);
                 }
             }
             command_id::SetAvatarEnhancedIdScRsp => {
                 debug!("detected set avatar enhanced packet");
-                let cmd = command.parse_proto::<SetAvatarEnhancedIdScRsp>();
-                match cmd {
-                    Ok(cmd) => {
-                        let event = self.handle_set_avatar_enhanced(cmd);
-                        self.emit_event(event);
-                    }
-                    Err(error) => {
-                        warn!(%error, "could not parse set avatar enhanced data command");
-                    }
+                if let Some(event) = parse(&command, "set avatar enhanced data").and_then(|cmd| self.handle_set_avatar_enhanced(cmd)) {
+                    self.emit_event(event);
                 }
             }
             command_id::GetGachaInfoScRsp => {
                 debug!("detected gacha info packet");
-                let cmd = command.parse_proto::<GetGachaInfoScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_gacha_info(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse gacha info data command");
-                    }
+                if let Some(cmd) = parse(&command, "gacha info data") {
+                    self.handle_gacha_info(cmd);
                 }
             }
             command_id::DoGachaScRsp => {
                 debug!("detected gacha packet");
-                let cmd = command.parse_proto::<DoGachaScRsp>();
-                match cmd {
-                    Ok(cmd) => {
-                        if let Some(event) = self.handle_gacha(cmd) {
-                            self.emit_event(event);
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, "could not parse gacha data command");
-                    }
+                if let Some(event) = parse(&command, "gacha data").and_then(|cmd| self.handle_gacha(cmd)) {
+                    self.emit_event(event);
                 }
             }
             command_id::PlayerSyncScNotify => {
                 debug!("detected player sync packet");
-                let cmd = command.parse_proto::<PlayerSyncScNotify>();
-                match cmd {
-                    Ok(cmd) => {
-                        let events = self.handle_player_sync(cmd);
-                        for event in events {
-                            self.emit_event(event);
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, "could not parse player sync data command");
+                if let Some(cmd) = parse(&command, "player sync data") {
+                    for event in self.handle_player_sync(cmd) {
+                        self.emit_event(event);
                     }
                 }
             }

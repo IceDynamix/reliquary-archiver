@@ -1,12 +1,15 @@
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::AvatarPathData::AvatarPathData;
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
+use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
 use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
+use reliquary::network::command::proto::Material::Material as ProtoMaterial;
 use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
+use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
 use tracing::{debug, info, warn};
 
@@ -24,35 +27,40 @@ impl OptimizerExporter {
         self.gacha.stellar_jade = login.basic_info.stellar_jade_count;
     }
 
-    pub fn handle_inventory(&mut self, bag: GetBagScRsp) {
-        let relics: Vec<Relic> = bag.relic_list.iter().filter_map(|r| export_proto_relic(self.database, r)).collect();
-
-        info!(num = relics.len(), "found relics");
+    /// Converts the items and stores them, returning what was stored
+    fn ingest_items(
+        &mut self,
+        relics: &[ProtoRelic],
+        light_cones: &[ProtoLightCone],
+        materials: &[ProtoMaterial],
+    ) -> (Vec<Relic>, Vec<LightCone>, Vec<Material>) {
+        let relics: Vec<Relic> = relics.iter().filter_map(|r| export_proto_relic(self.database, r)).collect();
         for relic in &relics {
             self.relics.insert(relic._uid, relic.clone());
         }
 
-        let light_cones: Vec<LightCone> = bag
-            .equipment_list
+        let light_cones: Vec<LightCone> = light_cones
             .iter()
             .filter_map(|equip| export_proto_light_cone(self.database, equip))
             .collect();
+        for light_cone in &light_cones {
+            self.light_cones.insert(light_cone._uid, light_cone.clone());
+        }
 
+        let materials: Vec<Material> = materials.iter().filter_map(|m| export_proto_material(self.database, m)).collect();
+        for material in &materials {
+            self.materials.insert(material.id, material.clone());
+        }
+
+        (relics, light_cones, materials)
+    }
+
+    pub fn handle_inventory(&mut self, bag: GetBagScRsp) {
+        let (relics, light_cones, materials) = self.ingest_items(&bag.relic_list, &bag.equipment_list, &bag.material_list);
+
+        info!(num = relics.len(), "found relics");
         info!(num = light_cones.len(), "found light cones");
-        for light_cone in light_cones {
-            self.light_cones.insert(light_cone._uid, light_cone);
-        }
-
-        let materials: Vec<Material> = bag
-            .material_list
-            .iter()
-            .filter_map(|m| export_proto_material(self.database, m))
-            .collect();
-
         info!(num = materials.len(), "found materials");
-        for material in materials {
-            self.materials.insert(material.id, material);
-        }
     }
 
     pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) {
@@ -132,48 +140,20 @@ impl OptimizerExporter {
     pub fn handle_player_sync(&mut self, sync: PlayerSyncScNotify) -> Vec<OptimizerEvent> {
         let mut events = Vec::new();
 
-        let relics: Vec<Relic> = sync
-            .relic_list
-            .iter()
-            .filter_map(|r| export_proto_relic(self.database, r))
-            .collect();
+        let (relics, light_cones, materials) = self.ingest_items(&sync.relic_list, &sync.equipment_list, &sync.material_list);
 
         if !relics.is_empty() {
             info!(num = relics.len(), "found updated relics");
-            for relic in relics.clone() {
-                self.relics.insert(relic._uid, relic);
-            }
-
             events.push(OptimizerEvent::UpdateRelics(relics));
         }
 
-        let light_cones: Vec<LightCone> = sync
-            .equipment_list
-            .iter()
-            .filter_map(|equip| export_proto_light_cone(self.database, equip))
-            .collect();
-
         if !light_cones.is_empty() {
             info!(num = light_cones.len(), "found updated light cones");
-            for light_cone in light_cones.clone() {
-                self.light_cones.insert(light_cone._uid, light_cone);
-            }
-
             events.push(OptimizerEvent::UpdateLightCones(light_cones));
         }
 
-        let materials: Vec<Material> = sync
-            .material_list
-            .iter()
-            .filter_map(|m| export_proto_material(self.database, m))
-            .collect();
-
         if !materials.is_empty() {
             info!(num = materials.len(), "found updated materials");
-            for material in materials.clone() {
-                self.materials.insert(material.id, material);
-            }
-
             events.push(OptimizerEvent::UpdateMaterials(materials));
         }
 
@@ -213,13 +193,11 @@ impl OptimizerExporter {
                 self.ingest_character(&avatar)
             }
 
-            if !avatar_sync.avatar_path_data_info_list.is_empty() {
-                for multipath_avatar_info in avatar_sync.avatar_path_data_info_list {
-                    if let Some(character) = self.ingest_multipath_character(&multipath_avatar_info) {
-                        updated_characters.push(character);
-                    } else {
-                        warn!(uid = &multipath_avatar_info.avatar_id, "multipath character not resolved");
-                    }
+            for multipath_avatar_info in avatar_sync.avatar_path_data_info_list {
+                if let Some(character) = self.ingest_multipath_character(&multipath_avatar_info) {
+                    updated_characters.push(character);
+                } else {
+                    warn!(uid = &multipath_avatar_info.avatar_id, "multipath character not resolved");
                 }
             }
         }
@@ -232,18 +210,18 @@ impl OptimizerExporter {
         events
     }
 
-    pub fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> OptimizerEvent {
+    pub fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> Option<OptimizerEvent> {
         let Some(character) = self.characters.get_mut(&set_avatar_enhanced.growth_avatar_id) else {
             warn!(
                 uid = &set_avatar_enhanced.growth_avatar_id,
                 "character not found when setting enhanced id, skipping"
             );
-            return OptimizerEvent::UpdateCharacters(vec![]);
+            return None;
         };
 
         character.ability_version = set_avatar_enhanced.skilltree_version;
 
-        OptimizerEvent::UpdateCharacters(vec![character.clone()])
+        Some(OptimizerEvent::UpdateCharacters(vec![character.clone()]))
     }
 
     fn is_lightcone(&self, item_id: u32) -> bool {
