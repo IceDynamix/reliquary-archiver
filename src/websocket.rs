@@ -1,6 +1,5 @@
 use std::error::Error;
 use std::io;
-use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
@@ -11,7 +10,7 @@ use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use futures::stream::{SplitSink, Stream, StreamExt};
 use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::fribbels::{OptimizerEvent, OptimizerExporter};
+use reliquary_archiver::export::fribbels::OptimizerEvent;
 use serde::Serialize;
 use tokio::sync::watch;
 use tokio::task::AbortHandle;
@@ -68,9 +67,11 @@ impl WebSocketServerState {
 
 pub enum PortSource {
     Fixed(u16),
+    #[cfg(feature = "gui")]
     Dynamic(WatchStream<PortCommand>),
 }
 
+#[cfg(feature = "gui")]
 #[derive(Clone)]
 pub enum PortCommand {
     Open(u16),
@@ -78,12 +79,13 @@ pub enum PortCommand {
 }
 
 pub async fn start_websocket_server(
-    mut port_source: PortSource,
+    #[cfg_attr(not(feature = "gui"), allow(unused_mut))] mut port_source: PortSource,
     manager: Arc<Mutex<MultiAccountManager>>,
     selected_account_rx: watch::Receiver<Option<u32>>,
 ) -> Result<(impl Stream<Item = Result<u16, String>>, impl Stream<Item = usize>), String> {
     let initial_port = match port_source {
         PortSource::Fixed(ref port) => *port,
+        #[cfg(feature = "gui")]
         PortSource::Dynamic(_) => 0,
     };
 
@@ -105,8 +107,11 @@ pub async fn start_websocket_server(
 
     tokio::spawn(async move {
         loop {
+            // Without the gui feature there is only a single kind of port source
+            #[cfg_attr(not(feature = "gui"), allow(clippy::infallible_destructuring_match))]
             let port = match port_source {
                 PortSource::Fixed(port) => port,
+                #[cfg(feature = "gui")]
                 PortSource::Dynamic(ref mut stream) => match stream.next().await {
                     None => break,
                     Some(PortCommand::Close) => {
@@ -144,10 +149,10 @@ pub async fn start_websocket_server(
                         .abort_handle(),
                         port,
                     );
-                    port_tx.send(Ok(port));
+                    port_tx.send(Ok(port)).ok();
                 }
                 Err(e) => {
-                    port_tx.send(Err(e));
+                    port_tx.send(Err(e)).ok();
                 }
             }
 
@@ -210,7 +215,7 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
                             break;
                         }
                     }
-                    AccountEvent::Discovered { uid } | AccountEvent::Reconnected { uid } => {
+                    AccountEvent::Discovered { .. } | AccountEvent::Reconnected { .. } => {
                         // No-op, if the account is selected, the exporter will send the initial state on selection change.
                         // Or for the automatic initial export after exporter initialization.
                     }
