@@ -19,12 +19,14 @@ use crate::rgui::components::update::{UpdateState, update_modal};
 use crate::rgui::kit::icons::{cog_icon, discord_button, github_button};
 use crate::rgui::kit::togglegroup::{ToggleOption, togglegroup};
 use crate::rgui::messages::{LogMessage, RootMessage, WebSocketStatus, WindowMessage};
-use crate::rgui::state::{ImageFit, RootState, Screen};
+use crate::rgui::scopefns::Also;
+use crate::rgui::screens;
+use crate::rgui::settings::ImageFit;
+use crate::rgui::state::RootState;
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, DANGER_COLOR, PAD_LG, PAD_MD, PAD_SM, SCROLLBAR_THUMB_COLOR,
     SCROLLBAR_TRACK_COLOR, SPACE_MD, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED, maybe_text_shadow,
 };
-use crate::scopefns::Also;
 
 /// Main view function that renders the entire application UI.
 ///
@@ -96,9 +98,11 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     .as_element()
     .with_id(w_id!());
 
-    let content = match &state.screen {
-        Screen::Waiting(screen) => screen.view(&state.store, hook),
-        Screen::Active(screen) => screen.view(&state.store, hook),
+    // Show the capture once game data is coming in
+    let content = if state.store.connection_stats.connection_active {
+        screens::active::view(&state.store, hook)
+    } else {
+        screens::waiting::view(&state.store, hook)
     };
 
     let connection_status_text = if state.store.connection_stats.connected {

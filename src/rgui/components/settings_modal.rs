@@ -26,13 +26,13 @@ use raxis::{HookManager, column, row, use_animation, w_id};
 use tracing::info;
 
 use crate::rgui::components::update::UpdateMessage;
-use crate::rgui::handlers::save_settings;
 use crate::rgui::kit::icons::x_icon;
 use crate::rgui::kit::modal::{ModalConfig, ModalPosition, modal_backdrop};
 use crate::rgui::kit::togglegroup::{ToggleGroupConfig, ToggleOption, togglegroup};
 use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketMessage, WebSocketStatus, WindowMessage};
 use crate::rgui::run_on_start::{RegistryError, set_run_on_start};
-use crate::rgui::state::{ImageFit, RootState};
+use crate::rgui::settings::ImageFit;
+use crate::rgui::state::RootState;
 use crate::rgui::theme::{
     BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, OPAQUE_CARD_BACKGROUND, PAD_LG, PAD_MD, PAD_SM, PRIMARY_COLOR, SCROLLBAR_THUMB_COLOR,
     SCROLLBAR_TRACK_COLOR, SPACE_LG, SPACE_SM, TEXT_COLOR, TEXT_MUTED,
@@ -150,6 +150,37 @@ fn websocket_settings_section(state: &RootState, hook: &mut HookManager<RootMess
         row![column![header, text_input,], spacer(), button].with_width(Sizing::grow()),
         explainer_text
     ]
+    .with_width(Sizing::grow())
+}
+
+/// Renders an on/off setting with its label and a description underneath.
+///
+/// `id` identifies the toggle's state and has to be unique per row (use `w_id!()` at the callsite).
+fn toggle_row(
+    id: u64,
+    label: &'static str,
+    description: &'static str,
+    enabled: bool,
+    on_toggle: fn(bool) -> SettingsMessage,
+) -> Element<RootMessage> {
+    let toggle = Toggle::new(enabled)
+        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
+        .with_toggle_handler(move |enabled, _, shell| {
+            shell.publish(RootMessage::Settings(on_toggle(enabled)));
+        })
+        .as_element(id);
+
+    column![
+        row![
+            Text::new(label).with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
+            spacer(),
+            toggle
+        ]
+        .with_width(Sizing::grow())
+        .with_cross_align_items(Alignment::Center),
+        Text::new(description).with_font_size(11.0).with_color(TEXT_MUTED).as_element(),
+    ]
+    .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow())
 }
 
@@ -340,29 +371,13 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
     .with_child_gap(SPACE_SM)
     .with_width(Sizing::grow());
 
-    // Text shadow section
-    let text_shadow_toggle = Toggle::new(state.store.settings.text_shadow_enabled)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::TextShadowToggled(enabled)));
-        })
-        .as_element(w_id!());
-
-    let text_shadow_section = column![
-        row![
-            Text::new("Text Shadow").with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
-            spacer(),
-            text_shadow_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("Add a text-shadow to text for better readability")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
+    let text_shadow_section = toggle_row(
+        w_id!(),
+        "Text Shadow",
+        "Add a text-shadow to text for better readability",
+        state.store.settings.text_shadow_enabled,
+        SettingsMessage::TextShadowToggled,
+    );
 
     let update_check_button = Button::new()
         .with_click_handler(|_, s| {
@@ -383,134 +398,45 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
         .with_height(Sizing::grow())
         .with_border_radius(BORDER_RADIUS);
 
-    let update_unprompted_toggle = Toggle::new(state.store.settings.always_update)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::AlwaysUpdateToggled(enabled)));
-        })
-        .as_element(w_id!());
+    let update_unprompted_section = toggle_row(
+        w_id!(),
+        "Update Automatically",
+        "When an update is available, update automatically without waiting for confirmation",
+        state.store.settings.always_update,
+        SettingsMessage::AlwaysUpdateToggled,
+    );
 
-    let update_unprompted_section = column![
-        row![
-            Text::new("Update Automatically")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            update_unprompted_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("When an update is available, update automatically without waiting for confirmation")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
+    let minimize_on_close_section = toggle_row(
+        w_id!(),
+        "Minimize to Tray on Close",
+        "Hide to system tray instead of closing when clicking the X button",
+        state.store.settings.minimize_to_tray_on_close,
+        SettingsMessage::MinimizeToTrayOnCloseToggled,
+    );
 
-    // Minimize to tray on close section
-    let minimize_on_close_toggle = Toggle::new(state.store.settings.minimize_to_tray_on_close)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::MinimizeToTrayOnCloseToggled(enabled)));
-        })
-        .as_element(w_id!());
+    let minimize_on_minimize_section = toggle_row(
+        w_id!(),
+        "Minimize to Tray on Minimize",
+        "Hide to system tray instead of taskbar when minimizing",
+        state.store.settings.minimize_to_tray_on_minimize,
+        SettingsMessage::MinimizeToTrayOnMinimizeToggled,
+    );
 
-    let minimize_on_close_section = column![
-        row![
-            Text::new("Minimize to Tray on Close")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            minimize_on_close_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("Hide to system tray instead of closing when clicking the X button")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
+    let run_on_start_section = toggle_row(
+        w_id!(),
+        "Run on startup",
+        "Run automatically when your computer starts",
+        state.store.settings.run_on_start,
+        SettingsMessage::RunOnStartToggled,
+    );
 
-    // Minimize to tray on minimize section
-    let minimize_on_minimize_toggle = Toggle::new(state.store.settings.minimize_to_tray_on_minimize)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::MinimizeToTrayOnMinimizeToggled(enabled)));
-        })
-        .as_element(w_id!());
-
-    let minimize_on_minimize_section = column![
-        row![
-            Text::new("Minimize to Tray on Minimize")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            minimize_on_minimize_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("Hide to system tray instead of taskbar when minimizing")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
-
-    let run_on_start_toggle = Toggle::new(state.store.settings.run_on_start)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::RunOnStartToggled(enabled)));
-        })
-        .as_element(w_id!());
-
-    let run_on_start_section = column![
-        row![
-            Text::new("Run on startup").with_font_size(14.0).with_color(TEXT_COLOR).as_element(),
-            spacer(),
-            run_on_start_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("Run automatically when your computer starts")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
-
-    let start_minimized_toggle = Toggle::new(state.store.settings.start_minimized)
-        .with_track_colors(CARD_BACKGROUND.deviate(0.2), PRIMARY_COLOR)
-        .with_toggle_handler(|enabled, _, shell| {
-            shell.publish(RootMessage::Settings(SettingsMessage::StartMinimizedToggled(enabled)));
-        })
-        .as_element(w_id!());
-
-    let start_minimized_section = column![
-        row![
-            Text::new("Start minimized")
-                .with_font_size(14.0)
-                .with_color(TEXT_COLOR)
-                .as_element(),
-            spacer(),
-            start_minimized_toggle
-        ]
-        .with_width(Sizing::grow())
-        .with_cross_align_items(Alignment::Center),
-        Text::new("The app will launch already minimized to the taskbar/system tray")
-            .with_font_size(11.0)
-            .with_color(TEXT_MUTED)
-            .as_element(),
-    ]
-    .with_child_gap(SPACE_SM)
-    .with_width(Sizing::grow());
+    let start_minimized_section = toggle_row(
+        w_id!(),
+        "Start minimized",
+        "The app will launch already minimized to the taskbar/system tray",
+        state.store.settings.start_minimized,
+        SettingsMessage::StartMinimizedToggled,
+    );
 
     let graphics_settings_content = column![bg_image_section, fit_mode_section, opacity_section, text_shadow_section];
 
@@ -589,88 +515,71 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
 // Settings Message Handler
 // ============================================================================
 
-/// Handle settings-related messages
-pub fn handle_settings_message(state: &mut RootState, message: SettingsMessage) -> Option<Task<RootMessage>> {
+/// Handle settings-related messages. Changed settings are saved by [`crate::rgui::update`].
+pub fn handle_settings_message(state: &mut RootState, message: SettingsMessage) {
     match message {
-        SettingsMessage::Save => save_settings(state),
-
         SettingsMessage::BackgroundImageSelected(path) => {
             if let Some(path) = path {
                 state.store.settings.background_image = path.to_string_lossy().to_string();
                 tracing::info!("Background image changed to: {}", state.store.settings.background_image);
             }
-            save_settings(state)
         }
 
         SettingsMessage::RemoveBackgroundImage => {
             state.store.settings.background_image = String::new();
             tracing::info!("Background image removed");
-            save_settings(state)
         }
 
         SettingsMessage::ImageFitChanged(fit) => {
             state.store.settings.image_fit = fit;
             tracing::info!("Image fit mode changed to: {:?}", fit);
-            save_settings(state)
         }
 
         SettingsMessage::OpacityChanged(opacity) => {
             state.store.settings.background_opacity = opacity;
-            // Don't save on every slider change - wait for drag to end
-            None
         }
 
         SettingsMessage::OpacitySliderDrag(is_dragging) => {
             state.opacity_slider_dragging = is_dragging;
-            // Save settings when the drag ends to avoid excessive writes
-            if !is_dragging { save_settings(state) } else { None }
         }
 
         SettingsMessage::TextShadowToggled(enabled) => {
             state.store.settings.text_shadow_enabled = enabled;
-            save_settings(state)
         }
 
         SettingsMessage::AlwaysUpdateToggled(enabled) => {
             state.store.settings.always_update = enabled;
-            save_settings(state)
         }
 
         SettingsMessage::MinimizeToTrayOnCloseToggled(enabled) => {
             state.store.settings.minimize_to_tray_on_close = enabled;
-            save_settings(state)
         }
 
         SettingsMessage::MinimizeToTrayOnMinimizeToggled(enabled) => {
             state.store.settings.minimize_to_tray_on_minimize = enabled;
-            save_settings(state)
         }
 
-        SettingsMessage::RunOnStartToggled(enabled) => {
-            match set_run_on_start(enabled) {
-                Ok(()) => {
-                    state.store.settings.run_on_start = enabled;
-                }
-                Err(RegistryError::KeyCreationFailed) => {
-                    tracing::warn!("Unable to create registry key!");
-                }
-                Err(RegistryError::PathUnobtainable) => {
-                    tracing::warn!("Unable to get current exe path!");
-                }
-                Err(RegistryError::AddFailed) => {
-                    tracing::warn!("Failed to add registry key!");
-                }
-                Err(RegistryError::RemoveFailed) => {
-                    state.store.settings.run_on_start = false;
-                    tracing::warn!("Failed to remove registry key!");
-                }
+        SettingsMessage::RunOnStartToggled(enabled) => match set_run_on_start(enabled) {
+            Ok(()) => {
+                state.store.settings.run_on_start = enabled;
             }
-            save_settings(state)
-        }
+            Err(RegistryError::KeyCreationFailed) => {
+                tracing::warn!("Unable to create registry key!");
+            }
+            Err(RegistryError::PathUnobtainable) => {
+                tracing::warn!("Unable to get current exe path!");
+            }
+            Err(RegistryError::AddFailed) => {
+                tracing::warn!("Failed to add registry key!");
+            }
+            Err(RegistryError::RemoveFailed) => {
+                state.store.settings.run_on_start = false;
+                tracing::warn!("Failed to remove registry key!");
+            }
+        },
 
         SettingsMessage::StartMinimizedToggled(enabled) => {
             state.store.settings.start_minimized = enabled;
-            save_settings(state)
         }
     }
 }

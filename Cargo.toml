@@ -1,12 +1,11 @@
 [package]
 name = "reliquary-archiver"
-version = "0.18.0"
+version = "0.19.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/IceDynamix/reliquary-archiver"
 publish = false
 readme = "README.md"
-homepage = "https://github.com/IceDynamix/reliquary-archiver"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -22,7 +21,7 @@ serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = "2.12.1"
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v23.0.0", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v24.0.0", features = [
     "proto-rqa",
 ] }
 ctrlc = "3.4.5"
@@ -49,7 +48,7 @@ windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v23.0.0", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v24.0.0", features = [
     "proto-rqa",
 ] }
 

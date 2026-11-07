@@ -13,6 +13,7 @@
 //! ## Module Structure
 //!
 //! - [`state`]: Application state types and data structures
+//! - [`settings`]: User settings and their persistence
 //! - [`messages`]: Message types for event handling
 //! - [`handlers`]: Message handler implementations
 //! - [`view`]: Main view rendering function
@@ -21,6 +22,10 @@
 //! - [`screens`]: Screen-specific views (waiting, active)
 //! - [`kit`]: Low-level UI building blocks (icons, modals, toggles, tooltips)
 //! - [`run_on_start`]: Windows startup registry integration
+//! - [`worker`]: Background task running the packet capture
+
+// TODO: the GUI only builds on Windows, remove this once its unused code has been cleaned up there
+#![allow(unused)]
 
 use async_stream::stream;
 use raxis::runtime::Backdrop;
@@ -30,11 +35,12 @@ use raxis::{ContextMenuItem, SystemCommand, SystemCommandResponse, TrayEvent, Tr
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
-use crate::LOG_NOTIFY;
-use crate::rgui::components::update::UpdateMessage;
-use crate::scopefns::Also;
+use crate::logging;
+use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketStatus, WindowMessage};
+use crate::rgui::state::RootState;
+use crate::rgui::view::view;
+use crate::rgui::worker::archiver_worker;
 use crate::websocket::{PortCommand, PortSource, start_websocket_server};
-use crate::worker::archiver_worker;
 
 // Module declarations
 pub mod components;
@@ -42,39 +48,40 @@ pub mod handlers;
 pub mod kit;
 pub mod messages;
 pub mod run_on_start;
+mod scopefns;
 pub mod screens;
+pub mod settings;
 pub mod state;
 pub mod theme;
 pub mod view;
-
-// Re-exports for public API
-pub use handlers::{
-    get_settings_path, handle_connection_check, handle_export_message, handle_log_message, handle_screen_transitions,
-    handle_sniffer_metric, handle_websocket_message, handle_window_message, handle_worker_event, save_settings,
-};
-pub use messages::*;
-pub use state::*;
-pub use theme::*;
-pub use view::view;
+pub mod worker;
 
 /// Main update function that processes messages and modifies application state.
 ///
 /// This is the core of the Elm architecture - all state changes flow through here.
 /// Messages are dispatched to appropriate handlers based on their type.
 ///
+/// Changed settings are saved afterwards, so handlers only have to change them.
+///
 /// # Returns
 /// An optional [`Task`] to be executed asynchronously (e.g., I/O operations, timers).
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
-    macro_rules! handle_screen {
-        ($screen:ident, $screen_message:ident, $message:ident) => {
-            if let Screen::$screen(screen) = &mut state.screen {
-                Some(screen.update($message).run(state, RootMessage::$screen_message))
-            } else {
-                None
-            }
-        };
+    // The opacity slider changes the settings on every step of a drag, so its steps are saved once it
+    // is let go. Only the steps are held back: the slider can miss being let go when the window loses
+    // the mouse, and that mustn't keep everything else from being saved
+    let hold_save = state.opacity_slider_dragging && matches!(message, RootMessage::Settings(SettingsMessage::OpacityChanged(_)));
+
+    let task = route(state, message);
+
+    if !hold_save {
+        state.settings_file.save_if_changed(&state.store.settings);
     }
 
+    task
+}
+
+/// Dispatches messages to their handlers
+fn route(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
     match message {
         // Simple triggers
         RootMessage::TriggerRender => None,
@@ -87,99 +94,21 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         }
 
         // Worker/connection events
-        RootMessage::WorkerEvent(event) => Some(handle_worker_event(state, event)),
-        RootMessage::CheckConnection(now) => handle_connection_check(state, now),
+        RootMessage::WorkerEvent(event) => Some(handlers::handle_worker_event(state, event)),
+        RootMessage::CheckConnection(now) => handlers::handle_connection_check(state, now),
 
         // Grouped message handlers - delegate to appropriate modules
         RootMessage::Account(msg) => handlers::handle_account_message(state, msg),
-        RootMessage::Export(msg) => handle_export_message(state, msg),
-        RootMessage::WebSocket(msg) => handle_websocket_message(state, msg),
-        RootMessage::Settings(msg) => components::settings_modal::handle_settings_message(state, msg),
-        RootMessage::Window(msg) => handle_window_message(state, msg),
-        RootMessage::Log(msg) => handle_log_message(state, msg),
-
-        // Screen messages
-        RootMessage::WaitingScreen(message) => handle_screen!(Waiting, WaitingScreen, message),
-        RootMessage::ActiveScreen(message) => handle_screen!(Active, ActiveScreen, message),
-
-        // Update messages
-        RootMessage::Update(msg) => {
-            use crate::rgui::components::update;
-            let task = if matches!(msg, UpdateMessage::Confirm) {
-                Task::done(RootMessage::WebSocket(WebSocketMessage::Close))
-            } else {
-                Task::none()
-            };
-            Some(
-                task.chain(
-                    match update::handle_message(msg, &mut state.store.update_state, state.store.settings.always_update) {
-                        update::HandleResult::None => None,
-                        update::HandleResult::Task(t) => Some(t.map(RootMessage::Update)),
-                        update::HandleResult::ExitForRestart => return Some(task::exit_application()),
-                    }
-                    .unwrap_or(Task::none()),
-                ),
-            )
+        RootMessage::Export(msg) => handlers::handle_export_message(state, msg),
+        RootMessage::WebSocket(msg) => handlers::handle_websocket_message(state, msg),
+        RootMessage::Settings(msg) => {
+            components::settings_modal::handle_settings_message(state, msg);
+            None
         }
+        RootMessage::Window(msg) => handlers::handle_window_message(state, msg),
+        RootMessage::Log(msg) => handlers::handle_log_message(state, msg),
+        RootMessage::Update(msg) => handlers::handle_update_message(state, msg),
     }
-    .also(|_| {
-        handle_screen_transitions(state);
-    })
-}
-
-/// Loads settings synchronously from disk before the GUI initializes.
-///
-/// Uses the new `raxis::get_local_app_data()` synchronous helper to resolve the
-/// settings path without needing an async task, preventing race conditions between
-/// settings loading and other startup tasks (update checks, WebSocket port binding).
-///
-/// Returns the loaded settings and a bool indicating whether the `run_on_start`
-/// value was corrected during registry reconciliation (and therefore needs to be
-/// persisted back to disk).
-fn load_settings_sync() -> (state::Settings, bool) {
-    use crate::rgui::run_on_start::registry_matches_settings;
-
-    let Some(appdata) = raxis::get_local_app_data() else {
-        tracing::warn!("Could not determine local app data path, using default settings");
-        return (state::Settings::default(), false);
-    };
-
-    let path = get_settings_path(appdata);
-
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::info!("No settings file found at {}, using defaults", path.display());
-            return (state::Settings::default(), false);
-        }
-        Err(e) => {
-            tracing::error!("Failed to read settings file: {}", e);
-            return (state::Settings::default(), false);
-        }
-    };
-
-    let mut settings: state::Settings = match serde_json::from_str(&content) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("Failed to parse settings file: {}", e);
-            return (state::Settings::default(), false);
-        }
-    };
-
-    // Reconcile run_on_start setting with registry state.
-    // e.g. user moves the exe after enabling/disabling run on start — in case
-    // of mismatch, update settings in memory and signal that a save is needed.
-    let run_on_start = settings.run_on_start;
-    let needs_save = match registry_matches_settings(run_on_start) {
-        Ok(false) => {
-            settings.run_on_start = !run_on_start;
-            true
-        }
-        Ok(true) | Err(_) => false,
-    };
-
-    tracing::info!("Loaded settings from {}", path.display());
-    (settings, needs_save)
 }
 
 /// Initializes and runs the application GUI.
@@ -199,10 +128,10 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use futures::lock::Mutex;
     use reliquary_archiver::export::database::get_database;
 
+    use crate::accounts::MultiAccountManager;
     use crate::rgui::components::update;
-    use crate::worker::MultiAccountManager;
 
-    let (settings, settings_needs_save) = load_settings_sync();
+    let (settings, settings_file) = settings::load();
     let start_minimized = settings.start_minimized;
     let minimize_to_tray_on_minimize = settings.minimize_to_tray_on_minimize;
 
@@ -228,20 +157,13 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let database = get_database();
     let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
 
-    let state = RootState::new(manager.clone()).with_port_sender(port_tx).with_settings(settings);
+    let state = RootState::new(manager.clone(), port_tx, settings, settings_file);
 
     let app = raxis::Application::new(state, view, update, move |state| {
         let selected_account_rx = state.selected_account_tx.subscribe();
 
-        // Persist corrected run_on_start value if the registry was out of sync.
-        let save_task = if settings_needs_save {
-            Task::done(RootMessage::Settings(SettingsMessage::Save))
-        } else {
-            Task::none()
-        };
-
         Some(Task::batch(vec![
-            save_task,
+            Task::future(state.settings_file.writer()).discard(),
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
             Task::run(archiver_worker(manager.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(
@@ -263,7 +185,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }),
             Task::stream(stream! {
                 loop {
-                    LOG_NOTIFY.notified().await;
+                    logging::wait_for_new_lines().await;
                     yield RootMessage::TriggerRender;
                 }
             }),

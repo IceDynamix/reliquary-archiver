@@ -1,14 +1,6 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
-use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
-use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
-use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
-use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
-use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
-use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
-use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
-use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
 use reliquary::network::command::{GameCommand, command_id};
 #[cfg(feature = "stream")]
 use tokio::sync::broadcast;
@@ -22,17 +14,18 @@ pub struct OptimizerExporter {
     pub(super) database: &'static Database,
 
     // State fields
-    pub initialized: bool,
-    pub uid: Option<u32>,
-    pub trailblazer: Option<&'static str>,
-    pub banners: HashMap<u32, BannerInfo>,
-    pub gacha: GachaFunds,
-    pub materials: BTreeMap<u32, Material>,
-    pub light_cones: BTreeMap<u32, LightCone>,
-    pub relics: BTreeMap<u32, Relic>,
-    pub characters: BTreeMap<u32, Character>,
-    pub multipath_characters: BTreeMap<u32, Character>,
-    pub multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    pub(super) initialized: bool,
+    pub(super) uid: Option<u32>,
+    pub(super) trailblazer: Option<&'static str>,
+    pub(super) banners: HashMap<u32, BannerInfo>,
+    pub(super) gacha: GachaFunds,
+    pub(super) materials: BTreeMap<u32, Material>,
+    pub(super) light_cones: BTreeMap<u32, LightCone>,
+    pub(super) relics: BTreeMap<u32, Relic>,
+    /// All known characters. Level and ascension are only filled in once the base avatar is known
+    pub(super) characters: BTreeMap<u32, Character>,
+    pub(super) multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    /// Characters in `characters` that are still waiting for their base avatar
     pub(super) unresolved_multipath_characters: HashSet<u32>,
 
     #[cfg(feature = "stream")]
@@ -60,13 +53,54 @@ impl OptimizerExporter {
             light_cones: BTreeMap::new(),
             relics: BTreeMap::new(),
             characters: BTreeMap::new(),
-            multipath_characters: BTreeMap::new(),
             multipath_base_avatars: HashMap::new(),
             unresolved_multipath_characters: HashSet::new(),
 
             #[cfg(feature = "stream")]
             event_channel: broadcast::channel(16).0,
         }
+    }
+
+    /// The uid of the account, once it is known
+    pub fn uid(&self) -> Option<u32> {
+        self.uid
+    }
+
+    /// Which trailblazer the account plays, once it is known
+    pub fn trailblazer(&self) -> Option<&'static str> {
+        self.trailblazer
+    }
+
+    pub fn gacha_funds(&self) -> GachaFunds {
+        self.gacha
+    }
+
+    /// The gacha banners by id
+    pub fn banners(&self) -> &HashMap<u32, BannerInfo> {
+        &self.banners
+    }
+
+    /// Materials by id
+    pub fn materials(&self) -> &BTreeMap<u32, Material> {
+        &self.materials
+    }
+
+    /// Light cones by unique id
+    pub fn light_cones(&self) -> &BTreeMap<u32, LightCone> {
+        &self.light_cones
+    }
+
+    /// Relics by unique id
+    pub fn relics(&self) -> &BTreeMap<u32, Relic> {
+        &self.relics
+    }
+
+    /// Characters by id.
+    ///
+    /// A multipath character's level and ascension come from its base avatar. Until that has been
+    /// captured, they are 0, like in the export.
+    pub fn characters(&self) -> &BTreeMap<u32, Character> {
+        &self.characters
     }
 
     #[allow(unused_variables)]
@@ -90,7 +124,6 @@ impl OptimizerExporter {
         self.light_cones.clear();
         self.relics.clear();
         self.characters.clear();
-        self.multipath_characters.clear();
         self.multipath_base_avatars.clear();
         self.unresolved_multipath_characters.clear();
     }
@@ -99,8 +132,8 @@ impl OptimizerExporter {
         self.trailblazer.is_some()
             && self.uid.is_some()
             && !self.relics.is_empty()
-            && !self.characters.is_empty()
-            && !self.multipath_characters.is_empty()
+            // at least one character has its level and ascension
+            && self.characters.len() > self.unresolved_multipath_characters.len()
             && !self.light_cones.is_empty()
     }
 
@@ -109,7 +142,6 @@ impl OptimizerExporter {
             && self.uid.is_none()
             && self.relics.is_empty()
             && self.characters.is_empty()
-            && self.multipath_characters.is_empty()
             && self.light_cones.is_empty()
     }
 
@@ -118,6 +150,14 @@ impl OptimizerExporter {
         let export = self.export().expect("initial scan failed");
         self.emit_event(OptimizerEvent::InitialScan(export));
     }
+}
+
+/// Parses the payload of a command, logging if it doesn't have the expected shape
+fn parse<T: protobuf::Message>(command: &GameCommand, description: &str) -> Option<T> {
+    command
+        .parse_proto()
+        .inspect_err(|error| warn!(%error, "could not parse {description} command"))
+        .ok()
 }
 
 impl Exporter for OptimizerExporter {
@@ -133,93 +173,51 @@ impl Exporter for OptimizerExporter {
                 self.reset();
 
                 debug!("detected uid");
-                let cmd = command.parse_proto::<PlayerGetTokenScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_token(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse token command");
-                    }
+                if let Some(cmd) = parse(&command, "token") {
+                    self.handle_token(cmd);
                 }
             }
             command_id::PlayerLoginScRsp => {
                 debug!("detected login info packet");
-                let cmd = command.parse_proto::<PlayerLoginScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_login(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse login info data command");
-                    }
+                if let Some(cmd) = parse(&command, "login info data") {
+                    self.handle_login(cmd);
                 }
             }
             command_id::GetBagScRsp => {
                 debug!("detected inventory packet");
-                let cmd = command.parse_proto::<GetBagScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_inventory(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse inventory data command");
-                    }
+                if let Some(cmd) = parse(&command, "inventory data") {
+                    self.handle_inventory(cmd);
                 }
             }
             command_id::GetAvatarDataScRsp => {
                 debug!("detected character packet");
-                let cmd = command.parse_proto::<GetAvatarDataScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_characters(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse character data command");
-                    }
+                if let Some(cmd) = parse(&command, "character data") {
+                    self.handle_characters(cmd);
                 }
             }
             command_id::SetAvatarEnhancedIdScRsp => {
                 debug!("detected set avatar enhanced packet");
-                let cmd = command.parse_proto::<SetAvatarEnhancedIdScRsp>();
-                match cmd {
-                    Ok(cmd) => {
-                        let event = self.handle_set_avatar_enhanced(cmd);
-                        self.emit_event(event);
-                    }
-                    Err(error) => {
-                        warn!(%error, "could not parse set avatar enhanced data command");
-                    }
+                if let Some(event) = parse(&command, "set avatar enhanced data").and_then(|cmd| self.handle_set_avatar_enhanced(cmd)) {
+                    self.emit_event(event);
                 }
             }
             command_id::GetGachaInfoScRsp => {
                 debug!("detected gacha info packet");
-                let cmd = command.parse_proto::<GetGachaInfoScRsp>();
-                match cmd {
-                    Ok(cmd) => self.handle_gacha_info(cmd),
-                    Err(error) => {
-                        warn!(%error, "could not parse gacha info data command");
-                    }
+                if let Some(cmd) = parse(&command, "gacha info data") {
+                    self.handle_gacha_info(cmd);
                 }
             }
             command_id::DoGachaScRsp => {
                 debug!("detected gacha packet");
-                let cmd = command.parse_proto::<DoGachaScRsp>();
-                match cmd {
-                    Ok(cmd) => {
-                        if let Some(event) = self.handle_gacha(cmd) {
-                            self.emit_event(event);
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, "could not parse gacha data command");
-                    }
+                if let Some(event) = parse(&command, "gacha data").and_then(|cmd| self.handle_gacha(cmd)) {
+                    self.emit_event(event);
                 }
             }
             command_id::PlayerSyncScNotify => {
                 debug!("detected player sync packet");
-                let cmd = command.parse_proto::<PlayerSyncScNotify>();
-                match cmd {
-                    Ok(cmd) => {
-                        let events = self.handle_player_sync(cmd);
-                        for event in events {
-                            self.emit_event(event);
-                        }
-                    }
-                    Err(error) => {
-                        warn!(%error, "could not parse player sync data command");
+                if let Some(cmd) = parse(&command, "player sync data") {
+                    for event in self.handle_player_sync(cmd) {
+                        self.emit_event(event);
                     }
                 }
             }
@@ -272,10 +270,6 @@ impl Exporter for OptimizerExporter {
             warn!("characters were not recorded");
         }
 
-        if self.multipath_characters.is_empty() {
-            warn!("multipath characters were not recorded");
-        }
-
         if !self.unresolved_multipath_characters.is_empty() {
             warn!(
                 num = self.unresolved_multipath_characters.len(),
@@ -295,11 +289,7 @@ impl Exporter for OptimizerExporter {
             materials: self.materials.values().cloned().collect(),
             light_cones: self.light_cones.values().cloned().collect(),
             relics: self.relics.values().cloned().collect(),
-            characters: self
-                .multipath_characters
-                .values()
-                .map(|c| c.clone()) // Discard the key
-                .collect(),
+            characters: self.characters.values().cloned().collect(),
         };
 
         Some(export)

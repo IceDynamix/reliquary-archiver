@@ -2,10 +2,8 @@
 //!
 //! This module defines the core data model for the GUI, including:
 //! - Root application state
-//! - User settings (persisted to disk)
 //! - Export statistics
 //! - Connection tracking
-//! - Screen states
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,10 +14,11 @@ use reliquary_archiver::export::fribbels::OptimizerExporter;
 use tokio::sync::watch;
 use tracing::level_filters::LevelFilter;
 
+use crate::accounts::MultiAccountManager;
 use crate::rgui::components::update::UpdateState;
 use crate::rgui::messages::WebSocketStatus;
+use crate::rgui::settings::{Settings, SettingsFile};
 use crate::websocket::PortCommand;
-use crate::worker::{self, MultiAccountManager};
 
 /// Information about a detected account.
 #[derive(Debug, Clone)]
@@ -76,53 +75,6 @@ pub struct Store {
     pub update_state: Option<UpdateState>,
 }
 
-/// Background image scaling mode.
-///
-/// Controls how a custom background image is displayed within the window.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Default)]
-pub enum ImageFit {
-    /// Stretch to fill the container (default)
-    #[default]
-    Fill,
-    /// Scale to fit inside the container while maintaining aspect ratio
-    Contain,
-    /// Scale to cover the container while maintaining aspect ratio (may crop)
-    Cover,
-    /// Like contain but never scale up beyond intrinsic size
-    ScaleDown,
-    /// Display at intrinsic size with no scaling
-    None,
-}
-
-/// User-configurable application settings.
-///
-/// These settings are persisted to disk as JSON in the user's app data folder.
-/// Settings are automatically saved when modified through the settings modal.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    /// Path to a custom background image (empty string = no image)
-    pub background_image: String,
-    /// How the background image is scaled/positioned
-    pub image_fit: ImageFit,
-    /// Opacity of the background image (0.0 - 1.0)
-    pub background_opacity: f32,
-    /// Whether to render text shadows for better readability over images
-    pub text_shadow_enabled: bool,
-    /// Automatically apply updates without prompting
-    pub always_update: bool,
-    /// Hide to system tray instead of closing when clicking X
-    pub minimize_to_tray_on_close: bool,
-    /// Hide to system tray instead of taskbar when minimizing
-    pub minimize_to_tray_on_minimize: bool,
-    /// Launch the application on Windows startup
-    pub run_on_start: bool,
-    /// Start the application minimized/hidden
-    pub start_minimized: bool,
-    /// Port for the WebSocket server (0 = auto-assign)
-    pub ws_port: u16,
-}
-
 impl Default for Store {
     fn default() -> Self {
         Self {
@@ -135,23 +87,6 @@ impl Default for Store {
             log_level: LevelFilter::INFO, // TODO: This is not right
             settings: Settings::default(),
             update_state: None,
-        }
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            background_image: "".to_string(),
-            image_fit: ImageFit::Cover,
-            background_opacity: 0.12,
-            text_shadow_enabled: false,
-            always_update: false,
-            minimize_to_tray_on_close: false,
-            minimize_to_tray_on_minimize: false,
-            run_on_start: false,
-            start_minimized: false,
-            ws_port: 23313,
         }
     }
 }
@@ -174,10 +109,10 @@ pub struct ExportStats {
 impl ExportStats {
     pub fn new(exporter: &OptimizerExporter) -> Self {
         Self {
-            relics: exporter.relics.len(),
-            characters: exporter.characters.len(),
-            light_cones: exporter.light_cones.len(),
-            materials: exporter.materials.len(),
+            relics: exporter.relics().len(),
+            characters: exporter.characters().len(),
+            light_cones: exporter.light_cones().len(),
+            materials: exporter.materials().len(),
         }
     }
 }
@@ -213,89 +148,50 @@ pub struct StatsStore {
 pub struct RootState {
     /// Multi-account manager for handling multiple exporters
     pub manager: Arc<Mutex<MultiAccountManager>>,
-    /// Channel to send commands to the background worker
-    pub worker_sender: Option<worker::WorkerHandle>,
     /// Channel to broadcast GUI's selected account to WebSocket (UI state, not lifecycle events)
     pub selected_account_tx: watch::Sender<Option<u32>>,
     /// Central data store
     pub store: Store,
-    /// Current screen being displayed
-    pub screen: Screen,
+    /// Where `store.settings` are saved
+    pub settings_file: SettingsFile,
     /// Whether the settings modal is open
     pub settings_open: bool,
     /// Whether the opacity slider is being dragged (hides modal backdrop)
     pub opacity_slider_dragging: bool,
     /// Channel to send port changes to the WebSocket server
-    pub ws_port_sender: Option<watch::Sender<PortCommand>>,
+    pub ws_port_sender: watch::Sender<PortCommand>,
+    /// The port the WebSocket server was asked to move to. It only becomes a setting once the server runs on it
+    pub pending_ws_port: Option<u16>,
 }
 
 impl RootState {
-    pub fn new(manager: Arc<Mutex<MultiAccountManager>>) -> Self {
+    pub fn new(
+        manager: Arc<Mutex<MultiAccountManager>>,
+        ws_port_sender: watch::Sender<PortCommand>,
+        settings: Settings,
+        settings_file: SettingsFile,
+    ) -> Self {
         let (selected_account_tx, _) = watch::channel(None);
         Self {
             manager,
-            worker_sender: None,
             selected_account_tx,
-            store: Store::default(),
-            screen: Screen::default(),
+            store: Store {
+                settings,
+                ..Store::default()
+            },
+            settings_file,
             settings_open: false,
             opacity_slider_dragging: false,
-            ws_port_sender: None,
-        }
-    }
-
-    pub fn with_port_sender(self, port_sender: watch::Sender<PortCommand>) -> Self {
-        Self {
-            ws_port_sender: Some(port_sender),
-            ..self
-        }
-    }
-
-    pub fn with_settings(self, settings: Settings) -> Self {
-        Self {
-            store: Store { settings, ..self.store },
-            ..self
+            ws_port_sender,
+            pending_ws_port: None,
         }
     }
 }
 
-/// Application screen states.
-///
-/// The app transitions between screens based on connection status.
-#[derive(Debug)]
-pub enum Screen {
-    /// Waiting for game connection - shown when not connected
-    Waiting(WaitingScreen),
-    /// Active capture screen - shown when connected to the game
-    Active(ActiveScreen),
-}
-
-impl Default for Screen {
-    fn default() -> Self {
-        Self::Waiting(WaitingScreen::new())
-    }
-}
-
-/// State for the waiting screen (pre-connection).
-#[derive(Default, Debug)]
-pub struct WaitingScreen {
-    // Waiting screen specific state
-}
-
-impl WaitingScreen {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// State for the active screen (connected and capturing).
-#[derive(Default, Debug)]
-pub struct ActiveScreen {
-    // Active screen specific state
-}
-
-impl ActiveScreen {
-    pub fn new() -> Self {
-        Self::default()
+impl Drop for RootState {
+    /// Hands settings that are still held back, like a slider being dragged, to the settings file,
+    /// which writes them when it is dropped right after
+    fn drop(&mut self) {
+        self.settings_file.save_if_changed(&self.store.settings);
     }
 }
