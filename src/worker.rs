@@ -1,13 +1,14 @@
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures::channel::{mpsc, oneshot};
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
-use futures::{Stream, StreamExt, stream};
+use futures::{FutureExt, Stream, StreamExt, stream};
 use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent};
-use tracing::{info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 pub use crate::accounts::{AccountEvent, MultiAccountManager};
 use crate::capture::{self, SourceSpec};
@@ -50,7 +51,16 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
         let (sender, mut receiver) = mpsc::channel(100);
 
-        tokio::spawn(live_capture(manager.clone(), output.clone()));
+        tokio::spawn({
+            let capture = live_capture(manager.clone(), output.clone());
+
+            async move {
+                // Without this a panic would end the capture silently while the window stays open
+                if AssertUnwindSafe(capture).catch_unwind().await.is_err() {
+                    error!("the packet capture panicked and has stopped, please restart the application");
+                }
+            }
+        });
 
         // Subscribe to manager's unified event channel
         let mut manager_rx = manager.lock().await.subscribe();
