@@ -19,7 +19,8 @@ use crate::rgui::messages::{
     AccountMessage, ExportMessage, LogMessage, RootMessage, ScreenAction, WebSocketMessage, WebSocketStatus, WindowMessage,
 };
 use crate::rgui::state::{AccountInfo, ActiveScreen, ExportStats, FileContainer, FileExtensions, RootState, Screen, WaitingScreen};
-use crate::rgui::worker;
+use crate::rgui::worker::WorkerEvent;
+use crate::session::SessionEvent;
 use crate::websocket::PortCommand;
 
 // ============================================================================
@@ -161,11 +162,11 @@ fn export_stats_task(state: &RootState, uid: u32) -> Task<RootMessage> {
 /// Manages account discovery, selection, and stats updates.
 pub fn handle_account_message(state: &mut RootState, message: AccountMessage) -> Option<Task<RootMessage>> {
     match message {
-        AccountMessage::Discovered { uid } => {
+        AccountMessage::LoggedIn { uid } => {
             // Add or update account info
             state.store.accounts.insert(uid, AccountInfo { uid });
 
-            // Always auto-switch to newly discovered account
+            // Always auto-switch to the account that logged in last
             Some(select_account(state, uid))
         }
 
@@ -327,20 +328,20 @@ pub fn handle_connection_check(state: &mut RootState, now: Instant) -> Option<Ta
 
 /// Handles events from the background worker thread.
 ///
-/// Processes account discoveries, sniffer metrics, and export events.
-pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) -> Task<RootMessage> {
+/// Processes logins, capture statistics, and export events.
+pub fn handle_worker_event(state: &mut RootState, event: WorkerEvent) -> Task<RootMessage> {
     match event {
-        worker::WorkerEvent::AccountReconnected { uid } => {
-            // Refresh stats for this account
-            return export_stats_task(state, uid);
+        WorkerEvent::PacketReceived => {
+            let stats = &mut state.store.connection_stats;
+            stats.connected = true;
+            stats.last_packet_time = Some(Instant::now());
+            stats.packets_received += 1;
         }
-        worker::WorkerEvent::Metric(metric) => {
-            handle_sniffer_metric(state, metric);
+        WorkerEvent::Session(event) => handle_session_event(state, event),
+        WorkerEvent::AccountLoggedIn { uid } => {
+            return Task::done(RootMessage::Account(AccountMessage::LoggedIn { uid }));
         }
-        worker::WorkerEvent::AccountDiscovered { uid } => {
-            return Task::done(RootMessage::Account(AccountMessage::Discovered { uid }));
-        }
-        worker::WorkerEvent::ExportEvent { uid, event } => {
+        WorkerEvent::ExportEvent { uid, event } => {
             // Only process if this is the selected account
             let is_selected = state.store.selected_account == Some(uid) || state.store.selected_account.is_none();
 
@@ -365,41 +366,38 @@ pub fn handle_worker_event(state: &mut RootState, event: worker::WorkerEvent) ->
     Task::none()
 }
 
-/// Updates connection statistics based on sniffer metrics.
+/// Updates connection statistics based on what the capture session reported.
 ///
 /// Tracks connection state, packet counts, and error conditions.
-pub fn handle_sniffer_metric(state: &mut RootState, metric: worker::SnifferMetric) {
+fn handle_session_event(state: &mut RootState, event: SessionEvent) {
     let stats = &mut state.store.connection_stats;
 
-    match metric {
-        worker::SnifferMetric::ConnectionEstablished => {
+    match event {
+        SessionEvent::ConnectionEstablished => {
             stats.connected = true;
         }
-        worker::SnifferMetric::ConnectionDisconnected => {
+        SessionEvent::Disconnected => {
             stats.connected = false;
             stats.connection_active = false;
             stats.packets_received = 0;
             stats.commands_received = 0;
         }
-        worker::SnifferMetric::NetworkPacketReceived => {
-            stats.connected = true;
-            stats.last_packet_time = Some(std::time::Instant::now());
-            stats.packets_received += 1;
-        }
-        worker::SnifferMetric::GameCommandsReceived(commands) => {
+        SessionEvent::PacketsDecoded(commands) => {
             if commands > 0 {
                 stats.connected = true;
                 stats.connection_active = true;
                 stats.commands_received += commands;
-                stats.last_command_time = Some(std::time::Instant::now());
+                stats.last_command_time = Some(Instant::now());
             }
         }
-        worker::SnifferMetric::DecryptionKeyMissing => {
+        SessionEvent::DecryptionKeyMissing => {
             stats.decryption_key_missing += 1;
         }
-        worker::SnifferMetric::NetworkError => {
+        SessionEvent::DecodeError | SessionEvent::Fatal => {
             stats.network_errors += 1;
         }
+        // Logins reach the GUI through the account manager, as WorkerEvent::AccountLoggedIn
+        SessionEvent::AccountSeen { .. } | SessionEvent::LoginFinished => {}
     }
 }
 

@@ -16,10 +16,18 @@ use crate::session::{CaptureSession, SessionEvent};
 
 #[derive(Debug, Clone)]
 pub enum WorkerEvent {
-    AccountDiscovered { uid: u32 },
-    AccountReconnected { uid: u32 },
-    ExportEvent { uid: u32, event: OptimizerEvent },
-    Metric(SnifferMetric),
+    /// A packet arrived from the network
+    PacketReceived,
+    /// What the capture session made of a packet
+    Session(SessionEvent),
+    /// An account logged in, for the first time or again on a new connection
+    AccountLoggedIn {
+        uid: u32,
+    },
+    ExportEvent {
+        uid: u32,
+        event: OptimizerEvent,
+    },
 }
 
 /// Creates a new [`Stream`] that produces the items sent from a [`Future`]
@@ -64,42 +72,14 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
                 Err(RecvError::Closed) => break,
             };
 
-            match event {
-                // The capture loop already reports every login as AccountDiscovered
-                AccountEvent::Discovered { .. } => {}
-                AccountEvent::Reconnected { uid } => {
-                    output.send(WorkerEvent::AccountReconnected { uid }).await.ok();
-                }
-                AccountEvent::ExporterEvent { uid, event } => {
-                    output.send(WorkerEvent::ExportEvent { uid, event }).await.ok();
-                }
-            }
+            let event = match event {
+                AccountEvent::Discovered { uid } | AccountEvent::Reconnected { uid } => WorkerEvent::AccountLoggedIn { uid },
+                AccountEvent::ExporterEvent { uid, event } => WorkerEvent::ExportEvent { uid, event },
+            };
+
+            output.send(event).await.ok();
         }
     })
-}
-
-#[derive(Debug, Clone)]
-pub enum SnifferMetric {
-    ConnectionEstablished,
-    ConnectionDisconnected,
-    NetworkPacketReceived,
-    GameCommandsReceived(usize),
-    DecryptionKeyMissing,
-    NetworkError,
-}
-
-fn worker_event(event: SessionEvent) -> Option<WorkerEvent> {
-    let metric = match event {
-        SessionEvent::AccountSeen { uid } => return Some(WorkerEvent::AccountDiscovered { uid }),
-        SessionEvent::LoginFinished => return None,
-        SessionEvent::ConnectionEstablished => SnifferMetric::ConnectionEstablished,
-        SessionEvent::Disconnected => SnifferMetric::ConnectionDisconnected,
-        SessionEvent::PacketsDecoded(count) => SnifferMetric::GameCommandsReceived(count),
-        SessionEvent::DecryptionKeyMissing => SnifferMetric::DecryptionKeyMissing,
-        SessionEvent::DecodeError | SessionEvent::Fatal => SnifferMetric::NetworkError,
-    };
-
-    Some(WorkerEvent::Metric(metric))
 }
 
 #[instrument(skip_all)]
@@ -129,12 +109,10 @@ async fn live_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc
                 }
             };
 
-            output.send(WorkerEvent::Metric(SnifferMetric::NetworkPacketReceived)).await.ok();
+            output.send(WorkerEvent::PacketReceived).await.ok();
 
             for event in session.handle_packet(packet).await {
-                if let Some(event) = worker_event(event) {
-                    output.send(event).await.ok();
-                }
+                output.send(WorkerEvent::Session(event)).await.ok();
             }
         }
 
