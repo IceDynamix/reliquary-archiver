@@ -30,9 +30,10 @@ pub struct OptimizerExporter {
     pub materials: BTreeMap<u32, Material>,
     pub light_cones: BTreeMap<u32, LightCone>,
     pub relics: BTreeMap<u32, Relic>,
+    /// All known characters. Level and ascension are only filled in once the base avatar is known
     pub characters: BTreeMap<u32, Character>,
-    pub multipath_characters: BTreeMap<u32, Character>,
     pub multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    /// Characters in `characters` that are still waiting for their base avatar
     pub(super) unresolved_multipath_characters: HashSet<u32>,
 
     #[cfg(feature = "stream")]
@@ -60,7 +61,6 @@ impl OptimizerExporter {
             light_cones: BTreeMap::new(),
             relics: BTreeMap::new(),
             characters: BTreeMap::new(),
-            multipath_characters: BTreeMap::new(),
             multipath_base_avatars: HashMap::new(),
             unresolved_multipath_characters: HashSet::new(),
 
@@ -90,7 +90,6 @@ impl OptimizerExporter {
         self.light_cones.clear();
         self.relics.clear();
         self.characters.clear();
-        self.multipath_characters.clear();
         self.multipath_base_avatars.clear();
         self.unresolved_multipath_characters.clear();
     }
@@ -99,8 +98,8 @@ impl OptimizerExporter {
         self.trailblazer.is_some()
             && self.uid.is_some()
             && !self.relics.is_empty()
-            && !self.characters.is_empty()
-            && !self.multipath_characters.is_empty()
+            // at least one character has its level and ascension
+            && self.characters.len() > self.unresolved_multipath_characters.len()
             && !self.light_cones.is_empty()
     }
 
@@ -109,7 +108,6 @@ impl OptimizerExporter {
             && self.uid.is_none()
             && self.relics.is_empty()
             && self.characters.is_empty()
-            && self.multipath_characters.is_empty()
             && self.light_cones.is_empty()
     }
 
@@ -272,10 +270,6 @@ impl Exporter for OptimizerExporter {
             warn!("characters were not recorded");
         }
 
-        if self.multipath_characters.is_empty() {
-            warn!("multipath characters were not recorded");
-        }
-
         if !self.unresolved_multipath_characters.is_empty() {
             warn!(
                 num = self.unresolved_multipath_characters.len(),
@@ -295,11 +289,7 @@ impl Exporter for OptimizerExporter {
             materials: self.materials.values().cloned().collect(),
             light_cones: self.light_cones.values().cloned().collect(),
             relics: self.relics.values().cloned().collect(),
-            characters: self
-                .multipath_characters
-                .values()
-                .map(|c| c.clone()) // Discard the key
-                .collect(),
+            characters: self.characters.values().cloned().collect(),
         };
 
         Some(export)
