@@ -192,9 +192,12 @@ fn write(path: &Path, settings: &Settings) -> io::Result<()> {
 /// Returns the settings to use and the settings file. Without a usable settings file, the
 /// defaults are used and nothing is written until a setting is changed.
 pub fn load() -> (Settings, SettingsFile) {
+    // For when saving could destroy settings the file still holds
+    let unsaved_defaults = || (Settings::default(), SettingsFile::new(None, Settings::default()));
+
     let Some(appdata) = raxis::get_local_app_data() else {
         tracing::warn!("Could not determine local app data path, using default settings that won't be saved");
-        return (Settings::default(), SettingsFile::new(None, Settings::default()));
+        return unsaved_defaults();
     };
 
     let path = settings_path(appdata);
@@ -207,16 +210,34 @@ pub fn load() -> (Settings, SettingsFile) {
             return defaults();
         }
         Err(e) => {
-            tracing::error!("Failed to read settings file: {}", e);
-            return defaults();
+            tracing::error!("Failed to read settings file, using default settings that won't be saved: {}", e);
+            return unsaved_defaults();
         }
     };
 
     let mut settings: Settings = match serde_json::from_str(&content) {
         Ok(s) => s,
         Err(e) => {
-            tracing::error!("Failed to parse settings file: {}", e);
-            return defaults();
+            // The first change would overwrite the file, keep a copy so the settings aren't lost
+            let backup = path.with_extension("json.bak");
+            return match std::fs::rename(&path, &backup) {
+                Ok(()) => {
+                    tracing::error!(
+                        "Failed to parse settings file, moved it to {} and using defaults: {}",
+                        backup.display(),
+                        e
+                    );
+                    defaults()
+                }
+                Err(backup_error) => {
+                    tracing::error!(
+                        "Failed to parse settings file, using default settings that won't be saved: {} (could not back it up: {})",
+                        e,
+                        backup_error
+                    );
+                    unsaved_defaults()
+                }
+            };
         }
     };
     let file = SettingsFile::new(Some(path.clone()), settings.clone());
