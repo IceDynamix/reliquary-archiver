@@ -103,7 +103,8 @@ pub async fn start_websocket_server(
 
     // Create streams from the watch receivers
     let client_count_stream = WatchStream::new(client_count_rx);
-    let port_stream = WatchStream::new(port_rx);
+    // The port channel starts out with a placeholder, only report the ports the server actually runs on
+    let port_stream = WatchStream::from_changes(port_rx);
 
     tokio::spawn(async move {
         loop {
