@@ -17,6 +17,7 @@ use raxis::widgets::text::{ParagraphAlignment, Text, TextAlignment};
 use raxis::widgets::widget;
 use raxis::{HookManager, svg, svg_path, w_id};
 
+use crate::rgui::kit::format_byte_size;
 use crate::rgui::kit::tooltip::{error_tooltip, info_tooltip, success_tooltip, warning_tooltip};
 use crate::rgui::state::{FileContainer, FileExtensions};
 use crate::rgui::theme::{
@@ -38,18 +39,6 @@ pub enum Action {
     None,
     /// Run an async task
     Run(Task<Message>),
-}
-
-/// Formats a file size in bytes to a human-readable string.
-fn format_file_size(size: usize) -> String {
-    let size_f = size as f64;
-    if size < 1024 {
-        format!("{} B", size)
-    } else if size < 1024 * 1024 {
-        format!("{:.2} KB", size_f / 1024.0)
-    } else {
-        format!("{:.2} MB", size_f / 1024.0 / 1024.0)
-    }
 }
 
 /// Creates a download arrow icon with the specified stroke color.
@@ -126,7 +115,7 @@ pub fn download_view<PMsg: Send + Clone + std::fmt::Debug + 'static>(
         Element {
             children: vec![
                 Text::new(file.name.clone()).with_font_size(14.0).into(),
-                Text::new(format_file_size(file.content.len()))
+                Text::new(format_byte_size(file.content.len()))
                     .with_font_size(12.0)
                     .with_color(TEXT_MUTED)
                     .into(),

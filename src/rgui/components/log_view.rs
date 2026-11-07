@@ -27,23 +27,12 @@ use raxis::widgets::text::{ParagraphAlignment, Text};
 use raxis::widgets::{Widget, widget};
 use raxis::{HookManager, w_id};
 
+use crate::rgui::kit::format_byte_size;
 use crate::rgui::messages::RootMessage;
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS_SM, CARD_BACKGROUND, SCROLLBAR_THUMB_COLOR, SCROLLBAR_TRACK_COLOR, SELECTION_COLOR, TEXT_ON_LIGHT_COLOR,
 };
 use crate::{LOG_BUFFER, LOG_NOTIFY};
-
-/// Formats a byte size to a human-readable string (B, KB, MB).
-pub fn short_size(size: usize) -> String {
-    let size_f = size as f64;
-    if size < 1024 {
-        format!("{size} B")
-    } else if size < 1024 * 1024 {
-        format!("{:.2} KB", size_f / 1024.0)
-    } else {
-        format!("{:.2} MB", size_f / 1024.0 / 1024.0)
-    }
-}
 
 /// Cuts a line down to at most `max_len` bytes without splitting a character.
 fn truncate_line(line: &str, max_len: usize) -> &str {
@@ -275,7 +264,7 @@ pub fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                                     })
                                     .as_element(
                                         combine_id(w_id!(), i % visible_items),
-                                        Text::new(format!("Show more ({})", short_size(lines[i].len())))
+                                        Text::new(format!("Show more ({})", format_byte_size(lines[i].len())))
                                             .with_font_size(8.0)
                                             .with_color(TEXT_ON_LIGHT_COLOR)
                                             .with_assisted_id(combine_id(w_id!(), i % visible_items)),
