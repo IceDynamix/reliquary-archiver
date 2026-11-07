@@ -61,9 +61,32 @@ pub mod worker;
 /// This is the core of the Elm architecture - all state changes flow through here.
 /// Messages are dispatched to appropriate handlers based on their type.
 ///
+/// Changed settings are saved afterwards, so handlers only have to change them.
+///
 /// # Returns
 /// An optional [`Task`] to be executed asynchronously (e.g., I/O operations, timers).
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
+    // The opacity slider changes the settings on every step of a drag, so its steps are saved once it
+    // is let go. Only the steps are held back: the slider can miss being let go when the window loses
+    // the mouse, and that mustn't keep everything else from being saved
+    let hold_save = state.opacity_slider_dragging && matches!(message, RootMessage::Settings(SettingsMessage::OpacityChanged(_)));
+
+    let task = route(state, message);
+
+    let save = if hold_save {
+        None
+    } else {
+        state.settings_file.save_if_changed(&state.store.settings)
+    };
+
+    match (task, save) {
+        (Some(task), Some(save)) => Some(Task::batch([task, save])),
+        (task, save) => task.or(save),
+    }
+}
+
+/// Dispatches messages to their handlers
+fn route(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
     match message {
         // Simple triggers
         RootMessage::TriggerRender => None,
@@ -83,7 +106,10 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         RootMessage::Account(msg) => handlers::handle_account_message(state, msg),
         RootMessage::Export(msg) => handlers::handle_export_message(state, msg),
         RootMessage::WebSocket(msg) => handlers::handle_websocket_message(state, msg),
-        RootMessage::Settings(msg) => components::settings_modal::handle_settings_message(state, msg),
+        RootMessage::Settings(msg) => {
+            components::settings_modal::handle_settings_message(state, msg);
+            None
+        }
         RootMessage::Window(msg) => handlers::handle_window_message(state, msg),
         RootMessage::Log(msg) => handlers::handle_log_message(state, msg),
         RootMessage::Update(msg) => handlers::handle_update_message(state, msg),
@@ -110,7 +136,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use crate::accounts::MultiAccountManager;
     use crate::rgui::components::update;
 
-    let (settings, settings_needs_save) = settings::load();
+    let (settings, settings_file) = settings::load();
     let start_minimized = settings.start_minimized;
     let minimize_to_tray_on_minimize = settings.minimize_to_tray_on_minimize;
 
@@ -136,20 +162,12 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let database = get_database();
     let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
 
-    let state = RootState::new(manager.clone(), port_tx).with_settings(settings);
+    let state = RootState::new(manager.clone(), port_tx, settings, settings_file);
 
     let app = raxis::Application::new(state, view, update, move |state| {
         let selected_account_rx = state.selected_account_tx.subscribe();
 
-        // Persist corrected run_on_start value if the registry was out of sync.
-        let save_task = if settings_needs_save {
-            Task::done(RootMessage::Settings(SettingsMessage::Save))
-        } else {
-            Task::none()
-        };
-
         Some(Task::batch(vec![
-            save_task,
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
             Task::run(archiver_worker(manager.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(

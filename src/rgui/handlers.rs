@@ -147,8 +147,8 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
         WebSocketMessage::SendPort(port) => {
             state.ws_port_sender.send(PortCommand::Open(port)).ok();
 
-            // Modify settings but don't save yet to minimize odds of saving on a bad port
-            state.store.settings.ws_port = port;
+            // Only make it a setting once the server runs on it, so a bad port is never saved
+            state.pending_ws_port = Some(port);
             None
         }
 
@@ -158,9 +158,18 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
         }
 
         WebSocketMessage::PortChanged(port) => {
-            // Save settings when the server actually starts rather than when we request a change to avoid saving a bad port
             state.store.connection_stats.ws_status = WebSocketStatus::Running { port, client_count: 0 };
-            Some(Task::done(RootMessage::Settings(crate::rgui::messages::SettingsMessage::Save)))
+
+            // Once the server runs on the requested port, it becomes the setting. Keep the requested port
+            // rather than `port`, so that 0 (pick any free port) stays 0. A port from an earlier request
+            // leaves the latest one pending
+            if let Some(requested) = state.pending_ws_port
+                && (requested == 0 || requested == port)
+            {
+                state.store.settings.ws_port = requested;
+                state.pending_ws_port = None;
+            }
+            None
         }
 
         WebSocketMessage::ClientCountChanged(client_count) => {
@@ -176,6 +185,7 @@ pub fn handle_websocket_message(state: &mut RootState, message: WebSocketMessage
             if matches!(state.store.connection_stats.ws_status, WebSocketStatus::Pending) {
                 state.store.connection_stats.ws_status = WebSocketStatus::Failed { error: err.clone() };
             }
+            state.pending_ws_port = None;
             tracing::info!("Unable to start websocket server on desired port. e={}", err);
             None
         }

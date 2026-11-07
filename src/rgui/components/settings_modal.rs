@@ -31,7 +31,7 @@ use crate::rgui::kit::modal::{ModalConfig, ModalPosition, modal_backdrop};
 use crate::rgui::kit::togglegroup::{ToggleGroupConfig, ToggleOption, togglegroup};
 use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketMessage, WebSocketStatus, WindowMessage};
 use crate::rgui::run_on_start::{RegistryError, set_run_on_start};
-use crate::rgui::settings::{self, ImageFit};
+use crate::rgui::settings::ImageFit;
 use crate::rgui::state::RootState;
 use crate::rgui::theme::{
     BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, OPAQUE_CARD_BACKGROUND, PAD_LG, PAD_MD, PAD_SM, PRIMARY_COLOR, SCROLLBAR_THUMB_COLOR,
@@ -515,92 +515,71 @@ pub fn settings_modal(state: &RootState, hook: &mut HookManager<RootMessage>) ->
 // Settings Message Handler
 // ============================================================================
 
-/// Handle settings-related messages
-pub fn handle_settings_message(state: &mut RootState, message: SettingsMessage) -> Option<Task<RootMessage>> {
+/// Handle settings-related messages. Changed settings are saved by [`crate::rgui::update`].
+pub fn handle_settings_message(state: &mut RootState, message: SettingsMessage) {
     match message {
-        SettingsMessage::Save => settings::save(&state.store.settings),
-
         SettingsMessage::BackgroundImageSelected(path) => {
             if let Some(path) = path {
                 state.store.settings.background_image = path.to_string_lossy().to_string();
                 tracing::info!("Background image changed to: {}", state.store.settings.background_image);
             }
-            settings::save(&state.store.settings)
         }
 
         SettingsMessage::RemoveBackgroundImage => {
             state.store.settings.background_image = String::new();
             tracing::info!("Background image removed");
-            settings::save(&state.store.settings)
         }
 
         SettingsMessage::ImageFitChanged(fit) => {
             state.store.settings.image_fit = fit;
             tracing::info!("Image fit mode changed to: {:?}", fit);
-            settings::save(&state.store.settings)
         }
 
         SettingsMessage::OpacityChanged(opacity) => {
             state.store.settings.background_opacity = opacity;
-            // Don't save on every slider change - wait for drag to end
-            None
         }
 
         SettingsMessage::OpacitySliderDrag(is_dragging) => {
             state.opacity_slider_dragging = is_dragging;
-            // Save settings when the drag ends to avoid excessive writes
-            if !is_dragging {
-                settings::save(&state.store.settings)
-            } else {
-                None
-            }
         }
 
         SettingsMessage::TextShadowToggled(enabled) => {
             state.store.settings.text_shadow_enabled = enabled;
-            settings::save(&state.store.settings)
         }
 
         SettingsMessage::AlwaysUpdateToggled(enabled) => {
             state.store.settings.always_update = enabled;
-            settings::save(&state.store.settings)
         }
 
         SettingsMessage::MinimizeToTrayOnCloseToggled(enabled) => {
             state.store.settings.minimize_to_tray_on_close = enabled;
-            settings::save(&state.store.settings)
         }
 
         SettingsMessage::MinimizeToTrayOnMinimizeToggled(enabled) => {
             state.store.settings.minimize_to_tray_on_minimize = enabled;
-            settings::save(&state.store.settings)
         }
 
-        SettingsMessage::RunOnStartToggled(enabled) => {
-            match set_run_on_start(enabled) {
-                Ok(()) => {
-                    state.store.settings.run_on_start = enabled;
-                }
-                Err(RegistryError::KeyCreationFailed) => {
-                    tracing::warn!("Unable to create registry key!");
-                }
-                Err(RegistryError::PathUnobtainable) => {
-                    tracing::warn!("Unable to get current exe path!");
-                }
-                Err(RegistryError::AddFailed) => {
-                    tracing::warn!("Failed to add registry key!");
-                }
-                Err(RegistryError::RemoveFailed) => {
-                    state.store.settings.run_on_start = false;
-                    tracing::warn!("Failed to remove registry key!");
-                }
+        SettingsMessage::RunOnStartToggled(enabled) => match set_run_on_start(enabled) {
+            Ok(()) => {
+                state.store.settings.run_on_start = enabled;
             }
-            settings::save(&state.store.settings)
-        }
+            Err(RegistryError::KeyCreationFailed) => {
+                tracing::warn!("Unable to create registry key!");
+            }
+            Err(RegistryError::PathUnobtainable) => {
+                tracing::warn!("Unable to get current exe path!");
+            }
+            Err(RegistryError::AddFailed) => {
+                tracing::warn!("Failed to add registry key!");
+            }
+            Err(RegistryError::RemoveFailed) => {
+                state.store.settings.run_on_start = false;
+                tracing::warn!("Failed to remove registry key!");
+            }
+        },
 
         SettingsMessage::StartMinimizedToggled(enabled) => {
             state.store.settings.start_minimized = enabled;
-            settings::save(&state.store.settings)
         }
     }
 }

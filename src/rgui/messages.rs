@@ -78,12 +78,9 @@ pub enum ExportMessage {
 // Settings Messages
 // ============================================================================
 
-/// Messages for settings persistence and configuration changes.
+/// Messages for settings changes.
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
-    /// Persist current settings to disk
-    Save,
-
     // Graphics settings
     /// User selected a new background image
     BackgroundImageSelected(Option<PathBuf>),

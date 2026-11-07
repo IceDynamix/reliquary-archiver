@@ -17,7 +17,7 @@ use tracing::level_filters::LevelFilter;
 use crate::accounts::MultiAccountManager;
 use crate::rgui::components::update::UpdateState;
 use crate::rgui::messages::WebSocketStatus;
-use crate::rgui::settings::Settings;
+use crate::rgui::settings::{Settings, SettingsFile};
 use crate::websocket::PortCommand;
 
 /// Information about a detected account.
@@ -152,31 +152,38 @@ pub struct RootState {
     pub selected_account_tx: watch::Sender<Option<u32>>,
     /// Central data store
     pub store: Store,
+    /// Where `store.settings` are saved
+    pub settings_file: SettingsFile,
     /// Whether the settings modal is open
     pub settings_open: bool,
     /// Whether the opacity slider is being dragged (hides modal backdrop)
     pub opacity_slider_dragging: bool,
     /// Channel to send port changes to the WebSocket server
     pub ws_port_sender: watch::Sender<PortCommand>,
+    /// The port the WebSocket server was asked to move to. It only becomes a setting once the server runs on it
+    pub pending_ws_port: Option<u16>,
 }
 
 impl RootState {
-    pub fn new(manager: Arc<Mutex<MultiAccountManager>>, ws_port_sender: watch::Sender<PortCommand>) -> Self {
+    pub fn new(
+        manager: Arc<Mutex<MultiAccountManager>>,
+        ws_port_sender: watch::Sender<PortCommand>,
+        settings: Settings,
+        settings_file: SettingsFile,
+    ) -> Self {
         let (selected_account_tx, _) = watch::channel(None);
         Self {
             manager,
             selected_account_tx,
-            store: Store::default(),
+            store: Store {
+                settings,
+                ..Store::default()
+            },
+            settings_file,
             settings_open: false,
             opacity_slider_dragging: false,
             ws_port_sender,
-        }
-    }
-
-    pub fn with_settings(self, settings: Settings) -> Self {
-        Self {
-            store: Store { settings, ..self.store },
-            ..self
+            pending_ws_port: None,
         }
     }
 }
