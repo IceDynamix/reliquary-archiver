@@ -147,10 +147,12 @@ fn download_as_json<T: DeserializeOwned>(url: &str) -> T {
 
 fn download_with_glab(url: &str) -> Option<String> {
     let api_path = url.strip_prefix("https://gitlab.com/api/v4/")?;
-    let glab = glab_path()?;
+    if !glab_available() {
+        return None;
+    }
 
     // --hostname, since glab would otherwise use this repo's (GitHub) remote
-    let output = match std::process::Command::new(glab).args(["api", "--hostname", "gitlab.com", api_path]).output() {
+    let output = match std::process::Command::new("glab").args(["api", "--hostname", "gitlab.com", api_path]).output() {
         Ok(output) => output,
         Err(e) => {
             println!("cargo:warning=glab failed to run ({e}), downloading {url} unauthenticated");
@@ -167,24 +169,15 @@ fn download_with_glab(url: &str) -> Option<String> {
     String::from_utf8(output.stdout).ok()
 }
 
-fn glab_path() -> Option<&'static std::path::Path> {
-    static GLAB: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+fn glab_available() -> bool {
+    static GLAB: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
-    GLAB.get_or_init(|| {
-        let on_path = std::process::Command::new("glab")
+    *GLAB.get_or_init(|| {
+        std::process::Command::new("glab")
             .arg("--version")
             .output()
-            .is_ok_and(|o| o.status.success());
-        if on_path {
-            return Some("glab".into());
-        }
-
-        // winget installs here, and it isn't on PATH until the shell restarts
-        let local = std::env::var("LOCALAPPDATA").ok()?;
-        let path = std::path::PathBuf::from(local).join("Programs").join("glab").join("glab.exe");
-        path.exists().then_some(path)
+            .is_ok_and(|o| o.status.success())
     })
-    .as_deref()
 }
 
 fn write_to_out<T: DeserializeOwned + Serialize>(value: T, file_name: &str) {
