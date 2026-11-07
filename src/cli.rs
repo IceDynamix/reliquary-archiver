@@ -18,9 +18,7 @@ use crate::accounts::MultiAccountManager;
 use crate::capture::{self, SourceSpec};
 use crate::session::{CaptureSession, SessionEvent};
 
-pub async fn run(args: Args) {
-    let source = source_from_args(&args);
-
+pub async fn run(args: Args, source: SourceSpec) {
     match capture(&args, &source).await {
         Some(export) => write_output(args.output, &export),
         None => warn!("skipped writing output"),
@@ -31,18 +29,37 @@ pub async fn run(args: Args) {
     }
 }
 
-fn source_from_args(args: &Args) -> SourceSpec {
-    #[cfg(feature = "pcap")]
-    if let Some(path) = &args.pcap {
-        return SourceSpec::PcapFile(path.clone());
-    }
+impl TryFrom<&Args> for SourceSpec {
+    type Error = &'static str;
 
-    #[cfg(feature = "pktmon")]
-    if let Some(path) = &args.etl {
-        return SourceSpec::EtlFile(path.clone());
-    }
+    fn try_from(args: &Args) -> Result<Self, Self::Error> {
+        #[cfg(feature = "pcap")]
+        if let Some(path) = &args.pcap {
+            return Ok(SourceSpec::PcapFile(path.clone()));
+        }
 
-    SourceSpec::Live
+        #[cfg(feature = "pktmon")]
+        if let Some(path) = &args.etl {
+            return SourceSpec::EtlFile(path.clone());
+        }
+
+        #[cfg(feature = "pcap-parser")]
+        if let Some(path) = &args.pcap_file_live {
+            return Ok(SourceSpec::PcapFileLive(path.clone()));
+        }
+        #[cfg(feature = "pcap")]
+        {
+            Ok(SourceSpec::LivePcap)
+        }
+        #[cfg(feature = "pktmon")]
+        {
+            Ok(SourceSpec::LivePktmon)
+        }
+        #[cfg(all(feature = "pcap-parser", not(any(feature = "pktmon", feature = "pcap"))))]
+        {
+            Err("pcap-parser requires the --pcap-file-live option")
+        }
+    }
 }
 
 #[instrument(skip_all)]

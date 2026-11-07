@@ -1,13 +1,10 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
-use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use async_stream::stream;
-use futures::stream::BoxStream;
-use futures::{FutureExt, Stream, StreamExt, TryFutureExt, stream};
-use pcaparse::PcapError;
+use futures::TryFutureExt;
 
-use crate::capture::{CaptureBackend, CaptureDevice, CaptureError, Packet, PacketCapture, PacketSource, PacketStream};
+use crate::capture::{CaptureError, Packet, PacketSource, PacketStream};
 
 #[derive(Debug)]
 pub struct PcapFile {
@@ -21,13 +18,12 @@ impl PcapFile {
 }
 
 impl PacketSource for PcapFile {
-    fn packets(self) -> crate::capture::Result<PacketStream> {
+    fn open(self: Box<Self>) -> crate::capture::Result<PacketStream> {
         let source_id = {
             let mut hasher = DefaultHasher::new();
             self.file.hash(&mut hasher);
             hasher.finish()
         };
-
         Ok(Box::pin(stream! {
             let capture = tokio::fs::File::open(self.file.clone())
                 .map_err(Box::<_>::from)
@@ -37,16 +33,12 @@ impl PacketSource for PcapFile {
             match capture.await {
                 Ok(mut stream) => {
                     while let Some(packet_result) = stream.async_next_packet().await {
-                        match packet_result {
-                            Ok(packet) => yield Ok(Packet {
+                        yield packet_result
+                            .map_err(|e| CaptureError::Capture (Box::new(e)))
+                            .map(|p| Packet {
                                 source_id,
-                                data: packet.data.to_vec(),
-                            }),
-                            Err(PcapError::IoError(err)) if err.kind() == ErrorKind::UnexpectedEof => {
-                                break;
-                            }
-                            Err(err) => yield Err(CaptureError::Capture { has_captured: true, error: Box::new(err)}),
-                        }
+                                data: p.data.to_vec(),
+                            });
                     }
                 }
                 Err(err) => {
