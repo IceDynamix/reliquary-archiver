@@ -19,11 +19,11 @@ use raxis::{HookManager, svg, svg_path, w_id};
 
 use crate::rgui::kit::format_byte_size;
 use crate::rgui::kit::tooltip::warning_tooltip;
+use crate::rgui::scopefns::Also;
 use crate::rgui::state::{FileContainer, FileExtensions};
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS, CARD_BACKGROUND, PAD_MD, PAD_SM, PRIMARY_COLOR, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_MUTED,
 };
-use crate::scopefns::Also;
 
 /// Creates a download arrow icon with the specified stroke color.
 fn download_arrow_icon<M>(stroke: Color) -> Element<M> {

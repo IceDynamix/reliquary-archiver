@@ -16,10 +16,11 @@ use reliquary_archiver::export::fribbels::OptimizerExporter;
 use tokio::sync::watch;
 use tracing::level_filters::LevelFilter;
 
+use crate::accounts::MultiAccountManager;
 use crate::rgui::components::update::UpdateState;
 use crate::rgui::messages::WebSocketStatus;
+use crate::rgui::worker;
 use crate::websocket::PortCommand;
-use crate::worker::{self, MultiAccountManager};
 
 /// Information about a detected account.
 #[derive(Debug, Clone)]
