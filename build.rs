@@ -11,7 +11,7 @@ use reliquary::resource::{ResourceMap, TextMapEntry};
 use ureq::serde::Serialize;
 use ureq::serde::de::DeserializeOwned;
 
-const BASE_RESOURCE_URL: &str = "https://gitlab.com/Dimbreath/turnbasedgamedata/-/raw/main";
+const API_RESOURCE_URL: &str = "https://gitlab.com/api/v4/projects/Dimbreath%2Fturnbasedgamedata/repository/files";
 
 macro_rules! download_config {
     ($t:ty, $ex:expr, [$($url:expr),+ $(,)?]) => {
@@ -112,7 +112,8 @@ fn save_text_map(hashes: &HashSet<TextMapEntry>, language: &str) {
 
     let file_name = format!("TextMap{language}.json");
 
-    let text_map_url = format!("{BASE_RESOURCE_URL}/TextMap/{file_name}");
+    let encoded_path = format!("TextMap%2F{file_name}");
+    let text_map_url = format!("{API_RESOURCE_URL}/{encoded_path}/raw?ref=main");
     let text_map: HashMap<String, String> = download_as_json::<HashMap<String, String>>(&text_map_url)
         .into_iter()
         .filter(|(k, _)| hashes.contains(k))
@@ -126,15 +127,64 @@ fn resource_url<T: ResourceMap>() -> String {
 }
 
 fn resource_url_of(name: &str) -> String {
-    format!("{BASE_RESOURCE_URL}/ExcelOutput/{name}")
+    let encoded_path = format!("ExcelOutput%2F{name}");
+    format!("{API_RESOURCE_URL}/{encoded_path}/raw?ref=main")
 }
 
 fn download_as_json<T: DeserializeOwned>(url: &str) -> T {
+    // Try glab CLI first (authenticated, avoids rate limits), fall back to ureq
+    if let Some(data) = download_with_glab(url) {
+        return ureq::serde_json::from_str(&data)
+            .unwrap_or_else(|e| panic!("Failed to parse json from {url}: {e}"));
+    }
+
     ureq::get(url)
         .call()
-        .unwrap()
+        .unwrap_or_else(|e| panic!("Failed to download {url}: {e}"))
         .into_json()
         .unwrap_or_else(|_| panic!("Failed to read json from url: {}", url))
+}
+
+fn download_with_glab(url: &str) -> Option<String> {
+    let api_path = url.strip_prefix("https://gitlab.com/api/v4/")?;
+    let glab = glab_path()?;
+
+    // --hostname, since glab would otherwise use this repo's (GitHub) remote
+    let output = match std::process::Command::new(glab).args(["api", "--hostname", "gitlab.com", api_path]).output() {
+        Ok(output) => output,
+        Err(e) => {
+            println!("cargo:warning=glab failed to run ({e}), downloading {url} unauthenticated");
+            return None;
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        println!("cargo:warning=glab api failed ({}), downloading {url} unauthenticated", stderr.trim());
+        return None;
+    }
+
+    String::from_utf8(output.stdout).ok()
+}
+
+fn glab_path() -> Option<&'static std::path::Path> {
+    static GLAB: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+    GLAB.get_or_init(|| {
+        let on_path = std::process::Command::new("glab")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if on_path {
+            return Some("glab".into());
+        }
+
+        // winget installs here, and it isn't on PATH until the shell restarts
+        let local = std::env::var("LOCALAPPDATA").ok()?;
+        let path = std::path::PathBuf::from(local).join("Programs").join("glab").join("glab.exe");
+        path.exists().then_some(path)
+    })
+    .as_deref()
 }
 
 fn write_to_out<T: DeserializeOwned + Serialize>(value: T, file_name: &str) {
