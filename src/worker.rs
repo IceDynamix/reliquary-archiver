@@ -107,9 +107,8 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
                 // Forward events from manager's unified event channel
                 Ok(event) = manager_rx.recv() => {
                     match event {
-                        AccountEvent::Discovered { uid } => {
-                            output.send(WorkerEvent::AccountDiscovered { uid }).await.ok();
-                        }
+                        // The capture loop already reports every login as AccountDiscovered
+                        AccountEvent::Discovered { .. } => {}
                         AccountEvent::Reconnected { uid } => {
                             output.send(WorkerEvent::AccountReconnected { uid }).await.ok();
                         }
