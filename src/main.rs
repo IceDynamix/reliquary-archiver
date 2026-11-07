@@ -1,27 +1,12 @@
 #![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
 #![allow(unused)]
 
-use std::collections::HashSet;
-use std::fs::File;
-use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, LockResult, Mutex};
-use std::time::Duration;
 
-#[cfg(feature = "pcap")]
-use capture::{normalize_offline_pcap_payload, PCAP_FILTER};
-use chrono::Local;
 use clap::Parser;
-use futures::lock::Mutex as FuturesMutex;
-use futures::{FutureExt, StreamExt, future, select};
-use reliquary::network::command::GameCommandError;
-use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
-use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, KcpError, NetworkError};
-use tokio::pin;
-use tracing::{debug, error, info, instrument, warn};
+use futures::FutureExt;
+use tracing::{debug, error, info};
 
 #[cfg(feature = "stream")]
 mod websocket;
@@ -35,14 +20,12 @@ mod update;
 #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
 mod elevation;
 
-use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::database::Database;
-use reliquary_archiver::export::fribbels::OptimizerExporter;
-
 mod accounts;
 mod capture;
+mod cli;
 mod logging;
 mod scopefns;
+mod session;
 mod worker;
 
 // The GUI reads the log buffer to display it
@@ -114,31 +97,6 @@ struct Args {
     detach: bool,
 }
 
-#[derive(Debug, Clone)]
-enum CaptureMode {
-    Live,
-    #[cfg(feature = "pcap")]
-    Pcap(PathBuf),
-    #[cfg(feature = "pktmon")]
-    Etl(PathBuf),
-}
-
-impl CaptureMode {
-    fn from_args(args: &Args) -> Self {
-        #[cfg(feature = "pcap")]
-        if let Some(path) = &args.pcap {
-            return CaptureMode::Pcap(path.clone());
-        }
-
-        #[cfg(feature = "pktmon")]
-        if let Some(path) = &args.etl {
-            return CaptureMode::Etl(path.clone());
-        }
-
-        CaptureMode::Live
-    }
-}
-
 #[cfg(not(any(feature = "pktmon", feature = "pcap")))]
 compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
 
@@ -180,15 +138,12 @@ async fn main() {
         unsafe { windows::Win32::System::Console::AllocConsole().ok() };
     }
 
-    // Copy the exit_after_capture flag to a local variable before args is moved into the closure
-    let exit_after_capture = args.exit_after_capture;
-
     logging::tracing_init(args.verbose, args.log_path.as_deref());
 
     debug!(?args);
 
     // AssertUnwindSafe is justified as all we do is write a crash log before ending the program and therefore there is no risk posed by potential broken invariants
-    if let Err(payload) = AssertUnwindSafe(capture(args)).catch_unwind().await {
+    if let Err(payload) = AssertUnwindSafe(run(args)).catch_unwind().await {
         error!("the application panicked, this is a bug, please report it on GitHub or Discord");
 
         logging::write_crashlog(payload.as_ref());
@@ -198,7 +153,7 @@ async fn main() {
     }
 }
 
-async fn capture(args: Args) {
+async fn run(args: Args) {
     // Only self update on Windows, since that's the only platform we ship releases for
     // In GUI mode, the update check is handled by the GUI after it launches
     #[cfg(windows)]
@@ -234,415 +189,5 @@ async fn capture(args: Args) {
         return;
     }
 
-    // Headless/CLI mode
-    {
-        let database = Database::new();
-        let sniffer = GameSniffer::new();
-        let exporter = OptimizerExporter::new();
-
-        let capture_mode = CaptureMode::from_args(&args);
-        let export = match capture_mode {
-            CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer).await,
-            #[cfg(feature = "pcap")]
-            CaptureMode::Pcap(path) => capture_from_pcap(exporter, sniffer, path),
-            #[cfg(feature = "pktmon")]
-            CaptureMode::Etl(path) => capture_from_etl(exporter, sniffer, path),
-        };
-
-        if let Some(export) = export {
-            let file_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
-            let mut output_file = match args.output {
-                Some(out) => out,
-                _ => PathBuf::from(file_name.clone()),
-            };
-
-            macro_rules! pick_file {
-                () => {
-                    #[cfg(feature = "gui")]
-                    if let Some(new_path) = rfd::FileDialog::new()
-                        .set_title("Select output file location")
-                        .set_file_name(&file_name)
-                        .add_filter("JSON files", &["json"])
-                        .save_file()
-                    {
-                        output_file = new_path;
-                        continue;
-                    }
-                        error!("No alternative path selected, aborting write");
-                        break;
-                };
-            }
-            info!("exporting collected data");
-            loop {
-                match File::create(&output_file) {
-                    Ok(file) => {
-                        if let Err(e) = serde_json::to_writer_pretty(&file, &export) {
-                            error!("Failed to write to {}: {}", output_file.display(), e);
-                            pick_file!();
-                        }
-                        info!("wrote output to {}", output_file.canonicalize().unwrap().display());
-                        break;
-                    }
-                    Err(e) => {
-                        error!("Failed to create file at {}: {}", output_file.display(), e);
-                        pick_file!();
-                    }
-                }
-            }
-        } else {
-            warn!("skipped writing output");
-        }
-        if let Some(log_path) = args.log_path {
-            info!("wrote logs to {}", log_path.display());
-        }
-    }
-}
-
-// Helper function to process a packet and determine if capture should stop
-enum ProcessResult {
-    Continue,
-    Stop,
-}
-
-// Simplified packet processing for file captures
-fn file_process_packet<E>(exporter: &mut E, sniffer: &mut GameSniffer, payload: Vec<u8>) -> ProcessResult
-where
-    E: Exporter,
-{
-    if let Ok(packets) = sniffer.receive_packet(payload) {
-        for packet in packets {
-            if let GamePacket::Commands { conv_id, result } = packet {
-                match result {
-                    Ok(command) => {
-                        exporter.read_command(command);
-
-                        if exporter.is_initialized() {
-                            info!("finished capturing");
-                            return ProcessResult::Stop;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(conv_id, %e);
-                        if matches!(e, GameCommandError::VersionMismatch) {
-                            // Client packet was misordered from server packet
-                            // This will be reprocessed after we receive the new session key
-                            return ProcessResult::Continue;
-                        }
-
-                        return ProcessResult::Stop;
-                    }
-                }
-            }
-        }
-    }
-
-    ProcessResult::Continue
-}
-
-#[instrument(skip_all)]
-#[cfg(feature = "pcap")]
-pub fn capture_from_pcap<E>(mut exporter: E, mut sniffer: GameSniffer, pcap_path: PathBuf) -> Option<E::Export>
-where
-    E: Exporter,
-{
-    info!("Capturing from pcap file: {}", pcap_path.display());
-    let mut capture = pcap::Capture::from_file(&pcap_path).expect("could not read pcap file");
-    let linktype = capture.get_datalink();
-    capture.filter(PCAP_FILTER, false).unwrap();
-
-    while let Ok(packet) = capture.next_packet() {
-        let payload = match normalize_offline_pcap_payload(linktype, packet.data) {
-            Ok(payload) => payload,
-            Err(_) => continue,
-        };
-        match file_process_packet(&mut exporter, &mut sniffer, payload) {
-            ProcessResult::Continue => {}
-            ProcessResult::Stop => break,
-        }
-    }
-
-    exporter.export()
-}
-
-#[instrument(skip_all)]
-#[cfg(feature = "pktmon")]
-fn capture_from_etl<E>(mut exporter: E, mut sniffer: GameSniffer, etl_path: PathBuf) -> Option<E::Export>
-where
-    E: Exporter,
-{
-    info!("Capturing from etl file: {}", etl_path.display());
-    let mut capture = pktmon::EtlCapture::new(&etl_path).expect("could not read etl file");
-    capture.start().expect("could not start etl capture");
-
-    while let Ok(packet) = capture.next_packet() {
-        match packet.payload {
-            pktmon::PacketPayload::Ethernet(payload) => match file_process_packet(&mut exporter, &mut sniffer, payload) {
-                ProcessResult::Continue => {}
-                ProcessResult::Stop => break,
-            },
-            _ => {}
-        }
-    }
-
-    capture.stop().expect("could not stop etl capture");
-    exporter.export()
-}
-
-async fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
-where
-    E: Exporter,
-    E::Export: From<<OptimizerExporter as Exporter>::Export>,
-{
-    use reliquary_archiver::export::database::get_database;
-    #[cfg(feature = "stream")]
-    use tokio::sync::watch;
-
-    #[cfg(feature = "stream")]
-    use crate::websocket::{PortSource, start_websocket_server};
-    use crate::accounts::MultiAccountManager;
-
-    #[cfg(not(feature = "stream"))]
-    let streaming = false;
-
-    #[cfg(feature = "stream")]
-    let streaming = args.stream;
-
-    // Always use MultiAccountManager for consistency
-    let database = get_database();
-    let manager = Arc::new(FuturesMutex::new(MultiAccountManager::new()));
-
-    #[cfg(feature = "stream")]
-    let selected_account_tx = if streaming {
-        let (tx, rx) = watch::channel::<Option<u32>>(None);
-
-        // Start websocket server
-        tokio::spawn(start_websocket_server(PortSource::Fixed(args.websocket_port), manager.clone(), rx));
-
-        info!("WebSocket server starting on port {}...", args.websocket_port);
-        Some(tx)
-    } else {
-        None
-    };
-
-    #[cfg(not(feature = "stream"))]
-    let selected_account_tx = None;
-
-    // Run live capture with manager
-    let result = live_capture(args, manager, sniffer, selected_account_tx, streaming).await;
-    result.map(|export| export.into())
-}
-
-#[instrument(skip_all)]
-async fn live_capture(
-    args: &Args,
-    manager: Arc<FuturesMutex<accounts::MultiAccountManager>>,
-    mut sniffer: GameSniffer,
-    selected_account_tx: Option<tokio::sync::watch::Sender<Option<u32>>>,
-    streaming: bool,
-) -> Option<<OptimizerExporter as Exporter>::Export> {
-    use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
-    use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
-
-    let packet_stream = capture::open_source(&capture::SourceSpec::Live).expect("Failed to start packet capture");
-    let mut packet_stream = packet_stream.fuse();
-
-    info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
-
-    if streaming {
-        info!("WebSocket streaming enabled - capture will run until manually stopped");
-    }
-
-    pin!(
-        let timeout_future = maybe_timeout(
-            if !streaming {
-                info!("listening with a timeout of {} seconds...", args.timeout);
-                Some(Duration::from_secs(args.timeout))
-            } else {
-                None
-            }
-        ).fuse();
-    );
-
-    let mut poisoned_sources = HashSet::new();
-    let mut latest_uid: Option<u32> = None;
-
-    'recv: loop {
-        let received = select! {
-            packet = packet_stream.next() => match packet {
-                Some(packet) => packet,
-                None => break 'recv,
-            },
-
-            _ = timeout_future => {
-                break 'recv;
-            }
-        };
-
-        match received {
-            Ok(packet) => {
-                if poisoned_sources.contains(&packet.source_id) {
-                    // We already know that this source is poisoned, so we can skip it
-                    continue;
-                }
-
-                match sniffer.receive_packet(packet.data) {
-                    Ok(packets) => {
-                        for packet in packets {
-                            match packet {
-                                GamePacket::Connection(c) => match c {
-                                    ConnectionPacket::HandshakeEstablished { conv_id } => {
-                                        info!(conv_id, "detected connection established");
-
-                                        if cfg!(all(feature = "pcap", windows)) {
-                                            info!(
-                                                "If the program gets stuck at this point for longer than 10 seconds, please try the pktmon release from https://github.com/IceDynamix/reliquary-archiver/releases/latest"
-                                            );
-                                        }
-                                    }
-                                    ConnectionPacket::Disconnected => {
-                                        info!("detected connection disconnected");
-                                    }
-                                    _ => {}
-                                },
-                                GamePacket::Commands { conv_id, result } => match result {
-                                    Ok(command) => {
-                                        if command.command_id == PlayerLoginScRsp {
-                                            info!(conv_id, "detected login start");
-                                        }
-
-                                        // Check for UID discovery to register with manager
-                                        if command.command_id == PlayerGetTokenScRsp {
-                                            if let Ok(token_rsp) = command.parse_proto::<PlayerGetTokenScRspProto>() {
-                                                let uid = token_rsp.uid;
-                                                let mut mgr = manager.lock().await;
-                                                mgr.register_uid(conv_id, uid);
-
-                                                // Auto-select latest account
-                                                latest_uid = Some(uid);
-                                                if let Some(ref tx) = selected_account_tx {
-                                                    tx.send(Some(uid)).ok();
-                                                    info!(uid, "Auto-selected account for WebSocket streaming");
-                                                }
-                                            }
-                                        }
-
-                                        if !streaming && command.command_id == PlayerLoginFinishScRsp {
-                                            info!("detected login end, assume initialization is finished");
-                                            break 'recv;
-                                        }
-
-                                        // Route command to correct account exporter
-                                        let exporter = {
-                                            let mut mgr = manager.lock().await;
-                                            mgr.get_or_create_exporter(conv_id)
-                                        };
-                                        exporter.lock().await.read_command(command);
-                                    }
-                                    Err(e) => {
-                                        warn!(conv_id, %e);
-                                        match e {
-                                            GameCommandError::DecryptionKeyMissing => {
-                                                // version is not supported, there's no point in capturing
-                                                warn!(
-                                                    "This game version is not supported yet. It usually takes a few days for Reliquary Archiver to get updated for new versions. Please try again at a later point."
-                                                );
-                                                break 'recv;
-                                            }
-                                            GameCommandError::HeaderTooShort { .. } | GameCommandError::CommandTooShort { .. } => {
-                                                // structural parse errors, ignore
-                                            }
-                                            GameCommandError::VersionMismatch => {
-                                                // Client packet was likely misordered from server packet
-                                                // This will be reprocessed after we receive the new session key
-                                            }
-                                        }
-                                    }
-                                },
-                            }
-                        }
-
-                        // Check if initialized for early exit in non-streaming mode
-                        if !streaming {
-                            if let Some(uid) = latest_uid {
-                                let mgr = manager.lock().await;
-                                if let Some(exporter) = mgr.get_account_exporter(uid) {
-                                    if exporter.lock().await.is_initialized() {
-                                        info!("retrieved all relevant packets, stop listening");
-                                        break 'recv;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        warn!(%e);
-                        match e {
-                            NetworkError::ConnectionPacket(e) => {
-                                if let ConnectionPacketError::TransportLayerNotPresent = e {
-                                    warn!(
-                                        "This error tends to happen when using VPNs or similar programs. Please disable them and try again."
-                                    );
-                                }
-
-                                // Connection errors are not fatal as all network interfaces are funneled through the same stream
-                                // Just mark this source as poisoned and continue listening on other sources
-                                poisoned_sources.insert(packet.source_id);
-                                continue;
-                            }
-                            NetworkError::Kcp(e) => match e {
-                                KcpError::HeaderTooShort { .. }
-                                | KcpError::SegmentTooShort { .. }
-                                | KcpError::ContentLengthExceedsData { .. }
-                                | KcpError::InvalidSegmentHeader { .. } => {
-                                    // structural parse errors, ignore
-                                }
-                                KcpError::ClientNotConstructed => {}
-                                KcpError::PacketDoesNotBelongToConversation { .. } => {
-                                    // reliquary should assign conversation ids correctly?
-                                    // if it does happen, then something went wrong
-                                    break 'recv;
-                                }
-                                KcpError::InnerKcpError(e) => break 'recv,
-                            },
-                            NetworkError::GameCommand(e) => match e {
-                                GameCommandError::DecryptionKeyMissing => {
-                                    // version is not supported, there's no point in capturing
-                                    break 'recv;
-                                }
-                                GameCommandError::HeaderTooShort { .. } | GameCommandError::CommandTooShort { .. } => {
-                                    // structural parse errors, ignore
-                                }
-                                GameCommandError::VersionMismatch => {
-                                    // Client packet was likely misordered from server packet
-                                    // This will be reprocessed after we receive the new session key
-                                }
-                            },
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                warn!(%e);
-                break 'recv;
-            }
-        }
-    }
-
-    // Export from the latest account
-    if let Some(uid) = latest_uid {
-        let mgr = manager.lock().await;
-        if let Some(exporter) = mgr.get_account_exporter(uid) {
-            return exporter.lock().await.export();
-        }
-    }
-
-    None
-}
-
-async fn maybe_timeout(timeout: Option<Duration>) -> () {
-    if let Some(timeout) = timeout {
-        tokio::time::sleep(timeout).await;
-    } else {
-        future::pending::<()>().await;
-    }
+    cli::run(args).await;
 }

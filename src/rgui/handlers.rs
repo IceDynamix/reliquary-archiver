@@ -516,23 +516,8 @@ impl<Message: Send + 'static> ScreenAction<Message> {
                 }
             }
             #[cfg(feature = "pcap")]
-            Self::ProcessCapture(path) => Task::future(async move {
-                use reliquary::network::GameSniffer;
-                use reliquary_archiver::export::Exporter;
-                use reliquary_archiver::export::database::{Database, get_database};
-
-                use crate::capture_from_pcap;
-
-                tokio::task::spawn_blocking(move || {
-                    let sniffer = GameSniffer::new();
-                    let exporter = reliquary_archiver::export::fribbels::OptimizerExporter::new();
-
-                    capture_from_pcap(exporter, sniffer, path)
-                })
-                .await
-                .expect("Failed to process pcap")
-            })
-            .and_then(|e| Task::done(RootMessage::new_export(e))),
+            Self::ProcessCapture(path) => Task::future(crate::session::export_from_file(crate::capture::SourceSpec::PcapFile(path)))
+                .and_then(|e| Task::done(RootMessage::new_export(e))),
         }
     }
 }
