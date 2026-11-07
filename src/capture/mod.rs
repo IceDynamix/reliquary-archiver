@@ -5,16 +5,17 @@
 //! and call [`open_source`]; which backend ends up serving it is decided here and nowhere else.
 //!
 //! Live backends only need to implement [`DeviceBackend`], [`DeviceSource`] takes care of
-//! device discovery and merging.
+//! device discovery and merging. File based sources implement [`PacketSource`] directly.
 
 use std::error::Error;
 use std::fmt::{Debug, Display};
+use std::path::PathBuf;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio::sync::mpsc;
 use tokio_stream::StreamMap;
-use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
 use tracing::instrument;
 
 #[cfg(all(windows, feature = "pktmon"))]
@@ -131,12 +132,28 @@ pub trait PacketSource: Send + 'static {
 pub enum SourceSpec {
     /// Capture live traffic from the network
     Live,
+    /// Read a recorded .pcap file
+    #[cfg(feature = "pcap")]
+    PcapFile(PathBuf),
+    /// Read a recorded .etl file
+    #[cfg(feature = "pktmon")]
+    EtlFile(PathBuf),
+}
+
+impl SourceSpec {
+    pub fn is_live(&self) -> bool {
+        matches!(self, SourceSpec::Live)
+    }
 }
 
 /// Open the packet source described by `spec`
 pub fn open_source(spec: &SourceSpec) -> Result<PacketStream> {
     let source: Box<dyn PacketSource> = match spec {
         SourceSpec::Live => live_source(),
+        #[cfg(feature = "pcap")]
+        SourceSpec::PcapFile(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
+        #[cfg(feature = "pktmon")]
+        SourceSpec::EtlFile(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
     };
 
     source.open()
@@ -239,4 +256,24 @@ fn add_new_devices<B: DeviceBackend>(backend: &B, streams: &mut StreamMap<String
             }
         }
     }
+}
+
+/// Runs a blocking packet reader on a worker thread and exposes what it reads as a stream.
+///
+/// `read` is handed a callback to pass packets to, which returns `false` once nobody is listening anymore.
+fn blocking_stream(read: impl FnOnce(&mut dyn FnMut(Packet) -> bool) + Send + 'static) -> PacketStream {
+    let (tx, rx) = mpsc::channel(1024);
+
+    tokio::task::spawn_blocking(move || read(&mut |packet| tx.blocking_send(Ok(packet)).is_ok()));
+
+    ReceiverStream::new(rx).boxed()
+}
+
+/// Derives a stable source id for packets read from a file
+fn file_source_id(path: &std::path::Path) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    path.hash(&mut hasher);
+    hasher.finish()
 }

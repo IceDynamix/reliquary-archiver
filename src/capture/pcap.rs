@@ -1,10 +1,11 @@
 use std::future;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::PathBuf;
 
 use ::pcap::{self, Capture, Device as PcapDevice};
 use futures::StreamExt;
 use pcap::PacketCodec;
-use tracing::{instrument, warn};
+use tracing::{info, instrument, warn};
 
 use super::*;
 
@@ -79,5 +80,40 @@ impl PacketCodec for Codec {
             source_id: self.source_id,
             data: pkt.data.to_vec(),
         }
+    }
+}
+
+/// Reads packets from a recorded .pcap file
+pub struct PcapFileSource {
+    path: PathBuf,
+}
+
+impl PcapFileSource {
+    pub fn new(path: PathBuf) -> Self {
+        Self { path }
+    }
+}
+
+impl PacketSource for PcapFileSource {
+    #[instrument(skip_all)]
+    fn open(self: Box<Self>) -> Result<PacketStream> {
+        info!("Capturing from pcap file: {}", self.path.display());
+        let mut capture = Capture::from_file(&self.path).map_err(|e| CaptureError::Device(Box::new(e)))?;
+        let linktype = capture.get_datalink();
+        capture.filter(PCAP_FILTER, false).map_err(|e| CaptureError::Filter(Box::new(e)))?;
+
+        let source_id = file_source_id(&self.path);
+
+        Ok(blocking_stream(move |send| {
+            while let Ok(packet) = capture.next_packet() {
+                let Ok(data) = normalize_offline_pcap_payload(linktype, packet.data) else {
+                    continue;
+                };
+
+                if !send(Packet { source_id, data }) {
+                    break;
+                }
+            }
+        }))
     }
 }
