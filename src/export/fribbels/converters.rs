@@ -1,4 +1,3 @@
-use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::AvatarPathData::AvatarPathData as ProtoAvatarPathData;
 use reliquary::network::command::proto::AvatarPathSkillTree::AvatarPathSkillTree as ProtoSkillTree;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
@@ -56,37 +55,14 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
     let mainstat = main_stat_to_export(&main_affix_config.Property)?.to_string();
     let location = format_location(proto.equip_avatar_id);
 
-    debug!(rarity, set_name, slot, slot, mainstat, location, "detected");
+    debug!(rarity, set_name, slot, mainstat, location, "detected");
 
-    let substats = proto
-        .sub_affix_list
-        .iter()
-        .filter_map(|substat| export_substat(db, rarity, substat))
-        .collect();
+    let export_substats =
+        |affixes: &[RelicAffix]| -> Vec<Substat> { affixes.iter().filter_map(|substat| export_substat(db, rarity, substat)).collect() };
 
-    let reroll_substats = if proto.reforge_sub_affix_list.is_empty() {
-        None
-    } else {
-        Some(
-            proto
-                .reforge_sub_affix_list
-                .iter()
-                .filter_map(|substat| export_substat(db, rarity, substat))
-                .collect(),
-        )
-    };
-
-    let preview_substats = if proto.preview_sub_affix_list.is_empty() {
-        None
-    } else {
-        Some(
-            proto
-                .preview_sub_affix_list
-                .iter()
-                .filter_map(|substat| export_substat(db, rarity, substat))
-                .collect(),
-        )
-    };
+    let substats = export_substats(&proto.sub_affix_list);
+    let reroll_substats = (!proto.reforge_sub_affix_list.is_empty()).then(|| export_substats(&proto.reforge_sub_affix_list));
+    let preview_substats = (!proto.preview_sub_affix_list.is_empty()).then(|| export_substats(&proto.preview_sub_affix_list));
 
     Some(Relic {
         set_id,
@@ -153,38 +129,6 @@ pub fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<
     })
 }
 
-/// Converts a proto character to an export character
-#[instrument(name = "character", skip_all, fields(id = proto.base_avatar_id))]
-pub fn export_proto_character(db: &Database, proto: &ProtoCharacter) -> Option<Character> {
-    let id = proto.base_avatar_id;
-    let name = db.lookup_avatar_name(id)?;
-    let path = avatar_path_lookup(db, id)?.to_owned();
-
-    let level = proto.level;
-    // let eidolon = proto.rank;
-
-    debug!(character = name, level, "detected");
-
-    // let (skills, traces, memosprite) = export_skill_tree(db, &proto.);
-    // let ability_version = proto.skilltree_version;
-
-    Some(Character {
-        id,
-        name,
-        path,
-        level,
-        ascension: proto.promotion,
-
-        // These fields are only accessible in the AvatarPathData
-        // Will be updated in [resolve_multipath_character]
-        eidolon: 0,
-        skills: Skills::default(),
-        traces: Traces::default(),
-        memosprite: None,
-        ability_version: 0,
-    })
-}
-
 /// Converts a proto multipath character to an export character
 pub fn export_proto_multipath_character(db: &Database, proto: &ProtoAvatarPathData) -> Option<Character> {
     let id = proto.avatar_id;
@@ -196,7 +140,7 @@ pub fn export_proto_multipath_character(db: &Database, proto: &ProtoAvatarPathDa
 
     trace!(character = name, path, "detected");
 
-    let (skills, traces, memosprite) = export_skill_tree(db, &proto.avatar_path_skill_tree);
+    let (skills, traces, memosprite) = export_skill_tree(&proto.avatar_path_skill_tree);
     let ability_version = proto.skilltree_version;
 
     Some(Character {
@@ -217,33 +161,10 @@ pub fn export_proto_multipath_character(db: &Database, proto: &ProtoAvatarPathDa
 }
 
 /// Extracts skills, traces, and memosprite from a skill tree
-pub fn export_skill_tree(_db: &Database, proto: &[ProtoSkillTree]) -> (Skills, Traces, Option<Memosprite>) {
-    let mut skills = Skills {
-        basic: 0,
-        skill: 0,
-        ult: 0,
-        talent: 0,
-        elation: None,
-    };
-
-    let mut traces = Traces {
-        ability_1: false,
-        ability_2: false,
-        ability_3: false,
-        stat_1: false,
-        stat_2: false,
-        stat_3: false,
-        stat_4: false,
-        stat_5: false,
-        stat_6: false,
-        stat_7: false,
-        stat_8: false,
-        stat_9: false,
-        stat_10: false,
-        special: false,
-    };
-
-    let mut memosprite = Memosprite { skill: 0, talent: 0 };
+pub fn export_skill_tree(proto: &[ProtoSkillTree]) -> (Skills, Traces, Option<Memosprite>) {
+    let mut skills = Skills::default();
+    let mut traces = Traces::default();
+    let mut memosprite = Memosprite::default();
 
     for skill in proto.iter().filter(|s| s.point_id != 0) {
         let level = skill.level;
