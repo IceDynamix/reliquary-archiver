@@ -618,19 +618,7 @@ async fn live_capture(
     use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
     use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
 
-    let rx = {
-        #[cfg(feature = "pcap")]
-        {
-            capture::listen_on_all(capture::pcap::PcapBackend)
-        }
-
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-        {
-            capture::listen_on_all(capture::pktmon::PktmonBackend)
-        }
-    };
-
-    let packet_stream = rx.expect("Failed to start packet capture");
+    let packet_stream = capture::open_source(&capture::SourceSpec::Live).expect("Failed to start packet capture");
     let mut packet_stream = packet_stream.fuse();
 
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");

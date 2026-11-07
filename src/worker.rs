@@ -364,19 +364,7 @@ async fn live_capture(
     // Outer loop to restart capture when it exits
     loop {
         let live_rx = {
-            let result = {
-                #[cfg(feature = "pcap")]
-                {
-                    capture::listen_on_all(capture::pcap::PcapBackend)
-                }
-
-                #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-                {
-                    capture::listen_on_all(capture::pktmon::PktmonBackend)
-                }
-            };
-
-            match result.map_err(|e| e.to_string()) {
+            match capture::open_source(&capture::SourceSpec::Live).map_err(|e| e.to_string()) {
                 Ok(rx) => rx,
                 Err(err_msg) => {
                     warn!(error = %err_msg, "Failed to start packet capture, retrying in 1 second...");
