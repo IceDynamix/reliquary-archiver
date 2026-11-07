@@ -18,11 +18,11 @@ use crate::export::fribbels::converters::*;
 use crate::export::fribbels::models::*;
 
 impl OptimizerExporter {
-    pub fn handle_token(&mut self, token: PlayerGetTokenScRsp) {
+    pub(super) fn handle_token(&mut self, token: PlayerGetTokenScRsp) {
         self.uid = Some(token.uid);
     }
 
-    pub fn handle_login(&mut self, login: PlayerLoginScRsp) {
+    pub(super) fn handle_login(&mut self, login: PlayerLoginScRsp) {
         self.gacha.oneric_shards = login.basic_info.oneric_shard_count;
         self.gacha.stellar_jade = login.basic_info.stellar_jade_count;
     }
@@ -55,7 +55,7 @@ impl OptimizerExporter {
         (relics, light_cones, materials)
     }
 
-    pub fn handle_inventory(&mut self, bag: GetBagScRsp) {
+    pub(super) fn handle_inventory(&mut self, bag: GetBagScRsp) {
         let (relics, light_cones, materials) = self.ingest_items(&bag.relic_list, &bag.equipment_list, &bag.material_list);
 
         info!(num = relics.len(), "found relics");
@@ -63,7 +63,7 @@ impl OptimizerExporter {
         info!(num = materials.len(), "found materials");
     }
 
-    pub fn ingest_character(&mut self, proto_character: &ProtoCharacter) {
+    pub(super) fn ingest_character(&mut self, proto_character: &ProtoCharacter) {
         self.multipath_base_avatars
             .insert(proto_character.base_avatar_id, proto_character.clone());
 
@@ -73,7 +73,7 @@ impl OptimizerExporter {
         }
     }
 
-    pub fn ingest_multipath_character(&mut self, proto_multipath_character: &AvatarPathData) -> Option<Character> {
+    pub(super) fn ingest_multipath_character(&mut self, proto_multipath_character: &AvatarPathData) -> Option<Character> {
         let Some(character) = export_proto_multipath_character(self.database, proto_multipath_character) else {
             warn!(
                 uid = &proto_multipath_character.avatar_id,
@@ -100,7 +100,7 @@ impl OptimizerExporter {
         resolved
     }
 
-    pub fn handle_characters(&mut self, characters: GetAvatarDataScRsp) {
+    pub(super) fn handle_characters(&mut self, characters: GetAvatarDataScRsp) {
         info!(num = characters.avatar_list.len(), "found characters");
         for character in characters.avatar_list {
             self.ingest_character(&character);
@@ -121,7 +121,7 @@ impl OptimizerExporter {
     }
 
     /// Fills in the level and ascension of a character, which are stored in its base avatar
-    pub fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
+    pub(super) fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
         let base_avatar_id = self.get_multipath_base_id(character_id);
         let Some(character) = self.characters.get_mut(&character_id) else {
             warn!(uid = &character_id, "multipath character not found");
@@ -137,7 +137,7 @@ impl OptimizerExporter {
         Some(character.clone())
     }
 
-    pub fn handle_player_sync(&mut self, sync: PlayerSyncScNotify) -> Vec<OptimizerEvent> {
+    pub(super) fn handle_player_sync(&mut self, sync: PlayerSyncScNotify) -> Vec<OptimizerEvent> {
         let mut events = Vec::new();
 
         let (relics, light_cones, materials) = self.ingest_items(&sync.relic_list, &sync.equipment_list, &sync.material_list);
@@ -210,7 +210,7 @@ impl OptimizerExporter {
         events
     }
 
-    pub fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> Option<OptimizerEvent> {
+    pub(super) fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> Option<OptimizerEvent> {
         let Some(character) = self.characters.get_mut(&set_avatar_enhanced.growth_avatar_id) else {
             warn!(
                 uid = &set_avatar_enhanced.growth_avatar_id,
@@ -244,7 +244,7 @@ impl OptimizerExporter {
         }
     }
 
-    pub fn handle_gacha_info(&mut self, gacha_info: GetGachaInfoScRsp) {
+    pub(super) fn handle_gacha_info(&mut self, gacha_info: GetGachaInfoScRsp) {
         for banner in gacha_info.gacha_info_list {
             let banner_type = match banner.gacha_id {
                 1001 => BannerType::Standard,
@@ -262,7 +262,7 @@ impl OptimizerExporter {
         }
     }
 
-    pub fn handle_gacha(&mut self, gacha: DoGachaScRsp) -> Option<OptimizerEvent> {
+    pub(super) fn handle_gacha(&mut self, gacha: DoGachaScRsp) -> Option<OptimizerEvent> {
         let Some(banner) = self.banners.get(&gacha.gacha_id) else {
             warn!(gacha_id = &gacha.gacha_id, "gacha info not found");
             return None;

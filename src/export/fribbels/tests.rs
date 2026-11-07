@@ -11,6 +11,8 @@ use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhancedIdScRsp;
 
+use super::converters::*;
+use super::utils::*;
 use super::*;
 use crate::export::Exporter;
 use crate::export::database::get_database;

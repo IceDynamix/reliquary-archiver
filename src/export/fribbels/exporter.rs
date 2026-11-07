@@ -14,17 +14,17 @@ pub struct OptimizerExporter {
     pub(super) database: &'static Database,
 
     // State fields
-    pub initialized: bool,
-    pub uid: Option<u32>,
-    pub trailblazer: Option<&'static str>,
-    pub banners: HashMap<u32, BannerInfo>,
-    pub gacha: GachaFunds,
-    pub materials: BTreeMap<u32, Material>,
-    pub light_cones: BTreeMap<u32, LightCone>,
-    pub relics: BTreeMap<u32, Relic>,
+    pub(super) initialized: bool,
+    pub(super) uid: Option<u32>,
+    pub(super) trailblazer: Option<&'static str>,
+    pub(super) banners: HashMap<u32, BannerInfo>,
+    pub(super) gacha: GachaFunds,
+    pub(super) materials: BTreeMap<u32, Material>,
+    pub(super) light_cones: BTreeMap<u32, LightCone>,
+    pub(super) relics: BTreeMap<u32, Relic>,
     /// All known characters. Level and ascension are only filled in once the base avatar is known
-    pub characters: BTreeMap<u32, Character>,
-    pub multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    pub(super) characters: BTreeMap<u32, Character>,
+    pub(super) multipath_base_avatars: HashMap<u32, ProtoCharacter>,
     /// Characters in `characters` that are still waiting for their base avatar
     pub(super) unresolved_multipath_characters: HashSet<u32>,
 
@@ -59,6 +59,48 @@ impl OptimizerExporter {
             #[cfg(feature = "stream")]
             event_channel: broadcast::channel(16).0,
         }
+    }
+
+    /// The uid of the account, once it is known
+    pub fn uid(&self) -> Option<u32> {
+        self.uid
+    }
+
+    /// Which trailblazer the account plays, once it is known
+    pub fn trailblazer(&self) -> Option<&'static str> {
+        self.trailblazer
+    }
+
+    pub fn gacha_funds(&self) -> GachaFunds {
+        self.gacha
+    }
+
+    /// The gacha banners by id
+    pub fn banners(&self) -> &HashMap<u32, BannerInfo> {
+        &self.banners
+    }
+
+    /// Materials by id
+    pub fn materials(&self) -> &BTreeMap<u32, Material> {
+        &self.materials
+    }
+
+    /// Light cones by unique id
+    pub fn light_cones(&self) -> &BTreeMap<u32, LightCone> {
+        &self.light_cones
+    }
+
+    /// Relics by unique id
+    pub fn relics(&self) -> &BTreeMap<u32, Relic> {
+        &self.relics
+    }
+
+    /// Characters by id.
+    ///
+    /// A multipath character's level and ascension come from its base avatar. Until that has been
+    /// captured, they are 0, like in the export.
+    pub fn characters(&self) -> &BTreeMap<u32, Character> {
+        &self.characters
     }
 
     #[allow(unused_variables)]
