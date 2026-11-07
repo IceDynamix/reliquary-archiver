@@ -44,10 +44,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: moonrepo/setup-rust@v1
+        with:
+          components: clippy
       - name: Install deps
         run: sudo apt install -y libpcap-dev libwayland-dev
       - name: Build
         run: cargo build --verbose --no-default-features --features pcap,stream
+      - name: Test
+        run: cargo test --no-default-features --features pcap,stream
+      - name: Clippy
+        run: cargo clippy --all-targets --no-default-features --features pcap,stream -- -D warnings
       - uses: actions/upload-artifact@v4
         with:
           name: reliquary-archiver-linux-pcap-x64
