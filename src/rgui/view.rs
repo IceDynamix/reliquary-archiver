@@ -20,7 +20,8 @@ use crate::rgui::kit::icons::{cog_icon, discord_button, github_button};
 use crate::rgui::kit::togglegroup::{ToggleOption, togglegroup};
 use crate::rgui::messages::{LogMessage, RootMessage, WebSocketStatus, WindowMessage};
 use crate::rgui::scopefns::Also;
-use crate::rgui::state::{ImageFit, RootState, Screen};
+use crate::rgui::settings::ImageFit;
+use crate::rgui::state::{RootState, Screen};
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS, BORDER_RADIUS_SM, CARD_BACKGROUND, DANGER_COLOR, PAD_LG, PAD_MD, PAD_SM, SCROLLBAR_THUMB_COLOR,
     SCROLLBAR_TRACK_COLOR, SPACE_MD, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED, maybe_text_shadow,
