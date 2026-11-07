@@ -2,7 +2,6 @@
 //!
 //! This module defines the core data model for the GUI, including:
 //! - Root application state
-//! - User settings (persisted to disk)
 //! - Export statistics
 //! - Connection tracking
 //! - Screen states
@@ -19,6 +18,7 @@ use tracing::level_filters::LevelFilter;
 use crate::accounts::MultiAccountManager;
 use crate::rgui::components::update::UpdateState;
 use crate::rgui::messages::WebSocketStatus;
+use crate::rgui::settings::Settings;
 use crate::websocket::PortCommand;
 
 /// Information about a detected account.
@@ -76,53 +76,6 @@ pub struct Store {
     pub update_state: Option<UpdateState>,
 }
 
-/// Background image scaling mode.
-///
-/// Controls how a custom background image is displayed within the window.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Default)]
-pub enum ImageFit {
-    /// Stretch to fill the container (default)
-    #[default]
-    Fill,
-    /// Scale to fit inside the container while maintaining aspect ratio
-    Contain,
-    /// Scale to cover the container while maintaining aspect ratio (may crop)
-    Cover,
-    /// Like contain but never scale up beyond intrinsic size
-    ScaleDown,
-    /// Display at intrinsic size with no scaling
-    None,
-}
-
-/// User-configurable application settings.
-///
-/// These settings are persisted to disk as JSON in the user's app data folder.
-/// Settings are automatically saved when modified through the settings modal.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(default)]
-pub struct Settings {
-    /// Path to a custom background image (empty string = no image)
-    pub background_image: String,
-    /// How the background image is scaled/positioned
-    pub image_fit: ImageFit,
-    /// Opacity of the background image (0.0 - 1.0)
-    pub background_opacity: f32,
-    /// Whether to render text shadows for better readability over images
-    pub text_shadow_enabled: bool,
-    /// Automatically apply updates without prompting
-    pub always_update: bool,
-    /// Hide to system tray instead of closing when clicking X
-    pub minimize_to_tray_on_close: bool,
-    /// Hide to system tray instead of taskbar when minimizing
-    pub minimize_to_tray_on_minimize: bool,
-    /// Launch the application on Windows startup
-    pub run_on_start: bool,
-    /// Start the application minimized/hidden
-    pub start_minimized: bool,
-    /// Port for the WebSocket server (0 = auto-assign)
-    pub ws_port: u16,
-}
-
 impl Default for Store {
     fn default() -> Self {
         Self {
@@ -135,23 +88,6 @@ impl Default for Store {
             log_level: LevelFilter::INFO, // TODO: This is not right
             settings: Settings::default(),
             update_state: None,
-        }
-    }
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            background_image: "".to_string(),
-            image_fit: ImageFit::Cover,
-            background_opacity: 0.12,
-            text_shadow_enabled: false,
-            always_update: false,
-            minimize_to_tray_on_close: false,
-            minimize_to_tray_on_minimize: false,
-            run_on_start: false,
-            start_minimized: false,
-            ws_port: 23313,
         }
     }
 }

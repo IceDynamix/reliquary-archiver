@@ -13,6 +13,7 @@
 //! ## Module Structure
 //!
 //! - [`state`]: Application state types and data structures
+//! - [`settings`]: User settings and their persistence
 //! - [`messages`]: Message types for event handling
 //! - [`handlers`]: Message handler implementations
 //! - [`view`]: Main view rendering function
@@ -48,6 +49,7 @@ pub mod messages;
 pub mod run_on_start;
 mod scopefns;
 pub mod screens;
+pub mod settings;
 pub mod state;
 pub mod theme;
 pub mod view;
@@ -55,8 +57,8 @@ pub mod worker;
 
 // Re-exports for public API
 pub use handlers::{
-    get_settings_path, handle_connection_check, handle_export_message, handle_log_message, handle_screen_transitions,
-    handle_websocket_message, handle_window_message, handle_worker_event, save_settings,
+    handle_connection_check, handle_export_message, handle_log_message, handle_screen_transitions, handle_websocket_message,
+    handle_window_message, handle_worker_event,
 };
 pub use messages::*;
 pub use state::*;
@@ -133,61 +135,6 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
     })
 }
 
-/// Loads settings synchronously from disk before the GUI initializes.
-///
-/// Uses the new `raxis::get_local_app_data()` synchronous helper to resolve the
-/// settings path without needing an async task, preventing race conditions between
-/// settings loading and other startup tasks (update checks, WebSocket port binding).
-///
-/// Returns the loaded settings and a bool indicating whether the `run_on_start`
-/// value was corrected during registry reconciliation (and therefore needs to be
-/// persisted back to disk).
-fn load_settings_sync() -> (state::Settings, bool) {
-    use crate::rgui::run_on_start::registry_matches_settings;
-
-    let Some(appdata) = raxis::get_local_app_data() else {
-        tracing::warn!("Could not determine local app data path, using default settings");
-        return (state::Settings::default(), false);
-    };
-
-    let path = get_settings_path(appdata);
-
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            tracing::info!("No settings file found at {}, using defaults", path.display());
-            return (state::Settings::default(), false);
-        }
-        Err(e) => {
-            tracing::error!("Failed to read settings file: {}", e);
-            return (state::Settings::default(), false);
-        }
-    };
-
-    let mut settings: state::Settings = match serde_json::from_str(&content) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!("Failed to parse settings file: {}", e);
-            return (state::Settings::default(), false);
-        }
-    };
-
-    // Reconcile run_on_start setting with registry state.
-    // e.g. user moves the exe after enabling/disabling run on start — in case
-    // of mismatch, update settings in memory and signal that a save is needed.
-    let run_on_start = settings.run_on_start;
-    let needs_save = match registry_matches_settings(run_on_start) {
-        Ok(false) => {
-            settings.run_on_start = !run_on_start;
-            true
-        }
-        Ok(true) | Err(_) => false,
-    };
-
-    tracing::info!("Loaded settings from {}", path.display());
-    (settings, needs_save)
-}
-
 /// Initializes and runs the application GUI.
 ///
 /// This function sets up the raxis application with:
@@ -208,7 +155,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     use crate::accounts::MultiAccountManager;
     use crate::rgui::components::update;
 
-    let (settings, settings_needs_save) = load_settings_sync();
+    let (settings, settings_needs_save) = settings::load();
     let start_minimized = settings.start_minimized;
     let minimize_to_tray_on_minimize = settings.minimize_to_tray_on_minimize;
 

@@ -19,7 +19,8 @@ use reliquary_archiver::export::fribbels::Export;
 use tracing::level_filters::LevelFilter;
 
 use crate::rgui::components::update::UpdateMessage;
-use crate::rgui::state::{ExportStats, ImageFit, Settings};
+use crate::rgui::settings::{ImageFit, Settings};
+use crate::rgui::state::ExportStats;
 use crate::rgui::worker;
 
 // ============================================================================
