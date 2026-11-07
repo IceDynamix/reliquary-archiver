@@ -34,7 +34,7 @@ use raxis::{ContextMenuItem, SystemCommand, SystemCommandResponse, TrayEvent, Tr
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
-use crate::LOG_NOTIFY;
+use crate::logging;
 use crate::rgui::components::update::UpdateMessage;
 use crate::rgui::scopefns::Also;
 use crate::rgui::worker::archiver_worker;
@@ -269,7 +269,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
             }),
             Task::stream(stream! {
                 loop {
-                    LOG_NOTIFY.notified().await;
+                    logging::wait_for_new_lines().await;
                     yield RootMessage::TriggerRender;
                 }
             }),

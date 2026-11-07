@@ -25,10 +25,6 @@ mod cli;
 mod logging;
 mod session;
 
-// The GUI reads the log buffer to display it
-#[cfg(feature = "gui")]
-pub use logging::{LOG_BUFFER, LOG_NOTIFY, VEC_LAYER_HANDLE};
-
 #[derive(Parser, Debug, Clone)]
 struct Args {
     #[arg()]

@@ -3,7 +3,9 @@ use std::fs::File;
 use std::io;
 use std::io::Write;
 use std::path::Path;
-use std::sync::{Arc, LazyLock, Mutex};
+#[cfg(feature = "gui")]
+use std::sync::MutexGuard;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use tracing::info;
 use tracing::level_filters::LevelFilter;
@@ -16,11 +18,39 @@ const LOG_BUFFER_MAX_LINES: usize = 100000;
 /// How many of the most recent lines survive when the log buffer is trimmed
 const LOG_BUFFER_KEEP_LINES: usize = 10000;
 
-pub static LOG_BUFFER: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-pub static LOG_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+/// Everything logged to the console, kept around for the GUI's log view and the crash log
+static LOG_BUFFER: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
+/// Notified whenever lines are added to [`LOG_BUFFER`]
+static LOG_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
+/// Changes the filter of the console log, set up by [`tracing_init`]
+static CONSOLE_FILTER: OnceLock<reload::Handle<EnvFilter, Registry>> = OnceLock::new();
 
-type VecLayerHandle = Box<dyn Fn(LevelFilter) + Send>;
-pub static VEC_LAYER_HANDLE: LazyLock<Mutex<Option<VecLayerHandle>>> = LazyLock::new(|| Mutex::new(None));
+/// The lines logged to the console so far, oldest first.
+///
+/// Logging blocks while the guard is held, so don't hold on to it for long.
+#[cfg(feature = "gui")]
+pub fn lines() -> MutexGuard<'static, Vec<String>> {
+    LOG_BUFFER.lock().unwrap()
+}
+
+/// Waits until new lines have been logged
+#[cfg(feature = "gui")]
+pub async fn wait_for_new_lines() {
+    LOG_NOTIFY.notified().await;
+}
+
+/// Changes which levels are logged to the console and the log buffer
+#[cfg(feature = "gui")]
+pub fn set_console_level(level: LevelFilter) {
+    let Some(handle) = CONSOLE_FILTER.get() else {
+        return;
+    };
+
+    let result = handle.modify(|filter| *filter = EnvFilter::default().add_directive(level.into()));
+    if let Err(e) = result {
+        tracing::error!("Failed to change log level: {}", e);
+    }
+}
 
 struct VecWriter;
 
@@ -104,24 +134,7 @@ pub fn tracing_init(verbose: u8, log_path: Option<&Path>) {
         .with_writer(DualWriter::new(VecWriter, io::stdout()))
         .with_filter(console_filter);
 
-    *VEC_LAYER_HANDLE.lock().unwrap() = Some(Box::new(move |l| {
-        let result = handle.modify(|f| {
-            *f = EnvFilter::builder()
-                .parse(match l {
-                    LevelFilter::TRACE => "trace",
-                    LevelFilter::DEBUG => "debug",
-                    LevelFilter::INFO => "info",
-                    LevelFilter::WARN => "warn",
-                    LevelFilter::ERROR => "error",
-                    _ => "off",
-                })
-                .unwrap();
-        });
-
-        if let Err(e) = result {
-            tracing::error!("Failed to change log level: {}", e);
-        }
-    }));
+    CONSOLE_FILTER.set(handle).ok();
 
     let file_log = log_path.map(|log_path| {
         let log_file = File::create(log_path).unwrap();

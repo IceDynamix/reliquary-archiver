@@ -15,13 +15,13 @@ use raxis::runtime::task::{self, Task};
 use reliquary_archiver::export::fribbels::OptimizerEvent;
 use tracing::info;
 
+use crate::logging;
 use crate::rgui::messages::{
     AccountMessage, ExportMessage, LogMessage, RootMessage, ScreenAction, WebSocketMessage, WebSocketStatus, WindowMessage,
 };
 use crate::rgui::state::{AccountInfo, ActiveScreen, ExportStats, FileContainer, FileExtensions, RootState, Screen, WaitingScreen};
 use crate::rgui::worker;
 use crate::websocket::PortCommand;
-use crate::{LOG_BUFFER, VEC_LAYER_HANDLE};
 
 // ============================================================================
 // Settings Path Helper
@@ -251,9 +251,7 @@ pub fn handle_log_message(state: &mut RootState, message: LogMessage) -> Option<
         LogMessage::LevelChanged(level) => {
             state.store.log_level = level;
 
-            if let Some(handle) = VEC_LAYER_HANDLE.lock().unwrap().as_ref() {
-                handle(level);
-            }
+            logging::set_console_level(level);
 
             None
         }
@@ -261,7 +259,7 @@ pub fn handle_log_message(state: &mut RootState, message: LogMessage) -> Option<
         LogMessage::Export => Some(
             Task::future(async move {
                 if let Some(mut file) = rfd::AsyncFileDialog::new().set_file_name("log.txt").save_file().await {
-                    let lines = LOG_BUFFER.lock().unwrap().join("\n");
+                    let lines = logging::lines().join("\n");
                     file.write(lines.as_bytes()).await;
                     info!("Exported log to {}", file.path().display());
                 }
