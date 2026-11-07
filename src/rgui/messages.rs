@@ -14,7 +14,6 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use raxis::runtime::task::Task;
 use reliquary_archiver::export::fribbels::Export;
 use tracing::level_filters::LevelFilter;
 
@@ -71,6 +70,8 @@ pub enum ExportMessage {
     New(Export),
     /// Request to regenerate the export from current data
     Refresh,
+    /// Export the account found in a recorded capture file
+    LoadCaptureFile(PathBuf),
 }
 
 // ============================================================================
@@ -149,37 +150,6 @@ pub enum LogMessage {
 }
 
 // ============================================================================
-// Screen Messages
-// ============================================================================
-
-/// Messages specific to the waiting screen.
-#[derive(Debug, Clone)]
-pub enum WaitingMessage {
-    /// User selected a pcap file for import
-    PcapFileSelected(Option<PathBuf>),
-}
-
-/// Messages specific to the active screen.
-#[derive(Debug, Clone)]
-pub enum ActiveMessage {
-    // Active screen messages
-}
-
-/// Result of a screen update operation.
-///
-/// Screens return this to indicate what action should be taken
-/// after processing a message.
-pub enum ScreenAction<Message> {
-    /// No action needed
-    None,
-    /// Run an async task
-    Run(Task<Message>),
-    /// Process a packet capture file (requires pcap feature)
-    #[cfg(feature = "pcap")]
-    ProcessCapture(PathBuf),
-}
-
-// ============================================================================
 // Account Messages
 // ============================================================================
 
@@ -229,12 +199,6 @@ pub enum RootMessage {
     Log(LogMessage),
     /// Update checker messages
     Update(UpdateMessage),
-
-    // Screen messages
-    /// Messages for the waiting screen
-    WaitingScreen(WaitingMessage),
-    /// Messages for the active screen
-    ActiveScreen(ActiveMessage),
 }
 
 // ============================================================================

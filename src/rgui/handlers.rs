@@ -12,13 +12,12 @@ use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::OptimizerEvent;
 use tracing::info;
 
+use crate::capture::SourceSpec;
 use crate::logging;
-use crate::rgui::messages::{
-    AccountMessage, ExportMessage, LogMessage, RootMessage, ScreenAction, WebSocketMessage, WebSocketStatus, WindowMessage,
-};
-use crate::rgui::state::{AccountInfo, ActiveScreen, ExportStats, FileContainer, FileExtensions, RootState, Screen, WaitingScreen};
+use crate::rgui::messages::{AccountMessage, ExportMessage, LogMessage, RootMessage, WebSocketMessage, WebSocketStatus, WindowMessage};
+use crate::rgui::state::{AccountInfo, ExportStats, FileContainer, FileExtensions, RootState};
 use crate::rgui::worker::WorkerEvent;
-use crate::session::SessionEvent;
+use crate::session::{self, SessionEvent};
 use crate::websocket::PortCommand;
 
 // ============================================================================
@@ -46,6 +45,16 @@ pub fn handle_export_message(state: &mut RootState, message: ExportMessage) -> O
         }
 
         ExportMessage::Refresh => Some(refresh_export_task(state, state.store.selected_account)),
+
+        ExportMessage::LoadCaptureFile(path) => {
+            let Some(source) = SourceSpec::for_file(path.clone()) else {
+                tracing::warn!("Can't read capture files like {}", path.display());
+                return None;
+            };
+
+            tracing::info!("Processing capture file: {}", path.display());
+            Some(Task::future(session::export_from_file(source)).and_then(|export| Task::done(RootMessage::new_export(export))))
+        }
     }
 }
 
@@ -330,38 +339,5 @@ fn handle_session_event(state: &mut RootState, event: SessionEvent) {
         }
         // Logins reach the GUI through the account manager, as WorkerEvent::AccountLoggedIn
         SessionEvent::AccountSeen { .. } | SessionEvent::LoginFinished => {}
-    }
-}
-
-// ============================================================================
-// Screen Transitions
-// ============================================================================
-
-/// Manages automatic screen transitions based on connection state.
-///
-/// Switches between Waiting and Active screens when connection status changes.
-pub fn handle_screen_transitions(state: &mut RootState) {
-    let is_connected = state.store.connection_stats.connection_active;
-    let is_waiting = matches!(&state.screen, Screen::Waiting(_));
-    if is_connected && is_waiting {
-        state.screen = Screen::Active(ActiveScreen::new());
-    } else if !is_connected && !is_waiting {
-        state.screen = Screen::Waiting(WaitingScreen::new());
-    }
-}
-
-// ============================================================================
-// Screen Action Implementation
-// ============================================================================
-
-impl<Message: Send + 'static> ScreenAction<Message> {
-    pub fn run(self, state: &mut RootState, wrapper: impl Send + Fn(Message) -> RootMessage + 'static) -> Task<RootMessage> {
-        match self {
-            Self::None => Task::none(),
-            Self::Run(task) => task.map(wrapper),
-            #[cfg(feature = "pcap")]
-            Self::ProcessCapture(path) => Task::future(crate::session::export_from_file(crate::capture::SourceSpec::PcapFile(path)))
-                .and_then(|e| Task::done(RootMessage::new_export(e))),
-        }
     }
 }
