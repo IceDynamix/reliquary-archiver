@@ -27,12 +27,12 @@ use raxis::widgets::text::{ParagraphAlignment, Text};
 use raxis::widgets::{Widget, widget};
 use raxis::{HookManager, w_id};
 
+use crate::logging;
 use crate::rgui::kit::format_byte_size;
 use crate::rgui::messages::RootMessage;
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS_SM, CARD_BACKGROUND, SCROLLBAR_THUMB_COLOR, SCROLLBAR_TRACK_COLOR, SELECTION_COLOR, TEXT_ON_LIGHT_COLOR,
 };
-use crate::{LOG_BUFFER, LOG_NOTIFY};
 
 /// Cuts a line down to at most `max_len` bytes without splitting a character.
 fn truncate_line(line: &str, max_len: usize) -> &str {
@@ -124,7 +124,7 @@ pub fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
     let drag_start = state.use_hook(|| Rc::new(Cell::new(Option::<usize>::None))).clone();
     let is_dragging = state.use_hook(|| Rc::new(Cell::new(false))).clone();
 
-    let lines = LOG_BUFFER.lock().unwrap();
+    let lines = logging::lines();
 
     let total_items = lines.len();
     if total_items != prev_item_count.replace(total_items) {
@@ -190,7 +190,7 @@ pub fn log_view(hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
                     raxis::widgets::Event::KeyDown { key, modifiers } => {
                         if matches!(key, VKey::C | VKey::X) && modifiers.ctrl {
                             if let Some(selection_range) = selection_state.borrow_mut().take() {
-                                let lines = LOG_BUFFER.lock().unwrap();
+                                let lines = logging::lines();
                                 // The buffer may have been trimmed since the selection was made
                                 let end = selection_range.end.min(lines.len());
                                 let start = selection_range.start.min(end);
