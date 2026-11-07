@@ -185,8 +185,8 @@ pub enum ScreenAction<Message> {
 /// Messages related to account management.
 #[derive(Debug, Clone)]
 pub enum AccountMessage {
-    /// New account discovered with UID
-    Discovered { uid: u32 },
+    /// An account logged in, for the first time or again
+    LoggedIn { uid: u32 },
     /// User selected a different account to view
     Select(u32),
 }

@@ -56,7 +56,7 @@ pub mod worker;
 // Re-exports for public API
 pub use handlers::{
     get_settings_path, handle_connection_check, handle_export_message, handle_log_message, handle_screen_transitions,
-    handle_sniffer_metric, handle_websocket_message, handle_window_message, handle_worker_event, save_settings,
+    handle_websocket_message, handle_window_message, handle_worker_event, save_settings,
 };
 pub use messages::*;
 pub use state::*;
