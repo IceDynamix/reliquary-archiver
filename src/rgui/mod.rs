@@ -37,7 +37,6 @@ use tokio_stream::wrappers::WatchStream;
 
 use crate::logging;
 use crate::rgui::components::update::UpdateMessage;
-use crate::rgui::scopefns::Also;
 use crate::rgui::worker::archiver_worker;
 use crate::websocket::{PortCommand, PortSource, start_websocket_server};
 
@@ -57,8 +56,8 @@ pub mod worker;
 
 // Re-exports for public API
 pub use handlers::{
-    handle_connection_check, handle_export_message, handle_log_message, handle_screen_transitions, handle_websocket_message,
-    handle_window_message, handle_worker_event,
+    handle_connection_check, handle_export_message, handle_log_message, handle_websocket_message, handle_window_message,
+    handle_worker_event,
 };
 pub use messages::*;
 pub use state::*;
@@ -73,16 +72,6 @@ pub use view::view;
 /// # Returns
 /// An optional [`Task`] to be executed asynchronously (e.g., I/O operations, timers).
 pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage>> {
-    macro_rules! handle_screen {
-        ($screen:ident, $screen_message:ident, $message:ident) => {
-            if let Screen::$screen(screen) = &mut state.screen {
-                Some(screen.update($message).run(state, RootMessage::$screen_message))
-            } else {
-                None
-            }
-        };
-    }
-
     match message {
         // Simple triggers
         RootMessage::TriggerRender => None,
@@ -106,10 +95,6 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         RootMessage::Window(msg) => handle_window_message(state, msg),
         RootMessage::Log(msg) => handle_log_message(state, msg),
 
-        // Screen messages
-        RootMessage::WaitingScreen(message) => handle_screen!(Waiting, WaitingScreen, message),
-        RootMessage::ActiveScreen(message) => handle_screen!(Active, ActiveScreen, message),
-
         // Update messages
         RootMessage::Update(msg) => {
             use crate::rgui::components::update;
@@ -130,9 +115,6 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
             )
         }
     }
-    .also(|_| {
-        handle_screen_transitions(state);
-    })
 }
 
 /// Initializes and runs the application GUI.

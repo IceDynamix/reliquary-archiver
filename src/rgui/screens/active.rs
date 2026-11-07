@@ -16,8 +16,8 @@ use crate::rgui::PRIMARY_COLOR;
 use crate::rgui::components::file_download::download_view;
 use crate::rgui::components::update::UpdateMessage;
 use crate::rgui::kit::icons::refresh_icon;
-use crate::rgui::messages::{AccountMessage, ActiveMessage, ExportMessage, RootMessage, ScreenAction};
-use crate::rgui::state::{ActiveScreen, Store};
+use crate::rgui::messages::{AccountMessage, ExportMessage, RootMessage};
+use crate::rgui::state::Store;
 use crate::rgui::theme::{
     BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PAD_SM, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
     maybe_text_shadow,
@@ -93,138 +93,126 @@ fn account_selector(store: &Store, text_shadow_enabled: bool) -> Option<Element<
     )
 }
 
-impl ActiveScreen {
-    /// Renders the active screen view.
-    pub fn view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
-        self.active_view(store, hook)
+/// Renders the active screen with stats and export controls.
+pub fn view(store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
+    let text_shadow_enabled = store.settings.text_shadow_enabled;
+
+    // Check if exporter is outdated (decryption key missing and no characters exported)
+    if store.connection_stats.decryption_key_missing > 0 && store.export_stats.characters == 0 {
+        let update_check_button = Button::new()
+            .with_click_handler(|_, s| {
+                s.publish(RootMessage::Update(UpdateMessage::PerformCheck));
+            })
+            .with_bg_color(PRIMARY_COLOR)
+            .as_element(
+                w_id!(),
+                Text::new("Check for updates")
+                    .with_color(Color::WHITE)
+                    .with_font_size(14.0)
+                    .with_font_weight(FontWeight::Medium)
+                    .as_element()
+                    .with_axis_align_self(Alignment::Center)
+                    .with_cross_align_self(Alignment::Center)
+                    .with_padding(BoxAmount::all(8.0)),
+            )
+            .with_height(Sizing::grow())
+            .with_border_radius(BORDER_RADIUS);
+
+        return column![
+            maybe_text_shadow(
+                Text::new("Unsupported Game Version")
+                    .with_font_size(24.0)
+                    .with_color(TEXT_COLOR)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled,
+            ),
+            maybe_text_shadow(
+                Text::new("This version of Reliquary Archiver is not yet compatible with the latest game version.")
+                    .with_font_size(16.0)
+                    .with_color(TEXT_COLOR)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled,
+            ),
+            maybe_text_shadow(
+                Text::new("Every new game version requires an update, which may not be available yet.")
+                    .with_font_size(16.0)
+                    .with_color(TEXT_COLOR)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled,
+            ),
+            maybe_text_shadow(
+                Text::new("Please check Discord and/or the Optimizer website for status updates.")
+                    .with_font_size(16.0)
+                    .with_color(TEXT_COLOR)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled,
+            ),
+            update_check_button,
+        ]
+        .with_child_gap(SPACE_LG)
+        .with_cross_align_items(Alignment::Center)
+        .with_padding(BoxAmount::all(PAD_LG * 2.0))
+        .with_border_radius(BorderRadius::all(BORDER_RADIUS));
     }
 
-    /// Handles active screen messages.
-    pub fn update(&mut self, _message: ActiveMessage) -> ScreenAction<ActiveMessage> {
-        ScreenAction::None
-    }
+    let stats_display = row![
+        stat_line("Relics", store.export_stats.relics, text_shadow_enabled),
+        stat_line("Characters", store.export_stats.characters, text_shadow_enabled),
+        stat_line("Light Cones", store.export_stats.light_cones, text_shadow_enabled),
+        stat_line("Materials", store.export_stats.materials, text_shadow_enabled),
+    ]
+    .with_width(Sizing::grow())
+    .with_child_gap(SPACE_LG);
 
-    /// Renders the main active view content with stats and export controls.
-    fn active_view(&self, store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootMessage> {
-        let text_shadow_enabled = store.settings.text_shadow_enabled;
+    let refresh_button = Button::new()
+        .with_bg_color(SUCCESS_COLOR)
+        .with_border_radius(BORDER_RADIUS)
+        .with_drop_shadow(SHADOW_SM)
+        .with_click_handler(move |_, shell| {
+            shell.publish(RootMessage::Export(ExportMessage::Refresh));
+        })
+        .as_element(w_id!(), refresh_icon())
+        .with_backdrop_filter(BackdropFilter::blur(10.0))
+        .with_snap(true);
 
-        // Check if exporter is outdated (decryption key missing and no characters exported)
-        if store.connection_stats.decryption_key_missing > 0 && store.export_stats.characters == 0 {
-            let update_check_button = Button::new()
-                .with_click_handler(|_, s| {
-                    s.publish(RootMessage::Update(UpdateMessage::PerformCheck));
-                })
-                .with_bg_color(PRIMARY_COLOR)
-                .as_element(
-                    w_id!(),
-                    Text::new("Check for updates")
-                        .with_color(Color::WHITE)
-                        .with_font_size(14.0)
-                        .with_font_weight(FontWeight::Medium)
-                        .as_element()
-                        .with_axis_align_self(Alignment::Center)
-                        .with_cross_align_self(Alignment::Center)
-                        .with_padding(BoxAmount::all(8.0)),
-                )
-                .with_height(Sizing::grow())
-                .with_border_radius(BORDER_RADIUS);
+    let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook).with_drop_shadow(SHADOW_SM);
 
-            return column![
-                maybe_text_shadow(
-                    Text::new("Unsupported Game Version")
-                        .with_font_size(24.0)
-                        .with_color(TEXT_COLOR)
-                        .with_paragraph_alignment(ParagraphAlignment::Center),
-                    text_shadow_enabled,
-                ),
-                maybe_text_shadow(
-                    Text::new("This version of Reliquary Archiver is not yet compatible with the latest game version.")
-                        .with_font_size(16.0)
-                        .with_color(TEXT_COLOR)
-                        .with_paragraph_alignment(ParagraphAlignment::Center),
-                    text_shadow_enabled,
-                ),
-                maybe_text_shadow(
-                    Text::new("Every new game version requires an update, which may not be available yet.")
-                        .with_font_size(16.0)
-                        .with_color(TEXT_COLOR)
-                        .with_paragraph_alignment(ParagraphAlignment::Center),
-                    text_shadow_enabled,
-                ),
-                maybe_text_shadow(
-                    Text::new("Please check Discord and/or the Optimizer website for status updates.")
-                        .with_font_size(16.0)
-                        .with_color(TEXT_COLOR)
-                        .with_paragraph_alignment(ParagraphAlignment::Center),
-                    text_shadow_enabled,
-                ),
-                update_check_button,
-            ]
+    let action_bar = row![refresh_button, download_section]
+        .with_child_gap(SPACE_LG)
+        .with_axis_align_content(Alignment::Center)
+        .with_padding(BoxAmount::all(PAD_MD));
+
+    {
+        let mut elements = vec![
+            maybe_text_shadow(
+                Text::new("Connected!")
+                    .with_font_size(24.0)
+                    .with_color(TEXT_COLOR)
+                    .with_paragraph_alignment(ParagraphAlignment::Center),
+                text_shadow_enabled,
+            )
+            .as_element()
+            .with_padding(BoxAmount::all(PAD_MD)),
+        ];
+
+        // Add account selector if multiple accounts
+        if let Some(selector) = account_selector(store, text_shadow_enabled) {
+            elements.push(selector);
+        }
+
+        elements.push(stats_display);
+        elements.push(
+            Rule::horizontal()
+                .with_color(BORDER_COLOR)
+                .as_element(w_id!())
+                .with_padding(BoxAmount::vertical(PAD_LG)),
+        );
+        elements.push(action_bar);
+
+        column(elements)
             .with_child_gap(SPACE_LG)
             .with_cross_align_items(Alignment::Center)
             .with_padding(BoxAmount::all(PAD_LG * 2.0))
-            .with_border_radius(BorderRadius::all(BORDER_RADIUS));
-        }
-
-        let stats_display = row![
-            stat_line("Relics", store.export_stats.relics, text_shadow_enabled),
-            stat_line("Characters", store.export_stats.characters, text_shadow_enabled),
-            stat_line("Light Cones", store.export_stats.light_cones, text_shadow_enabled),
-            stat_line("Materials", store.export_stats.materials, text_shadow_enabled),
-        ]
-        .with_width(Sizing::grow())
-        .with_child_gap(SPACE_LG);
-
-        let refresh_button = Button::new()
-            .with_bg_color(SUCCESS_COLOR)
-            .with_border_radius(BORDER_RADIUS)
-            .with_drop_shadow(SHADOW_SM)
-            .with_click_handler(move |_, shell| {
-                shell.publish(RootMessage::Export(ExportMessage::Refresh));
-            })
-            .as_element(w_id!(), refresh_icon())
-            .with_backdrop_filter(BackdropFilter::blur(10.0))
-            .with_snap(true);
-
-        let download_section = download_view(store.json_export.as_ref(), store.export_out_of_date, hook).with_drop_shadow(SHADOW_SM);
-
-        let action_bar = row![refresh_button, download_section]
-            .with_child_gap(SPACE_LG)
-            .with_axis_align_content(Alignment::Center)
-            .with_padding(BoxAmount::all(PAD_MD));
-
-        {
-            let mut elements = vec![
-                maybe_text_shadow(
-                    Text::new("Connected!")
-                        .with_font_size(24.0)
-                        .with_color(TEXT_COLOR)
-                        .with_paragraph_alignment(ParagraphAlignment::Center),
-                    text_shadow_enabled,
-                )
-                .as_element()
-                .with_padding(BoxAmount::all(PAD_MD)),
-            ];
-
-            // Add account selector if multiple accounts
-            if let Some(selector) = account_selector(store, text_shadow_enabled) {
-                elements.push(selector);
-            }
-
-            elements.push(stats_display);
-            elements.push(
-                Rule::horizontal()
-                    .with_color(BORDER_COLOR)
-                    .as_element(w_id!())
-                    .with_padding(BoxAmount::vertical(PAD_LG)),
-            );
-            elements.push(action_bar);
-
-            column(elements)
-                .with_child_gap(SPACE_LG)
-                .with_cross_align_items(Alignment::Center)
-                .with_padding(BoxAmount::all(PAD_LG * 2.0))
-                .with_border_radius(BorderRadius::all(BORDER_RADIUS))
-        }
+            .with_border_radius(BorderRadius::all(BORDER_RADIUS))
     }
 }

@@ -4,7 +4,6 @@
 //! - Root application state
 //! - Export statistics
 //! - Connection tracking
-//! - Screen states
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -153,8 +152,6 @@ pub struct RootState {
     pub selected_account_tx: watch::Sender<Option<u32>>,
     /// Central data store
     pub store: Store,
-    /// Current screen being displayed
-    pub screen: Screen,
     /// Whether the settings modal is open
     pub settings_open: bool,
     /// Whether the opacity slider is being dragged (hides modal backdrop)
@@ -170,7 +167,6 @@ impl RootState {
             manager,
             selected_account_tx,
             store: Store::default(),
-            screen: Screen::default(),
             settings_open: false,
             opacity_slider_dragging: false,
             ws_port_sender: None,
@@ -189,46 +185,5 @@ impl RootState {
             store: Store { settings, ..self.store },
             ..self
         }
-    }
-}
-
-/// Application screen states.
-///
-/// The app transitions between screens based on connection status.
-#[derive(Debug)]
-pub enum Screen {
-    /// Waiting for game connection - shown when not connected
-    Waiting(WaitingScreen),
-    /// Active capture screen - shown when connected to the game
-    Active(ActiveScreen),
-}
-
-impl Default for Screen {
-    fn default() -> Self {
-        Self::Waiting(WaitingScreen::new())
-    }
-}
-
-/// State for the waiting screen (pre-connection).
-#[derive(Default, Debug)]
-pub struct WaitingScreen {
-    // Waiting screen specific state
-}
-
-impl WaitingScreen {
-    pub fn new() -> Self {
-        Self::default()
-    }
-}
-
-/// State for the active screen (connected and capturing).
-#[derive(Default, Debug)]
-pub struct ActiveScreen {
-    // Active screen specific state
-}
-
-impl ActiveScreen {
-    pub fn new() -> Self {
-        Self::default()
     }
 }

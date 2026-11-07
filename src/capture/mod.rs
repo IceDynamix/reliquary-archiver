@@ -92,6 +92,30 @@ impl SourceSpec {
     pub fn is_live(&self) -> bool {
         matches!(self, SourceSpec::Live)
     }
+
+    /// The extensions of the capture files that can be read
+    #[cfg(feature = "gui")]
+    pub fn file_extensions() -> Vec<&'static str> {
+        let mut extensions = Vec::new();
+        #[cfg(feature = "pcap")]
+        extensions.extend(["pcap", "pcapng"]);
+        #[cfg(feature = "pktmon")]
+        extensions.push("etl");
+        extensions
+    }
+
+    /// Picks the source that can read the capture file, going by its extension
+    #[cfg(feature = "gui")]
+    pub fn for_file(path: PathBuf) -> Option<Self> {
+        let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+        match extension.as_str() {
+            #[cfg(feature = "pcap")]
+            "pcap" | "pcapng" => Some(SourceSpec::PcapFile(path)),
+            #[cfg(feature = "pktmon")]
+            "etl" => Some(SourceSpec::EtlFile(path)),
+            _ => None,
+        }
+    }
 }
 
 /// Open the packet source described by `spec`
