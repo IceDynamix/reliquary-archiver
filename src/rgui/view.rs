@@ -98,8 +98,9 @@ pub fn view(state: &RootState, hook: &mut HookManager<RootMessage>) -> Element<R
     .as_element()
     .with_id(w_id!());
 
-    // Show the capture once game data is coming in
-    let content = if state.store.connection_stats.connection_active {
+    // Show the capture once game data is coming in. A stalled capture stops decoding commands,
+    // which would otherwise drop it back to the waiting screen and hide why.
+    let content = if state.store.connection_stats.connection_active || state.store.connection_stats.capture_stalled {
         screens::active::view(&state.store, hook)
     } else {
         screens::waiting::view(&state.store, hook)

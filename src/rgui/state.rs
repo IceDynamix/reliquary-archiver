@@ -137,6 +137,8 @@ pub struct StatsStore {
     pub decryption_key_missing: usize,
     /// Count of network errors encountered
     pub network_errors: usize,
+    /// Game traffic is arriving but nothing decodes from it, the capture missed data
+    pub capture_stalled: bool,
     /// Timestamp of the last received packet
     pub last_packet_time: Option<Instant>,
     /// Timestamp of the last decoded command

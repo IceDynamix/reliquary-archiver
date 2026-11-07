@@ -18,8 +18,8 @@ use crate::rgui::kit::icons::refresh_icon;
 use crate::rgui::messages::{AccountMessage, ExportMessage, RootMessage};
 use crate::rgui::state::Store;
 use crate::rgui::theme::{
-    BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PAD_SM, PRIMARY_COLOR, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_COLOR,
-    TEXT_MUTED, maybe_text_shadow,
+    BORDER_COLOR, BORDER_RADIUS, DANGER_COLOR, PAD_LG, PAD_MD, PAD_SM, PRIMARY_COLOR, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM,
+    SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED, maybe_text_shadow,
 };
 
 /// Renders a single statistic line (label + value).
@@ -90,6 +90,31 @@ fn account_selector(store: &Store, text_shadow_enabled: bool) -> Option<Element<
         .with_cross_align_items(Alignment::Center)
         .with_padding(BoxAmount::all(PAD_MD)),
     )
+}
+
+/// Replaces the "Connected!" heading when the capture missed data and can't decode anything more.
+/// Whatever was captured before the stall stays available below it.
+fn stalled_notice(text_shadow_enabled: bool) -> Vec<Element<RootMessage>> {
+    vec![
+        maybe_text_shadow(
+            Text::new("Capture interrupted")
+                .with_font_size(24.0)
+                .with_color(DANGER_COLOR)
+                .with_paragraph_alignment(ParagraphAlignment::Center),
+            text_shadow_enabled,
+        )
+        .as_element()
+        .with_padding(BoxAmount::all(PAD_MD)),
+        maybe_text_shadow(
+            Text::new("Some game data was missed, so the rest of this login can't be read. Log out to the title screen and log back in to capture again.")
+                .with_font_size(16.0)
+                .with_color(TEXT_MUTED)
+                .with_paragraph_alignment(ParagraphAlignment::Center),
+            text_shadow_enabled,
+        )
+        .as_element()
+        .with_padding(BoxAmount::horizontal(PAD_LG)),
+    ]
 }
 
 /// Renders the active screen with stats and export controls.
@@ -182,17 +207,21 @@ pub fn view(store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootM
         .with_padding(BoxAmount::all(PAD_MD));
 
     {
-        let mut elements = vec![
-            maybe_text_shadow(
-                Text::new("Connected!")
-                    .with_font_size(24.0)
-                    .with_color(TEXT_COLOR)
-                    .with_paragraph_alignment(ParagraphAlignment::Center),
-                text_shadow_enabled,
-            )
-            .as_element()
-            .with_padding(BoxAmount::all(PAD_MD)),
-        ];
+        let mut elements = if store.connection_stats.capture_stalled {
+            stalled_notice(text_shadow_enabled)
+        } else {
+            vec![
+                maybe_text_shadow(
+                    Text::new("Connected!")
+                        .with_font_size(24.0)
+                        .with_color(TEXT_COLOR)
+                        .with_paragraph_alignment(ParagraphAlignment::Center),
+                    text_shadow_enabled,
+                )
+                .as_element()
+                .with_padding(BoxAmount::all(PAD_MD)),
+            ]
+        };
 
         // Add account selector if multiple accounts
         if let Some(selector) = account_selector(store, text_shadow_enabled) {
