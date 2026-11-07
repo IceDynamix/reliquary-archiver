@@ -74,23 +74,22 @@ impl OptimizerExporter {
             return None;
         };
 
-        self.multipath_characters.insert(character.id, character.clone());
+        let character_id = character.id;
 
         // If it's the trailblazer, determine the gender
         if character.name == "Trailblazer" {
-            self.trailblazer = Some(if character.id % 2 == 0 { "Stelle" } else { "Caelus" });
+            self.trailblazer = Some(if character_id % 2 == 0 { "Stelle" } else { "Caelus" });
         }
 
-        if let Some(character) = self.resolve_multipath_character(character.id) {
-            self.characters.insert(character.id, character.clone());
+        self.characters.insert(character_id, character);
 
-            Some(character)
-        } else {
-            debug!(uid = &character.id, "multipath character not resolved");
-            self.unresolved_multipath_characters.insert(character.id);
-
-            None
+        let resolved = self.resolve_multipath_character(character_id);
+        if resolved.is_none() {
+            debug!(uid = &character_id, "multipath character not resolved");
+            self.unresolved_multipath_characters.insert(character_id);
         }
+
+        resolved
     }
 
     pub fn handle_characters(&mut self, characters: GetAvatarDataScRsp) {
@@ -113,23 +112,21 @@ impl OptimizerExporter {
             .unwrap_or(avatar_id)
     }
 
+    /// Fills in the level and ascension of a character, which are stored in its base avatar
     pub fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
         let base_avatar_id = self.get_multipath_base_id(character_id);
-        let Some(character) = self.multipath_characters.get_mut(&character_id) else {
+        let Some(character) = self.characters.get_mut(&character_id) else {
             warn!(uid = &character_id, "multipath character not found");
             return None;
         };
 
-        if let Some(base_avatar) = self.multipath_base_avatars.get(&base_avatar_id) {
-            character.level = base_avatar.level;
-            character.ascension = base_avatar.promotion;
+        let base_avatar = self.multipath_base_avatars.get(&base_avatar_id)?;
+        character.level = base_avatar.level;
+        character.ascension = base_avatar.promotion;
 
-            self.unresolved_multipath_characters.remove(&character_id);
+        self.unresolved_multipath_characters.remove(&character_id);
 
-            return Some(character.clone());
-        }
-
-        None
+        Some(character.clone())
     }
 
     pub fn handle_player_sync(&mut self, sync: PlayerSyncScNotify) -> Vec<OptimizerEvent> {
