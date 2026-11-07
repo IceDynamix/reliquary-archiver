@@ -24,60 +24,8 @@ pub mod pktmon;
 #[cfg(feature = "pcap")]
 pub mod pcap;
 
-#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
-compile_error!("at least one of the features \"pktmon\" or \"pcap\" must be enabled");
-
-#[cfg(feature = "pktmon")]
-pub const PORT_RANGE: (u16, u16) = (23301, 23302);
-
-#[cfg(feature = "pcap")]
-pub const PCAP_FILTER: &str = "udp portrange 23301-23302";
-
-#[cfg(feature = "pcap")]
-pub fn normalize_offline_pcap_payload(linktype: ::pcap::Linktype, payload: &[u8]) -> std::result::Result<Vec<u8>, String> {
-    fn frame_ip_payload(payload: &[u8], ethertype: u16) -> Vec<u8> {
-        // Use a synthetic Ethernet header so the downstream sniffer can parse RAW/IP captures.
-        let mut framed = Vec::with_capacity(14 + payload.len());
-        framed.extend_from_slice(&[0u8; 12]);
-        framed.extend_from_slice(&ethertype.to_be_bytes());
-        framed.extend_from_slice(payload);
-        framed
-    }
-
-    let link_name = linktype.get_name().ok();
-    let is_ethernet = linktype == ::pcap::Linktype::ETHERNET || link_name.as_deref() == Some("EN10MB");
-    let is_ipv4 = linktype == ::pcap::Linktype::IPV4 || link_name.as_deref() == Some("IPV4");
-    let is_ipv6 = linktype == ::pcap::Linktype::IPV6 || link_name.as_deref() == Some("IPV6");
-    let is_raw_ip = linktype == ::pcap::Linktype::RAW || linktype.0 == 12 || link_name.as_deref() == Some("RAW");
-
-    if is_ethernet {
-        return Ok(payload.to_vec());
-    }
-
-    if payload.is_empty() {
-        return Err("packet payload is empty".to_string());
-    }
-
-    if is_ipv4 {
-        return Ok(frame_ip_payload(payload, 0x0800));
-    }
-
-    if is_ipv6 {
-        return Ok(frame_ip_payload(payload, 0x86DD));
-    }
-
-    if is_raw_ip {
-        let version = payload[0] >> 4;
-        return match version {
-            4 => Ok(frame_ip_payload(payload, 0x0800)),
-            6 => Ok(frame_ip_payload(payload, 0x86DD)),
-            _ => Err(format!("RAW packet does not start with IPv4/IPv6 header (version={version})")),
-        };
-    }
-
-    let link_name = link_name.unwrap_or_else(|| "UNKNOWN".to_string());
-    Err(format!("unsupported pcap datalink {link_name} ({})", linktype.0))
-}
+/// The UDP ports the game talks to its servers on
+const GAME_PORTS: (u16, u16) = (23301, 23302);
 
 type BoxError = Box<dyn Error + Send + Sync>;
 
@@ -269,44 +217,11 @@ fn blocking_stream(read: impl FnOnce(&mut dyn FnMut(Packet) -> bool) + Send + 's
     ReceiverStream::new(rx).boxed()
 }
 
-/// Derives a stable source id for packets read from a file
-fn file_source_id(path: &std::path::Path) -> u64 {
-    use std::hash::{DefaultHasher, Hash, Hasher};
+/// Derives a stable source id from whatever identifies the source, like a device name or a file path
+fn source_id(key: impl std::hash::Hash) -> u64 {
+    use std::hash::{DefaultHasher, Hasher};
 
     let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
+    key.hash(&mut hasher);
     hasher.finish()
-}
-
-#[cfg(all(test, feature = "pcap"))]
-mod tests {
-    use ::pcap::Linktype;
-
-    use super::normalize_offline_pcap_payload;
-
-    #[test]
-    fn ethernet_frames_are_passed_through() {
-        let frame = vec![1, 2, 3, 4];
-        assert_eq!(normalize_offline_pcap_payload(Linktype::ETHERNET, &frame).unwrap(), frame);
-    }
-
-    #[test]
-    fn raw_ip_packets_get_a_synthetic_ethernet_header() {
-        let ipv4 = [0x45, 0, 0, 20];
-        let framed = normalize_offline_pcap_payload(Linktype::RAW, &ipv4).unwrap();
-        assert_eq!(framed.len(), 14 + ipv4.len());
-        assert_eq!(&framed[12..14], &[0x08, 0x00]);
-        assert_eq!(&framed[14..], &ipv4);
-
-        let ipv6 = [0x60, 0, 0, 0];
-        let framed = normalize_offline_pcap_payload(Linktype::RAW, &ipv6).unwrap();
-        assert_eq!(&framed[12..14], &[0x86, 0xDD]);
-    }
-
-    #[test]
-    fn unusable_packets_are_rejected() {
-        assert!(normalize_offline_pcap_payload(Linktype::RAW, &[]).is_err());
-        assert!(normalize_offline_pcap_payload(Linktype::RAW, &[0x10]).is_err());
-        assert!(normalize_offline_pcap_payload(Linktype::NULL, &[0x45]).is_err());
-    }
 }

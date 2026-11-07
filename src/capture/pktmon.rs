@@ -29,7 +29,7 @@ impl DeviceBackend for PktmonBackend {
     fn open_device(_device: &Self::Device) -> Result<PacketStream> {
         let mut capture = Capture::new().map_err(|e| CaptureError::Capture(Box::new(e)))?;
 
-        for port in [PORT_RANGE.0, PORT_RANGE.1] {
+        for port in [GAME_PORTS.0, GAME_PORTS.1] {
             let filter = PktMonFilter {
                 name: "UDP Filter".to_string(),
                 transport_protocol: Some(TransportProtocol::UDP),
@@ -76,7 +76,7 @@ impl PacketSource for EtlFileSource {
         let mut capture = EtlCapture::new(&self.path).map_err(|e| CaptureError::Device(Box::new(e)))?;
         capture.start().map_err(|e| CaptureError::Capture(Box::new(e)))?;
 
-        let source_id = file_source_id(&self.path);
+        let source_id = source_id(&self.path);
 
         Ok(blocking_stream(move |send| {
             while let Ok(packet) = capture.next_packet() {
