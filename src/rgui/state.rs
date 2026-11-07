@@ -157,11 +157,11 @@ pub struct RootState {
     /// Whether the opacity slider is being dragged (hides modal backdrop)
     pub opacity_slider_dragging: bool,
     /// Channel to send port changes to the WebSocket server
-    pub ws_port_sender: Option<watch::Sender<PortCommand>>,
+    pub ws_port_sender: watch::Sender<PortCommand>,
 }
 
 impl RootState {
-    pub fn new(manager: Arc<Mutex<MultiAccountManager>>) -> Self {
+    pub fn new(manager: Arc<Mutex<MultiAccountManager>>, ws_port_sender: watch::Sender<PortCommand>) -> Self {
         let (selected_account_tx, _) = watch::channel(None);
         Self {
             manager,
@@ -169,14 +169,7 @@ impl RootState {
             store: Store::default(),
             settings_open: false,
             opacity_slider_dragging: false,
-            ws_port_sender: None,
-        }
-    }
-
-    pub fn with_port_sender(self, port_sender: watch::Sender<PortCommand>) -> Self {
-        Self {
-            ws_port_sender: Some(port_sender),
-            ..self
+            ws_port_sender,
         }
     }
 

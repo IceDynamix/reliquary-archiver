@@ -12,15 +12,14 @@ use raxis::widgets::rule::Rule;
 use raxis::widgets::text::{ParagraphAlignment, Text};
 use raxis::{HookManager, column, row, w_id};
 
-use crate::rgui::PRIMARY_COLOR;
 use crate::rgui::components::file_download::download_view;
 use crate::rgui::components::update::UpdateMessage;
 use crate::rgui::kit::icons::refresh_icon;
 use crate::rgui::messages::{AccountMessage, ExportMessage, RootMessage};
 use crate::rgui::state::Store;
 use crate::rgui::theme::{
-    BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PAD_SM, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_COLOR, TEXT_MUTED,
-    maybe_text_shadow,
+    BORDER_COLOR, BORDER_RADIUS, PAD_LG, PAD_MD, PAD_SM, PRIMARY_COLOR, SHADOW_SM, SPACE_LG, SPACE_MD, SPACE_SM, SUCCESS_COLOR, TEXT_COLOR,
+    TEXT_MUTED, maybe_text_shadow,
 };
 
 /// Renders a single statistic line (label + value).

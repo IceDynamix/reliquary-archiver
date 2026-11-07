@@ -36,7 +36,9 @@ use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
 
 use crate::logging;
-use crate::rgui::components::update::UpdateMessage;
+use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketStatus, WindowMessage};
+use crate::rgui::state::RootState;
+use crate::rgui::view::view;
 use crate::rgui::worker::archiver_worker;
 use crate::websocket::{PortCommand, PortSource, start_websocket_server};
 
@@ -53,16 +55,6 @@ pub mod state;
 pub mod theme;
 pub mod view;
 pub mod worker;
-
-// Re-exports for public API
-pub use handlers::{
-    handle_connection_check, handle_export_message, handle_log_message, handle_websocket_message, handle_window_message,
-    handle_worker_event,
-};
-pub use messages::*;
-pub use state::*;
-pub use theme::*;
-pub use view::view;
 
 /// Main update function that processes messages and modifies application state.
 ///
@@ -84,36 +76,17 @@ pub fn update(state: &mut RootState, message: RootMessage) -> Option<Task<RootMe
         }
 
         // Worker/connection events
-        RootMessage::WorkerEvent(event) => Some(handle_worker_event(state, event)),
-        RootMessage::CheckConnection(now) => handle_connection_check(state, now),
+        RootMessage::WorkerEvent(event) => Some(handlers::handle_worker_event(state, event)),
+        RootMessage::CheckConnection(now) => handlers::handle_connection_check(state, now),
 
         // Grouped message handlers - delegate to appropriate modules
         RootMessage::Account(msg) => handlers::handle_account_message(state, msg),
-        RootMessage::Export(msg) => handle_export_message(state, msg),
-        RootMessage::WebSocket(msg) => handle_websocket_message(state, msg),
+        RootMessage::Export(msg) => handlers::handle_export_message(state, msg),
+        RootMessage::WebSocket(msg) => handlers::handle_websocket_message(state, msg),
         RootMessage::Settings(msg) => components::settings_modal::handle_settings_message(state, msg),
-        RootMessage::Window(msg) => handle_window_message(state, msg),
-        RootMessage::Log(msg) => handle_log_message(state, msg),
-
-        // Update messages
-        RootMessage::Update(msg) => {
-            use crate::rgui::components::update;
-            let task = if matches!(msg, UpdateMessage::Confirm) {
-                Task::done(RootMessage::WebSocket(WebSocketMessage::Close))
-            } else {
-                Task::none()
-            };
-            Some(
-                task.chain(
-                    match update::handle_message(msg, &mut state.store.update_state, state.store.settings.always_update) {
-                        update::HandleResult::None => None,
-                        update::HandleResult::Task(t) => Some(t.map(RootMessage::Update)),
-                        update::HandleResult::ExitForRestart => return Some(task::exit_application()),
-                    }
-                    .unwrap_or(Task::none()),
-                ),
-            )
-        }
+        RootMessage::Window(msg) => handlers::handle_window_message(state, msg),
+        RootMessage::Log(msg) => handlers::handle_log_message(state, msg),
+        RootMessage::Update(msg) => handlers::handle_update_message(state, msg),
     }
 }
 
@@ -163,7 +136,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let database = get_database();
     let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
 
-    let state = RootState::new(manager.clone()).with_port_sender(port_tx).with_settings(settings);
+    let state = RootState::new(manager.clone(), port_tx).with_settings(settings);
 
     let app = raxis::Application::new(state, view, update, move |state| {
         let selected_account_rx = state.selected_account_tx.subscribe();
