@@ -39,6 +39,7 @@ use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 
+mod accounts;
 mod capture;
 mod logging;
 mod scopefns;
@@ -398,7 +399,7 @@ where
 
     #[cfg(feature = "stream")]
     use crate::websocket::{PortSource, start_websocket_server};
-    use crate::worker::MultiAccountManager;
+    use crate::accounts::MultiAccountManager;
 
     #[cfg(not(feature = "stream"))]
     let streaming = false;
@@ -434,7 +435,7 @@ where
 #[instrument(skip_all)]
 async fn live_capture(
     args: &Args,
-    manager: Arc<FuturesMutex<worker::MultiAccountManager>>,
+    manager: Arc<FuturesMutex<accounts::MultiAccountManager>>,
     mut sniffer: GameSniffer,
     selected_account_tx: Option<tokio::sync::watch::Sender<Option<u32>>>,
     streaming: bool,

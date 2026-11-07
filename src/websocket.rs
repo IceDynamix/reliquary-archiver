@@ -18,7 +18,7 @@ use tokio::task::AbortHandle;
 use tokio_stream::wrappers::WatchStream;
 use tracing::{debug, info, warn};
 
-use crate::worker::{AccountEvent, MultiAccountManager};
+use crate::accounts::{AccountEvent, MultiAccountManager};
 
 struct WebSocketServerState {
     pub manager: Arc<Mutex<MultiAccountManager>>,

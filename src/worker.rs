@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -17,18 +16,10 @@ use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::database::{Database, get_database};
 use reliquary_archiver::export::fribbels::{Export, OptimizerEvent, OptimizerExporter};
 use tokio::pin;
-use tokio::sync::broadcast;
-use tokio::task::JoinHandle;
 use tracing::{info, instrument, warn};
 
+pub use crate::accounts::{AccountEvent, MultiAccountManager};
 use crate::capture;
-
-#[derive(Debug, Clone)]
-pub enum AccountEvent {
-    Discovered { uid: u32 },
-    Reconnected { uid: u32 },
-    ExporterEvent { uid: u32, event: OptimizerEvent },
-}
 
 #[derive(Debug, Clone)]
 pub enum WorkerEvent {
@@ -79,147 +70,6 @@ pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> i
     let runner = stream::once(f(sender)).filter_map(|_| async { None });
 
     stream::select(receiver, runner)
-}
-
-/// Manages multiple account exporters, one per conversation.
-/// Maps conv_id -> exporter and uid -> conv_id for account tracking.
-pub struct MultiAccountManager {
-    /// All exporters indexed by conversation ID
-    exporters: HashMap<u32, Arc<Mutex<OptimizerExporter>>>,
-
-    /// Track which conversation belongs to which account UID
-    uid_to_conv: HashMap<u32, u32>,
-
-    /// Unified event channel for all account lifecycle and exporter events
-    event_tx: broadcast::Sender<AccountEvent>,
-
-    /// Task handles for exporter event forwarding (internal management)
-    subscription_tasks: HashMap<u32, JoinHandle<()>>,
-}
-
-impl MultiAccountManager {
-    pub fn new() -> Self {
-        let (event_tx, _) = broadcast::channel(100);
-        Self {
-            exporters: HashMap::new(),
-            uid_to_conv: HashMap::new(),
-            event_tx,
-            subscription_tasks: HashMap::new(),
-        }
-    }
-
-    /// Subscribe to all account events (discoveries, reconnections, exporter events)
-    pub fn subscribe(&self) -> broadcast::Receiver<AccountEvent> {
-        self.event_tx.subscribe()
-    }
-
-    /// Get or create an exporter for a conversation ID
-    pub fn get_or_create_exporter(&mut self, conv_id: u32) -> Arc<Mutex<OptimizerExporter>> {
-        self.exporters
-            .entry(conv_id)
-            .or_insert_with(|| Arc::new(Mutex::new(OptimizerExporter::new())))
-            .clone()
-    }
-
-    /// Register a UID for a conversation. If the UID was previously associated
-    /// with a different conversation, delete the old exporter and emit reconnection event.
-    pub fn register_uid(&mut self, conv_id: u32, uid: u32) -> bool {
-        let is_new_account = if let Some(&old_conv_id) = self.uid_to_conv.get(&uid) {
-            if old_conv_id != conv_id {
-                // Same UID reconnecting on a different conversation - delete old exporter
-                info!(
-                    uid,
-                    old_conv = old_conv_id,
-                    new_conv = conv_id,
-                    "account reconnected, replacing old exporter"
-                );
-                self.exporters.remove(&old_conv_id);
-                self.uid_to_conv.insert(uid, conv_id);
-
-                // Get the new exporter and spawn subscription
-                if let Some(exporter) = self.get_account_exporter(uid) {
-                    self.spawn_exporter_subscription(uid, exporter);
-                }
-
-                // Emit reconnection event
-                self.event_tx.send(AccountEvent::Reconnected { uid }).ok();
-
-                false // Not a new account, it's a reconnection
-            } else {
-                // Same conv_id, same UID - no-op
-                false
-            }
-        } else {
-            // New UID discovered
-            info!(uid, conv_id, "new account discovered");
-            self.uid_to_conv.insert(uid, conv_id);
-
-            // Get the exporter and spawn subscription
-            if let Some(exporter) = self.get_account_exporter(uid) {
-                self.spawn_exporter_subscription(uid, exporter);
-            }
-
-            // Emit discovery event
-            self.event_tx.send(AccountEvent::Discovered { uid }).ok();
-
-            true
-        };
-
-        is_new_account
-    }
-
-    /// Get the exporter for a specific UID
-    pub fn get_account_exporter(&self, uid: u32) -> Option<Arc<Mutex<OptimizerExporter>>> {
-        self.uid_to_conv.get(&uid).and_then(|conv_id| self.exporters.get(conv_id)).cloned()
-    }
-
-    /// Get all accounts (uid, exporter) pairs
-    pub fn get_all_accounts(&self) -> Vec<(u32, Arc<Mutex<OptimizerExporter>>)> {
-        self.uid_to_conv
-            .iter()
-            .filter_map(|(uid, conv_id)| self.exporters.get(conv_id).map(|exp| (*uid, exp.clone())))
-            .collect()
-    }
-
-    /// Check if a conversation is still active (has an exporter)
-    fn is_conv_active(&self, conv_id: u32) -> bool {
-        self.exporters.contains_key(&conv_id)
-    }
-
-    /// Spawn a task to forward events from an exporter's channel to the manager's unified event channel
-    fn spawn_exporter_subscription(&mut self, uid: u32, exporter: Arc<Mutex<OptimizerExporter>>) {
-        let event_tx = self.event_tx.clone();
-
-        let task = tokio::spawn(async move {
-            let (initial_event, mut rx) = exporter.lock().await.subscribe();
-
-            // Send initial event if available
-            if let Some(event) = initial_event {
-                event_tx.send(AccountEvent::ExporterEvent { uid, event }).ok();
-            }
-
-            // Forward all subsequent events
-            loop {
-                match rx.recv().await {
-                    Ok(event) => {
-                        if event_tx.send(AccountEvent::ExporterEvent { uid, event }).is_err() {
-                            warn!(uid, "manager event channel closed");
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(uid, ?e, "exporter subscription closed or lagged");
-                        break;
-                    }
-                }
-            }
-        });
-
-        // Store task handle (abort old one if exists)
-        if let Some(old_task) = self.subscription_tasks.insert(uid, task) {
-            old_task.abort();
-        }
-    }
 }
 
 #[instrument(skip_all)]
