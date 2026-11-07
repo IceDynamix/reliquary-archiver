@@ -8,6 +8,8 @@ mod converters;
 mod exporter;
 mod handlers;
 mod models;
+#[cfg(test)]
+mod tests;
 mod utils;
 
 pub use converters::*;
