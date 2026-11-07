@@ -173,8 +173,6 @@ pub enum ScreenAction<Message> {
     None,
     /// Run an async task
     Run(Task<Message>),
-    /// Request a refresh of the export data
-    RefreshExport,
     /// Process a packet capture file (requires pcap feature)
     #[cfg(feature = "pcap")]
     ProcessCapture(PathBuf),
