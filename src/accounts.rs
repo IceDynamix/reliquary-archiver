@@ -122,6 +122,8 @@ impl MultiAccountManager {
 
     /// Spawn a task to forward events from an exporter's channel to the manager's unified event channel
     fn spawn_exporter_subscription(&mut self, uid: u32, exporter: Arc<Mutex<OptimizerExporter>>) {
+        use tokio::sync::broadcast::error::RecvError;
+
         let event_tx = self.event_tx.clone();
 
         let task = tokio::spawn(async move {
@@ -141,8 +143,12 @@ impl MultiAccountManager {
                             break;
                         }
                     }
-                    Err(e) => {
-                        warn!(uid, ?e, "exporter subscription closed or lagged");
+                    // Missing a few updates is recoverable for subscribers, losing the subscription is not
+                    Err(RecvError::Lagged(skipped)) => {
+                        warn!(uid, skipped, "exporter subscription lagged, some events were dropped");
+                    }
+                    Err(RecvError::Closed) => {
+                        warn!(uid, "exporter subscription closed");
                         break;
                     }
                 }
