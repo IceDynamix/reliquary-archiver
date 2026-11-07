@@ -4,13 +4,10 @@ use std::path::PathBuf;
 
 use async_stream::stream;
 use futures::stream::BoxStream;
-use futures::{stream, FutureExt, Stream, StreamExt, TryFutureExt};
-use notify::event::{CreateKind, EventAttributes, RemoveKind};
-use notify::{Event, EventHandler, EventKind, RecursiveMode, Result as NotifyResult, Watcher};
+use futures::{FutureExt, Stream, StreamExt, TryFutureExt, stream};
 use pcaparse::PcapError;
-use tokio::sync::mpsc::UnboundedSender;
 
-use crate::capture::{CaptureBackend, CaptureDevice, CaptureError, Packet, PacketCapture};
+use crate::capture::{CaptureBackend, CaptureDevice, CaptureError, Packet, PacketCapture, PacketSource, PacketStream};
 
 #[derive(Debug)]
 pub struct PcapFile {
@@ -23,58 +20,8 @@ impl PcapFile {
     }
 }
 
-struct AsyncSyncWrapper(UnboundedSender<NotifyResult<Event>>);
-
-impl EventHandler for AsyncSyncWrapper {
-    fn handle_event(&mut self, event: NotifyResult<Event>) {
-        self.0.send(event);
-    }
-}
-
-impl CaptureBackend for PcapFile {
-    type Device = PcapFile;
-
-    fn list_devices(&mut self) -> crate::capture::Result<Vec<Self::Device>> {
-        // HACK: due to CaptureBackend has no "start"
-        // it cannot really start listening to the incoming events
-        // TODO: uplift file opening to backend
-        self.file
-            .exists()
-            .then(|| vec![PcapFile { file: self.file.clone() }])
-            .ok_or_else(|| {
-                CaptureError::Device(Box::new(std::io::Error::new(
-                    ErrorKind::NotFound,
-                    format!("file {:?} doesn't exist", self.file),
-                )))
-            })
-    }
-
-    fn listen_new_devices(&mut self) -> BoxStream<'_, crate::capture::Result<Self::Device>> {
-        if !self.file.exists() {
-            return stream::iter(vec![Err(CaptureError::Device(Box::new(std::io::Error::new(
-                ErrorKind::NotFound,
-                format!("file {:?} doesn't exist", self.file),
-            ))))])
-            .boxed();
-        }
-        stream::iter(Some(Ok(PcapFile { file: self.file.clone() }))).boxed()
-    }
-}
-
-impl CaptureDevice for PcapFile {
-    type Capture = PcapFile;
-
-    fn name(&self) -> &str {
-        self.file.to_str().unwrap()
-    }
-
-    fn create_capture(&self) -> crate::capture::Result<Self::Capture> {
-        Ok(PcapFile { file: self.file.clone() })
-    }
-}
-
-impl PacketCapture for PcapFile {
-    fn capture_packets(self) -> crate::capture::Result<impl Stream<Item = crate::capture::Result<Packet>> + Unpin + Send> {
+impl PacketSource for PcapFile {
+    fn packets(self) -> crate::capture::Result<PacketStream> {
         let source_id = {
             let mut hasher = DefaultHasher::new();
             self.file.hash(&mut hasher);

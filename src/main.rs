@@ -43,7 +43,7 @@ use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 use reliquary_archiver::export::Exporter;
 
-use crate::capture::{CaptureBackend, CaptureDevice, PacketCapture};
+use crate::capture::{CaptureBackend, CaptureDevice, CaptureMode, PacketCapture, PacketSource};
 
 mod capture;
 mod scopefns;
@@ -119,33 +119,23 @@ struct Args {
     detach: bool,
 }
 
-#[derive(Debug, Clone)]
-enum CaptureMode {
-    #[cfg(any(feature = "pcap", feature = "pktmon"))]
-    Live,
-    #[cfg(feature = "pcap")]
-    Pcap(PathBuf),
-    #[cfg(feature = "pktmon")]
-    Etl(PathBuf),
-    #[cfg(feature = "pcap-parser")]
-    PcapFileLive(PathBuf),
-}
+impl TryFrom<&Args> for CaptureMode {
+    type Error = ();
 
-impl CaptureMode {
-    fn from_args(args: &Args) -> Self {
+    fn try_from(args: &Args) -> std::result::Result<Self, ()> {
         #[cfg(feature = "pcap")]
         if let Some(path) = &args.pcap {
-            return CaptureMode::Pcap(path.clone());
+            return Ok(CaptureMode::Pcap(path.clone()));
         }
 
         #[cfg(feature = "pktmon")]
         if let Some(path) = &args.etl {
-            return CaptureMode::Etl(path.clone());
+            return Ok(CaptureMode::Etl(path.clone()));
         }
 
         #[cfg(feature = "pcap-parser")]
         if let Some(path) = &args.pcap_file_live {
-            return CaptureMode::PcapFileLive(path.clone());
+            return Ok(CaptureMode::PcapLiveFile(path.clone()));
         }
 
         #[cfg(any(feature = "pcap", feature = "pktmon"))]
@@ -153,12 +143,14 @@ impl CaptureMode {
             CaptureMode::Live
         }
         #[cfg(all(not(feature = "pcap"), not(feature = "pktmon")))]
-        panic!("")
+        {
+            Err(())
+        }
     }
 }
 
 #[cfg(not(any(feature = "pktmon", feature = "pcap", feature = "pcap-parser")))]
-compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
+compile_error!("One of \"pktmon\" (windows exclusive), \"pcap\", or \"pcap-parser\" must be enabled");
 
 #[cfg(all(not(windows), feature = "gui"))]
 compile_error!("GUI is only available on windows");
@@ -197,9 +189,6 @@ async fn main() {
     if args.headless && !has_console && !args.detach {
         unsafe { windows::Win32::System::Console::AllocConsole().ok() };
     }
-
-    // Copy the exit_after_capture flag to a local variable before args is moved into the closure
-    let exit_after_capture = args.exit_after_capture;
 
     tracing_init(&args);
 
@@ -308,16 +297,21 @@ async fn capture(args: Args) {
         let sniffer = GameSniffer::new();
         let exporter = OptimizerExporter::new();
 
-        let capture_mode = CaptureMode::from_args(&args);
+        let capture_mode = CaptureMode::try_from(&args);
         let export = match capture_mode {
             #[cfg(any(feature = "pcap", feature = "pktmon"))]
-            CaptureMode::Live => live_capture_wrapper(&args, exporter, sniffer).await,
+            Ok(CaptureMode::Sniff) => live_capture_wrapper(capture_mode, exporter, sniffer).await,
             #[cfg(feature = "pcap")]
-            CaptureMode::Pcap(path) => capture_from_pcap(exporter, sniffer, path),
+            Ok(CaptureMode::Pcap(path)) => capture_from_pcap(exporter, sniffer, path),
             #[cfg(feature = "pktmon")]
-            CaptureMode::Etl(path) => capture_from_etl(exporter, sniffer, path),
+            Ok(CaptureMode::Etl(path)) => capture_from_etl(exporter, sniffer, path),
             #[cfg(feature = "pcap-parser")]
-            CaptureMode::PcapFileLive(_) => live_capture_wrapper(&args, exporter, sniffer).await,
+            Ok(capture_mode @ CaptureMode::PcapLiveFile(_)) => live_capture_wrapper(&args, capture_mode, exporter, sniffer).await,
+            Err(_) => {
+                #[cfg(all(feature = "pcap-parser", not(any(feature = "pcap", feature = "pktmon"))))]
+                error!("No --pcap-file-live passed, no other capture backend exists.");
+                return;
+            },
         };
 
         if let Some(export) = export {
@@ -593,7 +587,7 @@ where
     exporter.export()
 }
 
-async fn live_capture_wrapper<E>(args: &Args, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
+async fn live_capture_wrapper<E>(args: &Args, capture_mode: CaptureMode, exporter: E, sniffer: GameSniffer) -> Option<E::Export>
 where
     E: Exporter,
     E::Export: From<<OptimizerExporter as Exporter>::Export>,
@@ -633,13 +627,14 @@ where
     let selected_account_tx = None;
 
     // Run live capture with manager
-    let result = live_capture(args, manager, sniffer, selected_account_tx, streaming).await;
+    let result = live_capture(args, capture_mode, manager, sniffer, selected_account_tx, streaming).await;
     result.map(|export| export.into())
 }
 
 #[instrument(skip_all)]
 async fn live_capture(
     args: &Args,
+    capture_mode: CaptureMode,
     manager: Arc<FuturesMutex<worker::MultiAccountManager>>,
     mut sniffer: GameSniffer,
     selected_account_tx: Option<tokio::sync::watch::Sender<Option<u32>>>,
@@ -648,26 +643,16 @@ async fn live_capture(
     use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
     use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
 
-    let rx = (|| {
-        #[cfg(feature = "pcap-parser")]
-        #[allow(clippy::needless_return)]
-        if let Some(file) = args.pcap_file_live.clone() {
-            return capture::listen_on_all(capture::pcap_file::PcapFile::new(file));
-        } else {
-            #[cfg(all(not(feature = "pcap"), not(feature = "pktmon")))]
-            {
-                panic!()
-            }
-        }
+    let rx = match capture_mode {
         #[cfg(feature = "pcap")]
-        {
-            capture::listen_on_all(capture::pcap::PcapBackend)
-        }
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-        {
-            capture::listen_on_all(capture::pktmon::PktmonBackend)
-        }
-    })();
+        CaptureMode::Sniff => capture::pcap::PcapBackend.packets(),
+        #[cfg(feature = "pktmon")]
+        CaptureMode::Sniff => capture::pktmon::PktmonBackend.packets(),
+        #[cfg(feature = "pktmon")]
+        CaptureMode::Etl(path) => unreachable!("Shouldn't happen, as ETL doesn't mean capturing."),
+        #[cfg(feature = "pcap-parser")]
+        CaptureMode::PcapLiveFile(path) => capture::pcap_file::PcapFile::new(path).packets()
+    };
 
     let packet_stream = rx.expect("Failed to start packet capture");
     let mut packet_stream = packet_stream.fuse();
