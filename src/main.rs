@@ -3,13 +3,12 @@
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::io;
 use std::io::Write;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
-use std::sync::{Arc, LazyLock, LockResult, Mutex, TryLockResult};
+use std::sync::{Arc, LockResult, Mutex};
 use std::time::Duration;
 
 #[cfg(feature = "pcap")]
@@ -22,13 +21,7 @@ use reliquary::network::command::GameCommandError;
 use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, KcpError, NetworkError};
 use tokio::pin;
-use tracing::instrument::WithSubscriber;
-use tracing::level_filters::LevelFilter;
 use tracing::{debug, error, info, instrument, warn};
-use tracing_subscriber::filter::Filtered;
-use tracing_subscriber::fmt::{MakeWriter, SubscriberBuilder};
-use tracing_subscriber::prelude::*;
-use tracing_subscriber::{EnvFilter, Layer, Registry, reload};
 
 #[cfg(feature = "stream")]
 mod websocket;
@@ -39,13 +32,21 @@ mod rgui;
 #[cfg(windows)]
 mod update;
 
+#[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+mod elevation;
+
 use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::database::Database;
 use reliquary_archiver::export::fribbels::OptimizerExporter;
 
 mod capture;
+mod logging;
 mod scopefns;
 mod worker;
+
+// The GUI reads the log buffer to display it
+#[cfg(feature = "gui")]
+pub use logging::{LOG_BUFFER, LOG_NOTIFY, VEC_LAYER_HANDLE};
 
 #[derive(Parser, Debug, Clone)]
 struct Args {
@@ -181,7 +182,7 @@ async fn main() {
     // Copy the exit_after_capture flag to a local variable before args is moved into the closure
     let exit_after_capture = args.exit_after_capture;
 
-    tracing_init(&args);
+    logging::tracing_init(args.verbose, args.log_path.as_deref());
 
     debug!(?args);
 
@@ -189,24 +190,7 @@ async fn main() {
     if let Err(payload) = AssertUnwindSafe(capture(args)).catch_unwind().await {
         error!("the application panicked, this is a bug, please report it on GitHub or Discord");
 
-        // Write crashlog
-        if let Ok(mut file) = File::create("crashlog.txt") {
-            if let TryLockResult::Ok(buffer) = LOG_BUFFER.try_lock() {
-                let lines = buffer.join("\n");
-                file.write_all(lines.as_bytes()).unwrap();
-            } else {
-                file.write_all("failed to lock log buffer".as_bytes()).unwrap();
-            }
-            file.write_all("\n\n".as_bytes()).unwrap();
-            if let Some(s) = payload.downcast_ref::<&str>() {
-                file.write_all(s.as_bytes()).unwrap();
-            } else if let Some(s) = payload.downcast_ref::<String>() {
-                file.write_all(s.as_bytes()).unwrap();
-            } else {
-                file.write_all("panic: unknown payload type".as_bytes()).unwrap();
-            }
-            info!("wrote crashlog to crashlog.txt");
-        }
+        logging::write_crashlog(payload.as_ref());
 
         info!("press enter to close");
         std::io::stdin().read_line(&mut String::new()).unwrap();
@@ -231,41 +215,8 @@ async fn capture(args: Args) {
     }
 
     #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-    if !unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() } {
-        fn confirm(msg: &str) -> bool {
-            use std::io::Write;
-
-            print!("{}", msg);
-            if std::io::stdout().flush().is_err() {
-                return false;
-            }
-
-            let mut input = String::new();
-            if std::io::stdin().read_line(&mut input).is_err() {
-                return false;
-            }
-
-            input = input.trim().to_lowercase();
-            input.starts_with("y") || input.is_empty()
-        }
-
-        println!();
-        println!("===========================================================================================================");
-        println!("                       Administrative privileges are required to capture packets");
-        println!("===========================================================================================================");
-        println!();
-        println!("Reliquary Archiver now uses PacketMonitor (pktmon) to capture the game traffic instead of npcap on Windows");
-        println!("Due to the way pktmon works, it requires running the application as an administrator");
-        println!();
-        println!("If you don't feel comfortable running the application as an administrator, you can download the pcap");
-        println!("version of Reliquary Archiver from the GitHub releases page.");
-        println!();
-        if confirm("Would you like to restart the application with elevated privileges? (Y/n): ") {
-            if let Err(e) = escalate_to_admin() {
-                error!("Failed to escalate privileges: {}", e);
-            }
-        }
-
+    if !elevation::is_admin() {
+        elevation::prompt_and_escalate();
         return;
     }
 
@@ -344,133 +295,6 @@ async fn capture(args: Args) {
             info!("wrote logs to {}", log_path.display());
         }
     }
-}
-
-struct VecWriter;
-
-impl VecWriter {
-    pub fn new() -> Self {
-        Self
-    }
-}
-
-pub static LOG_BUFFER: LazyLock<Mutex<Vec<String>>> = LazyLock::new(|| Mutex::new(Vec::new()));
-pub static LOG_NOTIFY: LazyLock<tokio::sync::Notify> = LazyLock::new(tokio::sync::Notify::new);
-
-type VecLayerHandle = Box<dyn Fn(LevelFilter) + Send>;
-pub static VEC_LAYER_HANDLE: LazyLock<Mutex<Option<VecLayerHandle>>> = LazyLock::new(|| Mutex::new(None));
-
-impl std::io::Write for VecWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let str = String::from_utf8_lossy(buf);
-        let lines = str.lines().map(|s| s.to_string());
-        {
-            let mut buffer = LOG_BUFFER.lock().unwrap();
-            buffer.extend(lines);
-
-            // Limit the buffer size to prevent unbounded memory growth, keeping only the most recent 100000 lines
-            // (assuming an average of ~100 bytes per log line, this would use around 10MB of memory)
-            if buffer.len() > 100000 {
-                let range = 0..buffer.len() - 10000;
-                buffer.drain(range);
-            }
-        }
-        LOG_NOTIFY.notify_one();
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-struct DualWriter<A: io::Write, B: io::Write> {
-    m: Arc<Mutex<(A, B)>>,
-}
-
-impl<A: io::Write, B: io::Write> DualWriter<A, B> {
-    fn new(a: A, b: B) -> Self {
-        Self {
-            m: Arc::new(Mutex::new((a, b))),
-        }
-    }
-}
-
-impl<A: io::Write, B: io::Write> io::Write for DualWriter<A, B> {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut m = self.m.lock().unwrap();
-        m.0.write(buf)?;
-        m.1.write(buf)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        let mut m = self.m.lock().unwrap();
-        m.0.flush()?;
-        m.1.flush()
-    }
-}
-
-impl<'a, A: io::Write, B: io::Write> MakeWriter<'a> for DualWriter<A, B> {
-    type Writer = DualWriter<A, B>;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        DualWriter { m: self.m.clone() }
-    }
-}
-
-fn tracing_init(args: &Args) {
-    tracing_log::LogTracer::init().unwrap();
-
-    fn env_filter(args: &Args) -> EnvFilter {
-        EnvFilter::builder()
-            .with_default_directive(
-                match args.verbose {
-                    0 => "reliquary_archiver=info",
-                    1 => "info",
-                    2 => "debug",
-                    _ => "trace",
-                }
-                .parse()
-                .unwrap(),
-            )
-            .from_env_lossy()
-    }
-
-    let (console_filter, handle) = reload::Layer::new(env_filter(args));
-    let console_log = tracing_subscriber::fmt::layer()
-        .with_ansi(false)
-        .with_writer(DualWriter::new(VecWriter::new(), io::stdout()))
-        .with_filter(console_filter);
-
-    *VEC_LAYER_HANDLE.lock().unwrap() = Some(Box::new(move |l| {
-        handle.modify(|f| {
-            *f = EnvFilter::builder()
-                .parse(match l {
-                    LevelFilter::TRACE => "trace",
-                    LevelFilter::DEBUG => "debug",
-                    LevelFilter::INFO => "info",
-                    LevelFilter::WARN => "warn",
-                    LevelFilter::ERROR => "error",
-                    _ => "off",
-                })
-                .unwrap();
-        });
-    }));
-
-    let file_log = if let Some(log_path) = &args.log_path {
-        let log_file = File::create(log_path).unwrap();
-        let file_log = tracing_subscriber::fmt::layer()
-            .json()
-            .with_writer(Mutex::new(log_file))
-            .with_filter(tracing::level_filters::LevelFilter::TRACE);
-        Some(file_log)
-    } else {
-        None
-    };
-
-    let subscriber = Registry::default().with(console_log).with(file_log);
-
-    tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
 }
 
 // Helper function to process a packet and determine if capture should stop
@@ -820,46 +644,4 @@ async fn maybe_timeout(timeout: Option<Duration>) -> () {
     } else {
         future::pending::<()>().await;
     }
-}
-
-#[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
-    use std::os::windows::ffi::OsStrExt;
-
-    use windows::Win32::System::Console::GetConsoleWindow;
-    use windows::Win32::UI::Shell::{SEE_MASK_NO_CONSOLE, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
-    use windows::Win32::UI::WindowsAndMessaging::{GW_OWNER, GetWindow, SW_SHOWNORMAL};
-    use windows::core::{PCWSTR, w};
-
-    let args_str = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
-
-    let exe_path = std::env::current_exe()
-        .expect("Failed to get current exe")
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect::<Vec<_>>();
-    let args = args_str.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-
-    unsafe {
-        let mut options = SHELLEXECUTEINFOW {
-            cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
-            fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NO_CONSOLE,
-            hwnd: GetWindow(GetConsoleWindow(), GW_OWNER).unwrap_or(GetConsoleWindow()),
-            lpVerb: w!("runas"),
-            lpFile: PCWSTR(exe_path.as_ptr()),
-            lpParameters: PCWSTR(args.as_ptr()),
-            lpDirectory: PCWSTR::null(),
-            nShow: SW_SHOWNORMAL.0,
-            lpIDList: std::ptr::null_mut(),
-            lpClass: PCWSTR::null(),
-            dwHotKey: 0,
-            ..Default::default()
-        };
-
-        ShellExecuteExW(&mut options)?;
-    };
-
-    // Exit the current process since we launched a new elevated one
-    std::process::exit(0);
 }
