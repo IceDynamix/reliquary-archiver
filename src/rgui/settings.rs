@@ -4,7 +4,9 @@
 //! GUI starts, and [`rgui::update`](crate::rgui::update) saves them whenever a message leaves them
 //! different from what was saved last, so code that changes settings doesn't have to save them.
 
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::watch;
 
@@ -82,20 +84,29 @@ fn settings_path(appdata: PathBuf) -> PathBuf {
 /// The settings file, and what it holds.
 ///
 /// A single writer task, [`SettingsFile::writer`], writes the settings whenever they change. Changes
-/// that come in while it is writing are combined, and the latest settings always win.
+/// that come in while it is writing are combined, and the latest settings always win. Whatever it
+/// hasn't written yet when the app exits is written when the `SettingsFile` is dropped.
 pub struct SettingsFile {
     path: Option<PathBuf>,
     /// The settings that were last handed to the writer
     to_save: watch::Sender<Settings>,
     /// Never read, so the writer's clone of it sees every change made since the file was loaded
     changes: watch::Receiver<Settings>,
+    /// What the file holds. Locked while writing, so only one write happens at a time
+    written: Arc<Mutex<Settings>>,
 }
 
 impl SettingsFile {
     /// `saved` is what the file at `path` holds
     fn new(path: Option<PathBuf>, saved: Settings) -> Self {
+        let written = Arc::new(Mutex::new(saved.clone()));
         let (to_save, changes) = watch::channel(saved);
-        Self { path, to_save, changes }
+        Self {
+            path,
+            to_save,
+            changes,
+            written,
+        }
     }
 
     /// Saves the settings if they changed since they were last saved
@@ -114,6 +125,7 @@ impl SettingsFile {
     pub fn writer(&self) -> impl Future<Output = ()> + Send + 'static {
         let path = self.path.clone();
         let mut changes = self.changes.clone();
+        let written = self.written.clone();
 
         async move {
             let Some(path) = path else {
@@ -121,10 +133,38 @@ impl SettingsFile {
             };
 
             while changes.changed().await.is_ok() {
-                let settings = changes.borrow_and_update().clone();
-                write(&path, &settings).await;
+                changes.borrow_and_update();
+
+                let (path, written, latest) = (path.clone(), written.clone(), changes.clone());
+                // The latest settings are read once it is this write's turn, so the newest ones end up on disk
+                tokio::task::spawn_blocking(move || flush(&path, &written, || latest.borrow().clone()))
+                    .await
+                    .ok();
             }
         }
+    }
+}
+
+impl Drop for SettingsFile {
+    /// The writer task doesn't get to run anymore once the app exits, so write what it hasn't gotten to
+    fn drop(&mut self) {
+        if let Some(path) = &self.path {
+            flush(path, &self.written, || self.to_save.borrow().clone());
+        }
+    }
+}
+
+/// Writes the latest settings, unless the file already holds them
+fn flush(path: &Path, written: &Mutex<Settings>, latest: impl FnOnce() -> Settings) {
+    let mut written = written.lock().unwrap_or_else(PoisonError::into_inner);
+    let latest = latest();
+    if *written == latest {
+        return;
+    }
+
+    match write(path, &latest) {
+        Ok(()) => *written = latest,
+        Err(e) => tracing::error!("Failed to save settings to {}: {}", path.display(), e),
     }
 }
 
@@ -132,32 +172,15 @@ impl SettingsFile {
 ///
 /// They are written to a temporary file first, which then replaces the settings file, so the
 /// settings file is never left half written if the application crashes or is killed meanwhile.
-async fn write(path: &Path, settings: &Settings) {
+fn write(path: &Path, settings: &Settings) -> io::Result<()> {
     // The process id keeps two running instances from writing to the same temporary file
     let temp_path = path.with_extension(format!("json.{}.tmp", std::process::id()));
 
-    if let Err(e) = tokio::fs::create_dir_all(path.parent().unwrap()).await {
-        tracing::error!("Failed to create settings directory: {}", e);
-        return;
-    }
-
-    let json = match serde_json::to_string_pretty(settings) {
-        Ok(json) => json,
-        Err(e) => {
-            tracing::error!("Failed to serialize settings: {}", e);
-            return;
-        }
-    };
-
-    if let Err(e) = tokio::fs::write(&temp_path, &json).await {
-        tracing::error!("Failed to write settings to temp file: {}", e);
-        return;
-    }
-
-    if let Err(e) = tokio::fs::rename(&temp_path, path).await {
-        tracing::error!("Failed to rename temp settings file: {}", e);
-        let _ = tokio::fs::remove_file(&temp_path).await;
-    }
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&temp_path, serde_json::to_string_pretty(settings)?)?;
+    std::fs::rename(&temp_path, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp_path);
+    })
 }
 
 /// Loads settings synchronously from disk before the GUI initializes.

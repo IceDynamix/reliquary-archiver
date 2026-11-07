@@ -187,3 +187,11 @@ impl RootState {
         }
     }
 }
+
+impl Drop for RootState {
+    /// Hands settings that are still held back, like a slider being dragged, to the settings file,
+    /// which writes them when it is dropped right after
+    fn drop(&mut self) {
+        self.settings_file.save_if_changed(&self.store.settings);
+    }
+}
