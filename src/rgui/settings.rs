@@ -1,7 +1,8 @@
 //! User settings and their persistence.
 //!
 //! Settings are stored as JSON in the user's local app data folder. They are loaded once before the
-//! GUI starts and saved whenever they are changed through the settings modal.
+//! GUI starts, and [`rgui::update`](crate::rgui::update) saves them whenever a message leaves them
+//! different from what was saved last, so code that changes settings doesn't have to save them.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,8 +32,8 @@ pub enum ImageFit {
 /// User-configurable application settings.
 ///
 /// These settings are persisted to disk as JSON in the user's app data folder.
-/// Settings are automatically saved when modified through the settings modal.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// Settings are saved automatically whenever they change, see [`SettingsFile`].
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
     /// Path to a custom background image (empty string = no image)
@@ -82,6 +83,29 @@ fn settings_path(appdata: PathBuf) -> PathBuf {
 /// Counter for generating unique temp file names within this process.
 static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// The settings file, and what it holds.
+pub struct SettingsFile {
+    /// The settings that were last saved
+    saved: Settings,
+}
+
+impl SettingsFile {
+    /// `saved` is what the file holds
+    fn new(saved: Settings) -> Self {
+        Self { saved }
+    }
+
+    /// Saves the settings if they changed since they were last saved
+    pub fn save_if_changed<M: Send + 'static>(&mut self, settings: &Settings) -> Option<Task<M>> {
+        if self.saved == *settings {
+            return None;
+        }
+
+        self.saved = settings.clone();
+        save(settings)
+    }
+}
+
 /// Persists the current settings to disk asynchronously.
 ///
 /// Settings are saved atomically to the user's local app data folder as JSON.
@@ -90,7 +114,7 @@ static SAVE_COUNTER: AtomicU64 = AtomicU64::new(0);
 ///
 /// Each save uses a unique temp filename (process ID + counter) to prevent
 /// race conditions if multiple saves happen concurrently.
-pub fn save<M: Send + 'static>(settings: &Settings) -> Option<Task<M>> {
+fn save<M: Send + 'static>(settings: &Settings) -> Option<Task<M>> {
     let settings = settings.clone();
     // Generate unique temp filename to avoid races between concurrent saves
     let unique_id = SAVE_COUNTER.fetch_add(1, Ordering::Relaxed);
@@ -142,13 +166,14 @@ pub fn save<M: Send + 'static>(settings: &Settings) -> Option<Task<M>> {
 /// settings path without needing an async task, preventing race conditions between
 /// settings loading and other startup tasks (update checks, WebSocket port binding).
 ///
-/// Returns the loaded settings and a bool indicating whether the `run_on_start`
-/// value was corrected during registry reconciliation (and therefore needs to be
-/// persisted back to disk).
-pub fn load() -> (Settings, bool) {
+/// Returns the settings to use and the settings file. Without a usable settings file, the
+/// defaults are used and nothing is written until a setting is changed.
+pub fn load() -> (Settings, SettingsFile) {
+    let defaults = || (Settings::default(), SettingsFile::new(Settings::default()));
+
     let Some(appdata) = raxis::get_local_app_data() else {
         tracing::warn!("Could not determine local app data path, using default settings");
-        return (Settings::default(), false);
+        return defaults();
     };
 
     let path = settings_path(appdata);
@@ -157,11 +182,11 @@ pub fn load() -> (Settings, bool) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             tracing::info!("No settings file found at {}, using defaults", path.display());
-            return (Settings::default(), false);
+            return defaults();
         }
         Err(e) => {
             tracing::error!("Failed to read settings file: {}", e);
-            return (Settings::default(), false);
+            return defaults();
         }
     };
 
@@ -169,22 +194,19 @@ pub fn load() -> (Settings, bool) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Failed to parse settings file: {}", e);
-            return (Settings::default(), false);
+            return defaults();
         }
     };
+    let file = SettingsFile::new(settings.clone());
 
     // Reconcile run_on_start setting with registry state.
     // e.g. user moves the exe after enabling/disabling run on start — in case
-    // of mismatch, update settings in memory and signal that a save is needed.
-    let run_on_start = settings.run_on_start;
-    let needs_save = match registry_matches_settings(run_on_start) {
-        Ok(false) => {
-            settings.run_on_start = !run_on_start;
-            true
-        }
-        Ok(true) | Err(_) => false,
-    };
+    // of mismatch, update settings in memory. They differ from the file now, so
+    // the first update saves the correction.
+    if let Ok(false) = registry_matches_settings(settings.run_on_start) {
+        settings.run_on_start = !settings.run_on_start;
+    }
 
     tracing::info!("Loaded settings from {}", path.display());
-    (settings, needs_save)
+    (settings, file)
 }
