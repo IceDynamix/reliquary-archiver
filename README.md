@@ -73,9 +73,8 @@ to output logs to a file, provide `--log-path <path>`. file logs will always be 
 
 ## build from source
 
-- If building on Linux, or Windows with pcap, follow instructions [here](https://github.com/rust-pcap/pcap?tab=readme-ov-file#building)
-    - for me on windows, adding the `Packet.lib` and `wpcap.lib` from the sdk (check the x64 or arm dir)
-      to this directory was enough to link successfully
+- If building on Linux, follow instructions [here](https://github.com/rust-pcap/pcap?tab=readme-ov-file#building)
+    - on Windows nothing extra is needed to build, `wpcap.dll` is loaded from the npcap install at runtime
 - If building on Linux, there is also a dependency on `libwayland-dev`
 - `cargo build` / `cargo run`
 
