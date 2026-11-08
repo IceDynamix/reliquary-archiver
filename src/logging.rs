@@ -49,6 +49,7 @@ const DEFAULT_DIRECTIVES: &str = "reliquary_archiver=info,reliquary=warn,pktmon=
 
 /// One step up from [`DEFAULT_DIRECTIVES`]. The libraries' info logs include every decoded
 /// command and every new conversation, which is what diagnosing a stuck capture needs.
+#[cfg(any(feature = "gui", test))]
 const DEBUG_DIRECTIVES: &str = "reliquary_archiver=debug,reliquary=info,pktmon=info";
 
 /// The console filter for a level picked in the GUI. The capture libraries stay one level
