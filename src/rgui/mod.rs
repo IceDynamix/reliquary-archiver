@@ -165,7 +165,7 @@ pub fn run(spec: SourceSpec) -> Result<(), Box<dyn std::error::Error>> {
         Some(Task::batch(vec![
             Task::future(state.settings_file.writer()).discard(),
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
-            Task::run(archiver_worker(manager.clone(), spec), RootMessage::WorkerEvent),
+            Task::run(archiver_worker(manager.clone(), spec.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(
                 PortSource::Dynamic(WatchStream::new(port_rx.clone())),
                 manager.clone(),
