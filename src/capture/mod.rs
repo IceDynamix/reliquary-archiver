@@ -23,6 +23,9 @@ use tracing::instrument;
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
 
+#[cfg(feature = "pcap-parser")]
+pub mod pcap_file;
+
 #[cfg(feature = "pcap")]
 pub mod pipe;
 
@@ -86,9 +89,6 @@ pub enum Tap {
     /// Capture traffic from the network devices
     #[cfg(feature = "pcap")]
     Pcap,
-    /// (Streaming) Pcap file over Standard Input
-    #[cfg(feature = "pcap")]
-    PcapStdIn,
     /// Capture traffic from the network devices
     #[cfg(feature = "pktmon")]
     // pcap is preferred when both backends are built in
@@ -100,6 +100,9 @@ pub enum Tap {
     /// pipe too), so it's only reopened when it ends if it's a named pipe a new writer can connect to
     #[cfg(feature = "pcap")]
     PcapPipe(PathBuf),
+    /// Read pcap data as it's written to a pipe or fifo
+    #[cfg(feature = "pcap-parser")]
+    PcaparsePipe(PathBuf),
 }
 
 /// A recorded capture, read once from start to end
@@ -200,6 +203,8 @@ impl Tap {
             // Opening a named pipe waits for the next writer, so there's no need to hold off
             #[cfg(feature = "pcap")]
             Tap::PcapPipe(path) => pipe::is_named_pipe(path).then_some(Duration::ZERO),
+            #[cfg(feature = "pcap-parser")]
+            Tap::PcaparsePipe(_) => Some(Duration::ZERO),
         }
     }
 
@@ -207,13 +212,13 @@ impl Tap {
         let source: Box<dyn PacketSource> = match self {
             #[cfg(feature = "pcap")]
             Tap::Pcap => Box::new(DeviceSource(pcap::PcapBackend)),
-            #[cfg(feature = "pcap")]
-            Tap::PcapStdIn => Box::new(pcap::PcapFileSource::new(PathBuf::from("-"))),
             #[cfg(feature = "pktmon")]
             Tap::Pktmon => Box::new(DeviceSource(pktmon::PktmonBackend)),
             // libpcap reads a pipe as packets are written to it, and stdin for "-"
             #[cfg(feature = "pcap")]
             Tap::PcapPipe(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
+            #[cfg(feature = "pcap-parser")]
+            Tap::PcaparsePipe(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
         };
 
         source.open()
