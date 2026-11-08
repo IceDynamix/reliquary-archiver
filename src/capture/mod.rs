@@ -14,7 +14,7 @@ use std::fmt::{Debug, Display};
 use std::path::PathBuf;
 
 use futures::StreamExt;
-use futures::stream::BoxStream;
+use futures::stream::{empty, BoxStream};
 use tokio::sync::mpsc;
 use tokio_stream::StreamMap;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
@@ -120,6 +120,7 @@ pub enum Replay {
 #[derive(Debug, Clone)]
 pub enum SourceSpec {
     Tap(Tap),
+    #[cfg(any(feature = "pcap", feature = "pktmon"))]
     Replay(Replay),
 }
 
@@ -133,6 +134,7 @@ impl SourceSpec {
     pub fn open(&self) -> Result<PacketStream> {
         match self {
             SourceSpec::Tap(tap) => Ok(tap.open()),
+            #[cfg(any(feature = "pcap", feature = "pktmon"))]
             SourceSpec::Replay(replay) => replay.open(),
         }
     }
@@ -144,6 +146,7 @@ impl From<Tap> for SourceSpec {
     }
 }
 
+#[cfg(any(feature = "pcap", feature = "pktmon"))]
 impl From<Replay> for SourceSpec {
     fn from(replay: Replay) -> Self {
         SourceSpec::Replay(replay)
@@ -251,6 +254,7 @@ impl Replay {
     }
 
     /// Start reading packets from the recording
+    #[cfg(any(feature = "pcap", feature = "pktmon"))]
     pub fn open(&self) -> Result<PacketStream> {
         let source: Box<dyn PacketSource> = match self {
             #[cfg(feature = "pcap")]

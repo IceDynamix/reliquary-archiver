@@ -50,7 +50,7 @@ impl TryFrom<&Args> for SourceSpec {
 
         #[cfg(feature = "pcap-parser")]
         if let Some(path) = &args.pcap_file_live {
-            return Ok(Tap::PcapPipe(path.clone()).into());
+            return Ok(Tap::PcaparsePipe(path.clone()).into());
         }
 
         // pcap is preferred when both backends are built in
