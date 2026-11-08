@@ -189,6 +189,10 @@ async fn run(args: Args) {
 
     #[cfg(feature = "gui")]
     if !args.headless {
+        if !source_spec.is_live() {
+            error!("Only live sources are allowed: pcap (live), pktmon and pcap-file-live");
+            return;
+        }
         rgui::run(source_spec).unwrap();
 
         // Check if we need to spawn the updated version after GUI exits
