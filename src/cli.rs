@@ -126,7 +126,6 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
                     );
                     break 'recv;
                 }
-                SessionEvent::Fatal => break 'recv,
                 _ => {}
             }
         }
