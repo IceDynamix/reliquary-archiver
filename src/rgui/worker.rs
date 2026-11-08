@@ -45,10 +45,10 @@ pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> i
 }
 
 #[instrument(skip_all)]
-pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<Item = WorkerEvent> {
+pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>, spec: SourceSpec) -> impl Stream<Item = WorkerEvent> {
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
         tokio::spawn({
-            let capture = live_capture(manager.clone(), output.clone());
+            let capture = live_capture(manager.clone(), output.clone(), spec);
 
             async move {
                 // Without this a panic would end the capture silently while the window stays open
@@ -83,13 +83,13 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>) -> impl Stream<
 }
 
 #[instrument(skip_all)]
-async fn live_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc::Sender<WorkerEvent>) {
+async fn live_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc::Sender<WorkerEvent>, spec: SourceSpec) {
     // The GUI keeps capturing for as long as it runs, a single bad packet shouldn't cost it a network interface
     let mut session = CaptureSession::new(manager, false);
 
     // Outer loop to restart capture when it exits
     loop {
-        let mut packets = match capture::open_source(&SourceSpec::Live) {
+        let mut packets = match capture::open_source(&spec) {
             Ok(packets) => packets,
             Err(e) => {
                 warn!(error = %e, "Failed to start packet capture, retrying in 1 second...");

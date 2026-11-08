@@ -79,7 +79,11 @@ pub trait PacketSource: Send + 'static {
 #[derive(Debug, Clone)]
 pub enum SourceSpec {
     /// Capture live traffic from the network
-    Live,
+    #[cfg(feature = "pcap")]
+    LivePcap,
+    /// Capture live traffic from the network
+    #[cfg(feature = "pktmon")]
+    LivePktmon,
     /// Read a recorded .pcap file
     #[cfg(feature = "pcap")]
     PcapFile(PathBuf),
@@ -90,7 +94,13 @@ pub enum SourceSpec {
 
 impl SourceSpec {
     pub fn is_live(&self) -> bool {
-        matches!(self, SourceSpec::Live)
+        match self {
+            #[cfg(feature = "pcap")]
+            SourceSpec::LivePcap => true,
+            #[cfg(feature = "pktmon")]
+            SourceSpec::LivePktmon => true,
+            _ => false,
+        }
     }
 
     /// The extensions of the capture files that can be read
@@ -121,7 +131,10 @@ impl SourceSpec {
 /// Open the packet source described by `spec`
 pub fn open_source(spec: &SourceSpec) -> Result<PacketStream> {
     let source: Box<dyn PacketSource> = match spec {
-        SourceSpec::Live => live_source(),
+        #[cfg(feature = "pcap")]
+        SourceSpec::LivePcap => Box::new(DeviceSource(pcap::PcapBackend)),
+        #[cfg(feature = "pktmon")]
+        SourceSpec::LivePktmon => Box::new(DeviceSource(pktmon::PktmonBackend)),
         #[cfg(feature = "pcap")]
         SourceSpec::PcapFile(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
         #[cfg(feature = "pktmon")]
@@ -129,18 +142,6 @@ pub fn open_source(spec: &SourceSpec) -> Result<PacketStream> {
     };
 
     source.open()
-}
-
-fn live_source() -> Box<dyn PacketSource> {
-    #[cfg(feature = "pcap")]
-    {
-        Box::new(DeviceSource(pcap::PcapBackend))
-    }
-
-    #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-    {
-        Box::new(DeviceSource(pktmon::PktmonBackend))
-    }
 }
 
 /// A live capture backend that reads from one or more network devices

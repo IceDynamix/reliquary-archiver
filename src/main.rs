@@ -7,6 +7,8 @@ use clap::Parser;
 use futures::FutureExt;
 use tracing::{debug, error, info};
 
+use crate::capture::SourceSpec;
+
 #[cfg(feature = "stream")]
 mod websocket;
 
@@ -171,9 +173,17 @@ async fn run(args: Args) {
         return;
     }
 
+    let source_spec = match SourceSpec::try_from(&args) {
+        Ok(spec) => spec,
+        Err(err) => {
+            error!("Cannot start capturing: {}", err);
+            return
+        }
+    };
+
     #[cfg(feature = "gui")]
     if !args.headless {
-        rgui::run().unwrap();
+        rgui::run(source_spec).unwrap();
 
         // Check if we need to spawn the updated version after GUI exits
         if update::should_spawn_after_exit() {
@@ -184,5 +194,5 @@ async fn run(args: Args) {
         return;
     }
 
-    cli::run(args).await;
+    cli::run(args, source_spec).await;
 }
