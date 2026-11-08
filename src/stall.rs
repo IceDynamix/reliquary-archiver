@@ -12,8 +12,9 @@
 use std::time::{Duration, Instant};
 
 /// How long game traffic may arrive without any decoded command before the capture counts as stalled.
-/// Well above the heartbeat interval, since a false alarm is worse than a late one.
-pub const STALL_THRESHOLD: Duration = Duration::from_secs(30);
+/// An idle connection can go about two minutes between heartbeats, so this leaves headroom above
+/// that: a false alarm is worse than a late one.
+pub const STALL_THRESHOLD: Duration = Duration::from_secs(3 * 60);
 
 /// A change in whether the capture is making progress
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
