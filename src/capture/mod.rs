@@ -107,6 +107,8 @@ impl SourceSpec {
             SourceSpec::LivePktmon => true,
             #[cfg(feature = "pcap-parser")]
             SourceSpec::PcapFileLive(_) => true,
+            #[cfg(feature = "pcap")]
+            SourceSpec::PcapFile(file) => *file == *"-",
             _ => false,
         }
     }

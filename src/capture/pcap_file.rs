@@ -1,10 +1,12 @@
+use std::error::Error;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::PathBuf;
+use std::pin::Pin;
 
 use async_stream::stream;
-use futures::TryFutureExt;
+use tokio::io::AsyncRead;
 
-use crate::capture::{CaptureError, Packet, PacketSource, PacketStream};
+use crate::capture::{BoxError, CaptureError, Packet, PacketSource, PacketStream};
 
 #[derive(Debug)]
 pub struct PcapFile {
@@ -24,13 +26,20 @@ impl PacketSource for PcapFile {
             self.file.hash(&mut hasher);
             hasher.finish()
         };
-        Ok(Box::pin(stream! {
-            let capture = tokio::fs::File::open(self.file.clone())
-                .map_err(Box::<_>::from)
-                .and_then(async |file| pcaparse::unified::Reader::async_new(file).map_err(Box::<_>::from).await)
-                .map_err(CaptureError::Device);
 
-            match capture.await {
+        Ok(Box::pin(stream! {
+            let reader: Result<Pin<Box<dyn AsyncRead + Send>>, BoxError> = if *self.file == *"-" {
+                Ok(Box::pin(tokio::io::stdin()) as Pin<Box<dyn AsyncRead + Send>>)
+            } else {
+                tokio::fs::File::open(self.file.clone()).await.map(|f| Box::pin(f) as Pin<Box<dyn AsyncRead + Send>>).map_err(|e| Box::new(e) as Box<dyn Error + Send + Sync>)
+            };
+            let capture = match reader {
+                Ok(reader) => {
+                    pcaparse::unified::Reader::async_new(reader).await.map_err(|err| Box::new(err) as Box<dyn Error + Send + Sync>)
+                }
+                Err(err) => Err(err)
+            };
+            match capture {
                 Ok(mut stream) => {
                     while let Some(packet_result) = stream.async_next_packet().await {
                         yield packet_result
@@ -42,7 +51,7 @@ impl PacketSource for PcapFile {
                     }
                 }
                 Err(err) => {
-                    yield Err(err);
+                    yield Err(CaptureError::Capture(err));
                 }
             }
         }))
