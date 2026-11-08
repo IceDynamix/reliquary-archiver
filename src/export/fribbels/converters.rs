@@ -31,10 +31,16 @@ pub fn export_proto_material(db: &Database, proto: &ProtoMaterial) -> Option<Mat
 /// Converts a proto relic to an export relic
 #[tracing::instrument(name = "relic", skip_all, fields(id = proto.tid))]
 pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
-    let relic_config = db.relic_config.get(&proto.tid)?;
+    let Some(relic_config) = db.relic_config.get(&proto.tid) else {
+        warn!("unknown relic, skipping");
+        return None;
+    };
 
     let set_id = relic_config.SetID;
-    let set_config = db.relic_set_config.get(&set_id)?;
+    let Some(set_config) = db.relic_set_config.get(&set_id) else {
+        warn!(set_id, "unknown relic set, skipping relic");
+        return None;
+    };
     let Some(main_affix_config) = db.relic_main_affix_config.get(&relic_config.MainAffixGroup, &proto.main_affix_id) else {
         warn!(main_affix_id = proto.main_affix_id, "unknown main affix, skipping relic");
         return None;
@@ -84,7 +90,11 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
 /// Converts a relic substat to an export substat
 #[tracing::instrument(name = "substat", skip_all)]
 pub fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Substat> {
-    let cfg = db.relic_sub_affix_config.get(&rarity, &substat.affix_id)?;
+    let Some(cfg) = db.relic_sub_affix_config.get(&rarity, &substat.affix_id) else {
+        // The relic is still exported, just without this substat, so this one matters most
+        warn!(rarity, affix_id = substat.affix_id, "unknown substat, leaving it out of the relic");
+        return None;
+    };
     let key = sub_stat_to_export(&cfg.Property)?.to_string();
 
     let mut value = substat.cnt as f32 * *cfg.BaseValue + substat.step as f32 * *cfg.StepValue;
@@ -106,7 +116,10 @@ pub fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Optio
 /// Converts a proto light cone to an export light cone
 #[instrument(name = "light_cone", skip_all, fields(id = proto.tid))]
 pub fn export_proto_light_cone(db: &Database, proto: &ProtoLightCone) -> Option<LightCone> {
-    let cfg = db.equipment_config.get(&proto.tid)?;
+    let Some(cfg) = db.equipment_config.get(&proto.tid) else {
+        warn!("unknown light cone, skipping");
+        return None;
+    };
     let id = cfg.EquipmentID;
     let name = cfg.EquipmentName.lookup(&db.text_map).map(|s| s.to_string())?;
 
