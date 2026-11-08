@@ -182,10 +182,10 @@ fn background(s: &mut Ui, opacity: f32) {
     s.settings.background_opacity = opacity;
 }
 
-/// The ready screen in an accent, with live sync connected
+/// An accent while an account is read, so face up and face down tiles both show
 fn gem(s: &mut Ui, accent: Accent) {
     running(s, 1);
-    logged_in(s, UID, Some(INVENTORY));
+    logged_in(s, UID, None);
     s.settings.accent = accent;
 }
 

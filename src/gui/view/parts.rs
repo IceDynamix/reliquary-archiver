@@ -4,16 +4,18 @@
 //! Plates draw their outline from the size they laid out at last (`Cx::layout_size`), which Rune
 //! settles before the first frame, so a plate never shows without its corners.
 
-use rune::{Color, Cx, El, Icon, LineCap, Shape, Tx, canvas, col, el, icon, row, text};
+use rune::{Color, Cx, El, Icon, LineCap, Shape, Tx, col, el, icon, row, text};
 
 use crate::gui::state::Ui;
 use crate::gui::theme::{self, Theme};
 
 /// How much a plate's corners are cut
 const CUT: f32 = 12.0;
+/// How far the tile set's back shows under a plate
+const BACK: f32 = 4.0;
 
-/// A panel with its top left and bottom right corners cut, edged with a hairline, and a short
-/// gold mark along the top edge
+/// A panel with its top left and bottom right corners cut, edged with a hairline, a short accent
+/// mark along the top edge, and the back of the tile set showing under its bottom edge
 pub fn plate(key: &str, cx: &Cx<Ui>, t: &Theme) -> El {
     let plate = col().key(key);
     let Some([w, h]) = cx.layout_size(key) else {
@@ -21,8 +23,21 @@ pub fn plate(key: &str, cx: &Cx<Ui>, t: &Theme) -> El {
     };
     let outline = vec![[CUT, 0.0], [w, 0.0], [w, h - CUT], [w - CUT, h], [0.0, h], [0.0, CUT]];
     let mark = 40.0_f32.min(w / 3.0);
+    // The bottom edge, moved down by `top` and `bottom`: a strip of a layer under the face
+    let strip = |top: f32, bottom: f32| {
+        vec![
+            [0.0, h + top],
+            [w - CUT, h + top],
+            [w, h - CUT + top],
+            [w, h - CUT + bottom],
+            [w - CUT, h + bottom],
+            [0.0, h + bottom],
+        ]
+    };
     plate.shape(
         Shape::new()
+            .fill(strip(0.0, BACK), t.tile_back)
+            .fill(strip(BACK - 1.0, BACK), t.tile_back_edge)
             .fill(outline.clone(), t.panel)
             .stroke_with(outline, true, 1.0, LineCap::Butt, t.line)
             .line([CUT, 0.75], [CUT + mark, 0.75], 1.5, LineCap::Butt, t.accent)
@@ -163,7 +178,8 @@ const PULSE: rune::Cycle = rune::Cycle {
 
 /// Steps as nodes on a gold line, each labelled underneath
 pub fn node_track(steps: &[(&'static str, Node)], t: &Theme) -> El {
-    const SIZE: f32 = 30.0;
+    // Steps are tiles: face down until the game gets there, then turned over
+    const FACE: (f32, f32) = (24.0, 31.0);
     let mut track = row().key("steps").w_full().items_start();
     for (i, (label, state)) in steps.iter().enumerate() {
         if i > 0 {
@@ -171,27 +187,24 @@ pub fn node_track(steps: &[(&'static str, Node)], t: &Theme) -> El {
             track = track.child(
                 el().grow(1.0)
                     .h(1.0)
-                    .mt(SIZE / 2.0)
-                    .mx(-14.0)
+                    .mt(FACE.1 / 2.0)
+                    .mx(-22.0)
                     .fill(if done { t.accent } else { t.line }),
             );
         }
-        let (ring, inner): (Color, El) = match state {
-            Node::Done => (t.accent, icon(&super::icons::CHECK, 15.0).color(t.on_accent)),
-            Node::Active => (t.accent, el().size(10.0, 10.0).radius(5.0).fill(t.accent).cycle(PULSE)),
-            Node::Todo => (t.line, el().size(6.0, 6.0).radius(3.0).fill(t.line)),
-            Node::Blocked => (t.bad, icon(&super::icons::ALERT, 14.0).color(t.bad)),
+        let face_up = TileLook::face_up(t);
+        let tile = match state {
+            Node::Done => tile(FACE.0, FACE.1, face_up, Some(icon(&super::icons::CHECK, 15.0).color(t.face_ink))),
+            Node::Active => tile(
+                FACE.0,
+                FACE.1,
+                face_up,
+                Some(el().size(8.0, 8.0).radius(4.0).fill(t.face_ink).cycle(PULSE)),
+            )
+            .shadow(0.0, 16.0, t.accent.alpha(0.5)),
+            Node::Todo => tile(FACE.0, FACE.1, TileLook::face_down(t.tile_back, t.tile_back_edge, t), None),
+            Node::Blocked => tile(FACE.0, FACE.1, face_up, Some(icon(&super::icons::ALERT, 14.0).color(t.face_bad))),
         };
-        let mut dot = el()
-            .size(SIZE, SIZE)
-            .radius(SIZE / 2.0)
-            .center()
-            .fill(if *state == Node::Done { t.accent } else { t.well })
-            .border(if *state == Node::Active { 1.5 } else { 1.0 }, ring)
-            .child(inner);
-        if *state == Node::Active {
-            dot = dot.shadow(0.0, 14.0, t.accent.alpha(0.55));
-        }
         let ink = match state {
             Node::Active => t.accent,
             Node::Blocked => t.bad,
@@ -202,40 +215,95 @@ pub fn node_track(steps: &[(&'static str, Node)], t: &Theme) -> El {
             col()
                 .key(*label)
                 .w(84.0)
-                .gap(7.0)
+                .gap(6.0)
                 .items_center()
-                .child(dot)
+                .child(tile)
                 .child(kicker(label, ink)),
         );
     }
     track
 }
 
-/// Rings, ticks and spokes in faint gold, behind the window's content
-pub fn astrolabe(size: f32, t: &Theme) -> El {
-    let c = size / 2.0;
-    let ink = t.accent.alpha(0.075);
-    let at = |r: f32, deg: f32| {
-        let a = deg.to_radians();
-        [c + r * a.cos(), c + r * a.sin()]
-    };
-    let circle = |r: f32| (0..=120).map(|i| at(r, i as f32 * 3.0)).collect::<Vec<_>>();
+/// The red dragon on the app's tile, the one colour that stays the same in every theme
+pub fn dragon() -> Color {
+    rune::oklch(0.66, 0.22, 8.0)
+}
 
-    let mut shape = Shape::new();
-    for (r, width) in [(c - 2.0, 1.0), (c * 0.82, 1.0), (c * 0.8, 0.6), (c * 0.46, 1.0), (c * 0.2, 1.0)] {
-        shape = shape.stroke(circle(r), width, ink);
+/// How a tile paints
+pub struct TileLook {
+    /// The side facing up, light at the top and `shade` at the bottom
+    pub top: Color,
+    pub shade: Color,
+    pub edge: Color,
+    /// What shows under it: the back of a face up tile, the face of a face down one
+    pub under: Color,
+}
+
+impl TileLook {
+    /// Face up: bone over the set's back
+    pub fn face_up(t: &Theme) -> TileLook {
+        TileLook {
+            top: t.bone,
+            shade: t.bone_shade,
+            edge: if t.dark { Color::TRANSPARENT } else { t.line },
+            under: t.tile_back,
+        }
     }
-    for i in 0..72 {
-        let deg = i as f32 * 5.0;
-        let inner = if i % 6 == 0 { c * 0.7 } else { c * 0.76 };
-        shape = shape.line(at(inner, deg), at(c * 0.8, deg), 0.8, LineCap::Butt, ink);
+
+    /// Face down: the set's back, with a sliver of bone underneath
+    pub fn face_down(back: Color, back_edge: Color, t: &Theme) -> TileLook {
+        TileLook {
+            top: back,
+            shade: back_edge,
+            edge: Color::TRANSPARENT,
+            under: t.bone_shade,
+        }
     }
-    // An eight pointed star in the middle
-    let star: Vec<[f32; 2]> = (0..16)
-        .map(|i| at(if i % 2 == 0 { c * 0.44 } else { c * 0.13 }, i as f32 * 22.5 - 90.0))
-        .collect();
-    shape = shape.stroke_with(star, true, 1.0, LineCap::Butt, ink);
-    canvas(shape).size(size, size).inert().a11y_hidden()
+}
+
+/// A mahjong tile standing up, `w` by `h` for its top side, with what's under it showing below
+pub fn tile(w: f32, h: f32, look: TileLook, content: Option<El>) -> El {
+    let depth = (h * 0.12).max(2.0);
+    let r = w * 0.18;
+    el().size(w, h + depth)
+        .child(el().absolute(0.0, depth).size(w, h).radius(r).fill(look.under))
+        .child(
+            el().absolute(0.0, 0.0)
+                .size(w, h)
+                .radius(r)
+                .gradient(look.top, look.shade)
+                .border(1.0, look.edge)
+                .center()
+                .children(content),
+        )
+}
+
+/// A tile drawn in hairlines only, for the faint ones behind the window's content
+fn tile_outline(w: f32, h: f32, ink: Color) -> El {
+    let depth = h * 0.075;
+    let r = w * 0.18;
+    let ring = |y: f32| el().absolute(0.0, y).size(w, h).radius(r).border(1.5, ink);
+    el().size(w, h + depth * 2.0).child(ring(depth * 2.0)).child(ring(depth)).child(
+        el().absolute(0.0, 0.0)
+            .size(w, h)
+            .radius(r)
+            .border(1.5, ink)
+            .center()
+            .child(icon(&super::icons::ZHONG, w * 0.55).color(ink)),
+    )
+}
+
+/// Large tiles scattered behind the window's content, faint enough to stay out of the way
+pub fn scattered_tiles(t: &Theme) -> El {
+    let ink = t.accent.alpha(if t.dark { 0.07 } else { 0.11 });
+    let placed = |x: f32, y: f32, w: f32, turn: f32| el().absolute(x, y).child(tile_outline(w, w * 1.3, ink).rotate(turn));
+    el().key("scattered-tiles")
+        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .inert()
+        .a11y_hidden()
+        .child(placed(-70.0, 330.0, 230.0, -0.22))
+        .child(placed(320.0, -40.0, 150.0, 0.3))
+        .child(placed(250.0, 520.0, 110.0, 0.12))
 }
 
 /// What a sheet is called and how it closes

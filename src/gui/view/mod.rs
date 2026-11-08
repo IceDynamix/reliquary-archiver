@@ -74,7 +74,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
     );
     page = match background(s, cx, &t) {
         Some(background) => page.child(background),
-        None => page.child(el().absolute(-250.0, 90.0).child(parts::astrolabe(560.0, &t))),
+        None => page.child(parts::scattered_tiles(&t)),
     };
     let page = page.child(content);
 
@@ -143,7 +143,12 @@ fn header(s: &Ui, t: &Theme) -> El {
         .grow(1.0)
         .gap(10.0)
         .center_y()
-        .child(icon(&icons::EMBLEM, 30.0).color(t.accent))
+        .child(parts::tile(
+            24.0,
+            31.0,
+            parts::TileLook::face_up(t),
+            Some(icon(&icons::ZHONG, 17.0).color(parts::dragon())),
+        ))
         .child(
             col()
                 .gap(1.0)

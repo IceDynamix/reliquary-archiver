@@ -4,7 +4,7 @@
 use rune::{Color, Cx, Drag, El, ScrollSpec, Tx, col, el, row, text};
 use rune_kit::{ControlSize, SegmentedControl, Switch, TextInput};
 
-use super::parts::{Pill, Sheet, kicker, pill, sheet};
+use super::parts::{Pill, Sheet, TileLook, kicker, pill, sheet, tile};
 use crate::gui::settings::{Accent, Anchor, ImageFit, ThemeMode};
 use crate::gui::state::{Panel, Ui, Update};
 use crate::gui::theme::{self, Theme};
@@ -209,30 +209,39 @@ fn appearance(s: &Ui, t: &Theme) -> El {
         ))
 }
 
-/// A gem for each accent, in its colour as it shows in this theme. The chosen one wears a ring
+/// A face down tile from each accent's set, its back in that set's colour. The chosen one stands
+/// a little taller, with a mark under it
 fn accent_picker(current: Accent, t: &Theme) -> El {
     let swatch = |accent: Accent| {
         let selected = accent == current;
-        let color = theme::accent_color(accent, t.dark);
-        let gem = el()
-            .size(18.0, 18.0)
-            .radius(9.0)
-            .linear_gradient(std::f32::consts::PI * 0.75, [(0.0, color), (1.0, color.alpha(0.7))])
-            .border(1.0, t.text.alpha(0.18));
-        el().key(format!("accent-{}", accent.label().to_lowercase()))
-            .size(28.0, 28.0)
-            .radius(14.0)
-            .center()
+        let (back, edge) = theme::tile_back(accent, t.dark);
+        let look = TileLook::face_down(back, edge, t);
+        col()
+            .key(format!("accent-{}", accent.label().to_lowercase()))
+            .w(26.0)
+            .h(40.0)
+            .gap(4.0)
+            .items_center()
+            .justify_end()
             .role("radio")
             .label(accent.label())
             .help(accent.label())
             .checked(selected)
             .focusable(true)
-            .border(1.5, if selected { color } else { Color::TRANSPARENT })
+            .radius(4.0)
             .hover(t.text.alpha(0.08))
             .cursor(rune::Cursor::Pointer)
             .on_press(move |s: &mut Ui| s.settings_mut(|s| s.accent = accent))
-            .child(gem)
+            .child(if selected {
+                tile(18.0, 23.0, look, None)
+            } else {
+                tile(16.0, 20.0, look, None)
+            })
+            .child(
+                el().size(12.0, 2.0)
+                    .radius(1.0)
+                    .fill(if selected { t.text } else { Color::TRANSPARENT }),
+            )
     };
     row()
         .key("accent-picker")
@@ -241,20 +250,19 @@ fn accent_picker(current: Accent, t: &Theme) -> El {
         .focus_group()
         .focus_follows()
         .gap(2.0)
+        .items_end()
         .children(Accent::ALL.into_iter().map(swatch))
 }
 
 /// A small window with nine spots to put the cards in. The chosen spot shows the cards as a
-/// block, the others are dots to click
+/// tile, the others are dots to click
 fn anchor_picker(current: Anchor, t: &Theme) -> El {
     const CELL: (f32, f32) = (30.0, 22.0);
     let spot = |anchor: Anchor| {
         let selected = anchor == current;
+        // The cards, as the tile they are
         let mark = if selected {
-            el().size(20.0, 13.0)
-                .radius(2.0)
-                .fill(t.accent)
-                .shadow(0.0, 8.0, t.accent.alpha(0.5))
+            tile(12.0, 15.0, TileLook::face_up(t), None).shadow(0.0, 8.0, t.accent.alpha(0.5))
         } else {
             el().size(5.0, 5.0).radius(2.5).fill(t.faint)
         };

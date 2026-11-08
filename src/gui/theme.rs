@@ -48,6 +48,16 @@ pub struct Theme {
     pub good: Color,
     pub warn: Color,
     pub bad: Color,
+    /// Marks on a tile's pale face: the accent dark enough to read on it
+    pub face_ink: Color,
+    /// Problems on a tile's pale face
+    pub face_bad: Color,
+    /// A tile's bone face, and its lower edge where the light falls off
+    pub bone: Color,
+    pub bone_shade: Color,
+    /// The back of this tile set, the deep version of the accent, and its lower edge
+    pub tile_back: Color,
+    pub tile_back_edge: Color,
 }
 
 /// How an accent is made, in OKLCH
@@ -127,6 +137,15 @@ pub fn accent_color(accent: Accent, dark: bool) -> Color {
     }
 }
 
+/// The back of an accent's tile set, and its lower edge. Real mahjong sets come with backs in
+/// colours like these: jade, sapphire, amber, slate
+pub fn tile_back(accent: Accent, dark: bool) -> (Color, Color) {
+    let gem = gem(accent);
+    let (back, edge) = if dark { (0.5, 0.41) } else { (0.6, 0.52) };
+    let chroma = gem.chroma * if dark { 0.9 } else { 1.0 };
+    (oklch(back, chroma, gem.hue), oklch(edge, chroma, gem.hue))
+}
+
 impl Theme {
     /// `frosted` lets a background image show through the panels
     pub fn new(dark: bool, accent: Accent, frosted: bool) -> Theme {
@@ -156,6 +175,12 @@ impl Theme {
                 good: oklch(0.82, 0.11, 200.0),
                 warn: oklch(0.8, 0.13, 65.0),
                 bad: oklch(0.68, 0.17, gem.bad_hue),
+                face_ink: accent_color(accent, false),
+                face_bad: oklch(0.55, 0.19, gem.bad_hue),
+                bone: oklch(0.93, 0.012, 88.0),
+                bone_shade: oklch(0.87, 0.016, 85.0),
+                tile_back: tile_back(accent, true).0,
+                tile_back_edge: tile_back(accent, true).1,
             }
         } else {
             let panel = tint(0.99, 0.006);
@@ -178,6 +203,12 @@ impl Theme {
                 good: oklch(0.55, 0.11, 210.0),
                 warn: oklch(0.58, 0.14, 60.0),
                 bad: oklch(0.55, 0.19, gem.bad_hue),
+                face_ink: accent_color(accent, false),
+                face_bad: oklch(0.55, 0.19, gem.bad_hue),
+                bone: oklch(0.985, 0.008, 88.0),
+                bone_shade: oklch(0.93, 0.014, 85.0),
+                tile_back: tile_back(accent, false).0,
+                tile_back_edge: tile_back(accent, false).1,
             }
         };
         theme.with_kit()
