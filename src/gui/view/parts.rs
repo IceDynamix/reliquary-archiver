@@ -261,36 +261,45 @@ impl TileLook {
     }
 }
 
-/// A mahjong tile standing up, `w` by `h` for its top side, with what's under it showing below
+/// A tile's side, `w` by `h` and `y` points down
+fn side(w: f32, h: f32, y: f32) -> Vec<[f32; 2]> {
+    vec![[0.0, y], [w, y], [w, y + h], [0.0, y + h]]
+}
+
+/// How much of a tile shows under its top side
+fn tile_depth(h: f32) -> f32 {
+    (h * 0.12).max(2.0)
+}
+
+/// A mahjong tile standing up, `w` by `h` for its top side, with what's under it showing below.
+/// Square cornered: a slab, where the plates around it are cut
 pub fn tile(w: f32, h: f32, look: TileLook, content: Option<El>) -> El {
-    let depth = (h * 0.12).max(2.0);
-    let r = w * 0.18;
+    let depth = tile_depth(h);
+    // The bottom of the top side, where the light falls off
+    let fall = h * 0.14;
+    let mut shape = Shape::new()
+        .fill(side(w, h, depth), look.under)
+        .fill(side(w, h, 0.0), look.top)
+        .fill(side(w, fall, h - fall), look.shade);
+    if look.edge.a > 0.0 {
+        shape = shape.stroke_with(side(w, h, 0.0), true, 1.0, LineCap::Butt, look.edge);
+    }
     el().size(w, h + depth)
-        .child(el().absolute(0.0, depth).size(w, h).radius(r).fill(look.under))
-        .child(
-            el().absolute(0.0, 0.0)
-                .size(w, h)
-                .radius(r)
-                .gradient(look.top, look.shade)
-                .border(1.0, look.edge)
-                .center()
-                .children(content),
-        )
+        .shape(shape)
+        .child(el().size(w, h).center().children(content))
 }
 
 /// A tile drawn in hairlines only, for the faint ones behind the window's content
 fn tile_outline(w: f32, h: f32, ink: Color) -> El {
-    let depth = h * 0.075;
-    let r = w * 0.18;
-    let ring = |y: f32| el().absolute(0.0, y).size(w, h).radius(r).border(1.5, ink);
-    el().size(w, h + depth * 2.0).child(ring(depth * 2.0)).child(ring(depth)).child(
-        el().absolute(0.0, 0.0)
-            .size(w, h)
-            .radius(r)
-            .border(1.5, ink)
-            .center()
-            .child(icon(&super::icons::ZHONG, w * 0.55).color(ink)),
-    )
+    let depth = tile_depth(h);
+    // Of the side underneath only the part below the top side shows
+    let under = vec![[0.0, h], [0.0, h + depth], [w, h + depth], [w, h]];
+    let shape = Shape::new()
+        .stroke_with(side(w, h, 0.0), true, 1.5, LineCap::Butt, ink)
+        .stroke_with(under, false, 1.5, LineCap::Butt, ink);
+    el().size(w, h + depth)
+        .shape(shape)
+        .child(el().size(w, h).center().child(icon(&super::icons::ZHONG, w * 0.55).color(ink)))
 }
 
 /// Large tiles scattered behind the window's content, faint enough to stay out of the way
