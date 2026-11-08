@@ -100,6 +100,11 @@ struct Args {
     #[cfg(feature = "gui")]
     #[arg(long, hide = true, num_args = 0.., allow_hyphen_values = true)]
     ui: Option<Vec<String>>,
+
+    /// Open the GUI with a second window that puts it into any state, capturing nothing
+    #[cfg(feature = "gui")]
+    #[arg(long, hide = true)]
+    test_controller: bool,
 }
 
 #[cfg(not(any(feature = "pktmon", feature = "pcap")))]
@@ -209,6 +214,7 @@ async fn run(args: Args) {
                 needs_admin,
                 no_update: args.no_update,
                 ui_args: args.ui.clone().unwrap_or_default(),
+                test_controller: args.test_controller,
             },
         );
 

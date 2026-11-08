@@ -1,16 +1,18 @@
-//! Draws the window: a header, where capturing stands, the two ways to get the data into the
-//! optimizer, and a footer for capture files and help. Settings and logs open over it.
+//! Draws the window: the logotype and its controls along the top, the status and delivery plates
+//! anchored where the user put them, and capture files and help along the bottom. Settings and
+//! logs open over it as sheets.
 
 use rune::{Cx, El, SurfaceFit, Tx, col, el, icon, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, IconButton, IconButtonVariant};
 
 use super::icons;
-use super::settings::ImageFit;
-use super::state::{Notice, Panel, Ui, Update};
+use super::settings::{ImageFit, ThemeMode};
+use super::state::{LiveSync, Notice, Panel, Ui, Update};
 use super::theme::{self, Theme};
+use parts::{Pill, kicker, pill, plate, ring_button};
 
 mod delivery;
 mod logs;
+pub mod parts;
 mod settings;
 mod status;
 
@@ -18,27 +20,31 @@ const GITHUB_URL: &str = "https://github.com/IceDynamix/reliquary-archiver";
 const RELEASES_URL: &str = "https://github.com/IceDynamix/reliquary-archiver/releases/latest";
 const DISCORD_URL: &str = "https://discord.gg/EbZXfRDQpu";
 /// Space between the window's edge and its content
-const GUTTER: f32 = 16.0;
-/// The cards don't grow wider than this, in a wide window they sit where the user anchored them
+const GUTTER: f32 = 18.0;
+/// The plates don't grow wider than this, in a wide window they sit where the user anchored them
 const CARD_WIDTH: f32 = 480.0;
 
 pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
-    let t = Theme::new(cx.system_dark(), s.background_image().is_some());
-    let background = background(s, cx, &t);
+    let dark = match s.settings.theme {
+        ThemeMode::System => cx.system_dark(),
+        ThemeMode::Dark => true,
+        ThemeMode::Light => false,
+    };
+    let t = Theme::new(dark, s.settings.accent, s.background_image().is_some());
     let mut layer = Vec::new();
 
     let cards = col()
         .key("cards")
         .w_full()
         .max_w(CARD_WIDTH)
-        .gap(12.0)
-        .children(update_banner(s, &t))
-        .child(status::view(s, &t))
-        .child(delivery::view(s, &t));
+        .gap(22.0)
+        .children(update_banner(s, cx, &t))
+        .child(status::view(s, cx, &t))
+        .child(delivery::view(s, cx, &t));
 
-    // The space between header and footer, with the cards placed in it as the settings say
+    // The space between header and footer, with the plates placed in it as the settings say
     let (column, row) = s.settings.card_anchor.cell();
-    let stage = col().key("stage").w_full().grow(1.0).min_h(0.0);
+    let stage = col().key("stage").w_full().grow(1.0).min_h(0.0).pt(6.0);
     let stage = match row {
         0 => stage.justify_start(),
         1 => stage.justify_center(),
@@ -55,16 +61,27 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
         .w_full()
         .h_full()
         .padding(GUTTER)
-        .gap(12.0)
+        .gap(14.0)
         .child(header(s, &t))
         .child(stage.child(cards))
-        .child(footer(s, &t));
-    let page = el().key("page").w_full().h_full().fill(t.bg).children(background).child(content);
+        .child(footer(s, cx, &t));
 
-    settings::dialog(s, &t, &mut layer);
-    logs::dialog(s, &t, &mut layer);
+    // A warm light from the top right, like a nebula over the dark
+    let mut page = el().key("page").w_full().h_full().fill(t.bg).radial_gradient(
+        [1.0, 0.0],
+        [620.0, 520.0],
+        [(0.0, t.accent.alpha(0.1)), (1.0, t.accent.alpha(0.0))],
+    );
+    page = match background(s, cx, &t) {
+        Some(background) => page.child(background),
+        None => page.child(el().absolute(-250.0, 90.0).child(parts::astrolabe(560.0, &t))),
+    };
+    let page = page.child(content);
+
+    settings::dialog(s, cx, &t, &mut layer);
+    logs::dialog(s, cx, &t, &mut layer);
     if let Some(notice) = &s.notice {
-        layer.push(notice_toast(notice, &t));
+        layer.push(notice_band(notice, cx, &t));
     }
 
     rune_kit::root(page, layer)
@@ -98,14 +115,14 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
 
     // The header and footer sit right on the image, fading its edges into the window keeps them readable
     let edge = |top: bool| {
-        let (from, to) = (t.bg.alpha(0.85), t.bg.alpha(0.0));
+        let (from, to) = (t.bg.alpha(0.9), t.bg.alpha(0.0));
         let (fill_top, fill_bottom) = if top { (from, to) } else { (to, from) };
         let pinned = if top {
             el().pin(Some(0.0), Some(0.0), Some(0.0), None)
         } else {
             el().pin(Some(0.0), None, Some(0.0), Some(0.0))
         };
-        pinned.h(80.0).gradient(fill_top, fill_bottom)
+        pinned.h(96.0).gradient(fill_top, fill_bottom)
     };
     Some(
         el().key("background")
@@ -118,143 +135,193 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
 }
 
 fn header(s: &Ui, t: &Theme) -> El {
-    let k = &t.kit;
     let panel_button = |key: &'static str, glyph: &'static rune::Icon, name: &'static str, panel: Panel| {
-        IconButton::new(glyph)
-            .variant(IconButtonVariant::Ghost)
-            .label(name)
-            .help(name)
-            .expanded(s.panel == Some(panel))
-            .on_press(move |s: &mut Ui| s.toggle_panel(panel))
-            .build(k)
-            .key(key)
+        ring_button(key, glyph, name, s.panel == Some(panel), t, move |s: &mut Ui| s.toggle_panel(panel))
     };
+
+    let logotype = row()
+        .grow(1.0)
+        .gap(10.0)
+        .center_y()
+        .child(icon(&icons::EMBLEM, 30.0).color(t.accent))
+        .child(
+            col()
+                .gap(1.0)
+                .child(kicker(concat!("Reliquary · v", env!("CARGO_PKG_VERSION")), t.muted))
+                .child(text("Archiver").font(theme::TITLE).color(t.text)),
+        );
 
     row()
         .key("header")
         .w_full()
         .center_y()
         .gap(8.0)
-        .child(
-            row()
-                .grow(1.0)
-                .gap(8.0)
-                .center_y()
-                .child(text("Reliquary Archiver").font(theme::TITLE).color(t.text))
-                .child(text(concat!("v", env!("CARGO_PKG_VERSION"))).font(theme::SMALL).color(t.faint)),
-        )
+        .child(logotype)
+        .child(sync_counter(s, t))
         .child(panel_button("open-logs", &icons::LOGS, "Logs", Panel::Logs))
         .child(panel_button("open-settings", &icons::SETTINGS, "Settings", Panel::Settings))
 }
 
-fn update_banner(s: &Ui, t: &Theme) -> Option<El> {
-    let k = &t.kit;
+/// How many optimizers listen, in a counter like the game's top bar
+fn sync_counter(s: &Ui, t: &Theme) -> El {
+    let (label, tint) = match &s.sync {
+        LiveSync::Running { clients: 0, .. } => ("Not linked".to_string(), t.faint),
+        LiveSync::Running { clients, .. } => (format!("{clients} linked"), t.good),
+        LiveSync::Starting => ("Starting".to_string(), t.faint),
+        LiveSync::Failed(_) => ("Sync off".to_string(), t.bad),
+        LiveSync::Closed => ("Paused".to_string(), t.faint),
+    };
+    row()
+        .key("sync-counter")
+        .h(28.0)
+        .px(12.0)
+        .gap(8.0)
+        .center_y()
+        .radius(14.0)
+        .fill(t.well)
+        .border(1.0, t.line)
+        .mr(4.0)
+        .help("Optimizers receiving live sync")
+        .child(el().size(6.0, 6.0).radius(3.0).fill(tint))
+        .child(text(label).font(theme::LABEL).color(if tint == t.faint { t.muted } else { tint }))
+}
+
+fn update_banner(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
     let (title, actions) = match &s.update {
         Update::Available { version } if !s.update_dismissed => (
-            format!("Version {version} is available"),
+            format!("Version {version} is ready to install"),
             vec![
-                Button::new("Later")
-                    .variant(ButtonVariant::Ghost)
-                    .on_press(|s: &mut Ui| s.update_dismissed = true)
-                    .build(k)
-                    .key("update-later"),
-                Button::new("Update")
-                    .variant(ButtonVariant::Contrast)
-                    .on_press(|s: &mut Ui| s.install_update())
-                    .build(k)
-                    .key("update-now"),
+                pill("update-later", "Later", None, Pill::Quiet, true, t, |s, _| {
+                    s.update_dismissed = true
+                }),
+                pill("update-now", "Update", Some(&icons::ARROW_UP), Pill::Primary, true, t, |s, _| {
+                    s.install_update()
+                }),
             ],
         ),
         Update::Installing => (
-            "Installing the update, the app restarts by itself".to_string(),
-            vec![rune_kit::Spinner::new().size(16.0).color(t.accent).build(k)],
+            "Installing, the archiver restarts by itself".to_string(),
+            vec![rune_kit::Spinner::new().size(16.0).color(t.accent).build(&t.kit)],
         ),
         _ => return None,
     };
 
     Some(
-        row()
-            .key("update-banner")
+        plate("update-banner", cx, t)
             .w_full()
-            .h(44.0)
-            .pl(12.0)
-            .pr(6.0)
-            .gap(8.0)
-            .center_y()
-            .radius(10.0)
-            .fill(t.accent_soft)
-            .child(icon(&icons::ARROW_UP, 16.0).color(t.accent))
-            .child(text(title).font(theme::LABEL).color(t.text).grow(1.0).truncate())
-            .children(actions),
+            .child(parts::tab("update-tab", "Update", t.accent, cx, t))
+            .child(
+                row()
+                    .w_full()
+                    .pl(18.0)
+                    .pr(12.0)
+                    .pt(8.0)
+                    .pb(12.0)
+                    .gap(8.0)
+                    .center_y()
+                    .child(text(title).font(theme::LABEL).color(t.text).grow(1.0).min_w(0.0).truncate())
+                    .children(actions),
+            ),
     )
 }
 
-fn footer(s: &Ui, t: &Theme) -> El {
-    let k = &t.kit;
-    let open_file = if s.reading_file {
-        Button::new("Reading capture file…")
-            .variant(ButtonVariant::GhostMuted)
-            .disabled(true)
+fn footer(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
+    // A small plate like the game's side entrances: icon, label, chevron
+    let label = if s.reading_file {
+        "Reading capture file…"
     } else {
-        Button::new("Open capture file…")
-            .variant(ButtonVariant::GhostMuted)
-            .icon(&icons::FOLDER)
-            .help("Read a recording made with Wireshark or pktmon instead of capturing live")
-            .on_press_tx(|s: &mut Ui, tx: &mut Tx| s.open_capture_file(tx))
+        "Open capture file"
     };
+    let mut open_file = plate("open-capture-file", cx, t)
+        .role("button")
+        .label(label)
+        .help("Read a recording made with Wireshark or pktmon instead of capturing live")
+        .child(
+            row()
+                .h(38.0)
+                .pl(14.0)
+                .pr(12.0)
+                .gap(10.0)
+                .center_y()
+                .child(icon(&icons::FOLDER, 16.0).color(t.accent))
+                .child(text(label).font(theme::LABEL).color(t.text))
+                .child(icon(&icons::CHEVRON, 14.0).color(t.accent)),
+        );
+    if s.reading_file {
+        open_file = open_file.disabled(true).opacity(0.5);
+    } else {
+        open_file = open_file
+            .focusable(true)
+            .hover(t.accent.alpha(0.1))
+            .cursor(rune::Cursor::Pointer)
+            .on_press_tx(|s: &mut Ui, tx: &mut Tx| s.open_capture_file(tx));
+    }
+
     let link = |key: &'static str, glyph: &'static rune::Icon, name: &'static str, url: &'static str| {
-        IconButton::new(glyph)
-            .variant(IconButtonVariant::GhostMuted)
-            .control_size(ControlSize::Small)
-            .label(name)
-            .help(name)
-            .on_press(move |_: &mut Ui| open_url(url))
-            .build(k)
-            .key(key)
+        ring_button(key, glyph, name, false, t, move |_| open_url(url))
     };
 
     row()
         .key("footer")
         .w_full()
         .center_y()
-        .gap(4.0)
-        .child(open_file.build(k).key("open-capture-file"))
+        .gap(8.0)
+        .child(open_file)
         .child(el().grow(1.0))
         .child(link("github", &icons::GITHUB, "GitHub", GITHUB_URL))
         .child(link("discord", &icons::DISCORD, "Questions? Ask on Discord", DISCORD_URL))
 }
 
-fn notice_toast(notice: &Notice, t: &Theme) -> El {
-    let k = &t.kit;
+/// What just happened, in a band across the bottom of the window
+fn notice_band(notice: &Notice, cx: &Cx<Ui>, t: &Theme) -> El {
     let (glyph, tint) = if notice.error {
         (&icons::ALERT, t.bad)
     } else {
         (&icons::CHECK, t.good)
     };
-    let mut toast = rune_kit::Toast::new(format!("notice-{}", notice.id), notice.title.clone())
-        .lead(icon(glyph, 16.0).color(tint))
-        .on_close(|s: &mut Ui| s.notice = None);
+    let mut text_col = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(2.0)
+        .child(text(notice.title.clone()).font(theme::TITLE).color(t.text));
     if let Some(detail) = &notice.detail {
-        toast = toast.description(detail.clone());
+        text_col = text_col.child(text(detail.clone()).font(theme::SMALL).color(t.muted).wrap());
     }
+    let mut band = row()
+        .w_full()
+        .padding(14.0)
+        .gap(12.0)
+        .center_y()
+        .child(icon(glyph, 18.0).color(tint))
+        .child(text_col);
     if let Some(file) = notice.file.clone() {
-        toast = toast.action(k, "Show in folder", false, move |_: &mut Ui, _: &mut Tx| {
-            super::services::reveal(&file)
-        });
+        band = band.child(pill(
+            "reveal-file",
+            "Show in folder",
+            None,
+            Pill::Secondary,
+            true,
+            t,
+            move |_, _| super::services::reveal(&file),
+        ));
     }
-    el().key("notice")
-        .pin(Some(GUTTER), None, Some(GUTTER), Some(56.0))
-        .child(toast.build(k).w_full())
+    band = band.child(ring_button("dismiss-notice", &icons::CLOSE, "Dismiss", false, t, |s| {
+        s.notice = None
+    }));
+
+    el().key("notice-layer")
+        .pin(Some(GUTTER), None, Some(GUTTER), Some(64.0))
+        .items_center()
+        .child(
+            plate(&format!("notice-{}", notice.id), cx, t)
+                .w_full()
+                .max_w(CARD_WIDTH)
+                .child(band),
+        )
 }
 
 fn open_url(url: &str) {
     if let Err(e) = open::that(url) {
         tracing::error!(%e, "failed to open {}", url);
     }
-}
-
-/// A rounded surface that groups related content
-fn card(t: &Theme) -> El {
-    let card = col().w_full().radius(12.0).fill(t.card).border(1.0, t.card_border);
-    if t.frosted { card.backdrop_blur(24.0) } else { card }
 }

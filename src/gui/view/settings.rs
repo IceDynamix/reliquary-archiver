@@ -1,44 +1,44 @@
-//! The settings panel. Every change applies and saves at once, except the port, which is only
+//! The settings sheet. Every change applies and saves at once, except the port, which is only
 //! saved once the server could open it.
 
-use rune::{Drag, El, ScrollSpec, Tx, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, SegmentedControl, Switch, TextInput};
+use rune::{Color, Cx, Drag, El, ScrollSpec, Tx, col, el, row, text};
+use rune_kit::{ControlSize, SegmentedControl, Switch, TextInput};
 
-use crate::gui::settings::{Anchor, ImageFit};
+use super::parts::{Pill, Sheet, kicker, pill, sheet};
+use crate::gui::settings::{Accent, Anchor, ImageFit, ThemeMode};
 use crate::gui::state::{Panel, Ui, Update};
 use crate::gui::theme::{self, Theme};
 
-pub fn dialog(s: &Ui, t: &Theme, layer: &mut Vec<El>) {
+pub fn dialog(s: &Ui, cx: &Cx<Ui>, t: &Theme, layer: &mut Vec<El>) {
+    if s.panel != Some(Panel::Settings) {
+        return;
+    }
     let mut body = col()
         .key("settings-body")
         .w_full()
-        .max_h(420.0)
+        .max_h(440.0)
         .min_h(0.0)
+        .pt(16.0)
+        .child(appearance(s, t))
+        .child(background(s, t))
         .child(live_sync(s, t))
-        .child(window(s, t))
-        .child(layout(s, t))
-        .child(background(s, t));
+        .child(window(s, t));
     if s.updates_supported {
         body = body.child(updates(s, t));
     }
-    Dialog::new("settings", "Settings")
-        .open(s.panel == Some(Panel::Settings))
-        .width(400.0)
-        .fit()
-        .on_close(|s: &mut Ui| s.panel = None)
-        .child(body.scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0))
-        .build(&t.kit, layer);
+    let body = body.scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0);
+    let spec = Sheet {
+        key: "settings",
+        kicker: "Archiver",
+        title: "Settings",
+        width: 420.0,
+        close: |s| s.panel = None,
+    };
+    sheet(spec, body, cx, t, layer);
 }
 
 fn section(key: &'static str, title: &'static str, t: &Theme) -> El {
-    col()
-        .key(key)
-        .w_full()
-        .px(16.0)
-        .pt(4.0)
-        .pb(18.0)
-        .gap(10.0)
-        .child(text(title).font(theme::TITLE).color(t.text))
+    col().key(key).w_full().px(22.0).pb(22.0).gap(12.0).child(kicker(title, t.accent))
 }
 
 /// A setting that's on or off: what it does on the left, its switch on the right
@@ -82,11 +82,8 @@ fn live_sync(s: &Ui, t: &Theme) -> El {
         })
         .build(k)
         .key("port");
-    let apply = Button::new("Apply")
-        .disabled(!s.port_edited() || s.pending_port.is_some())
-        .on_press(|s: &mut Ui| s.apply_port())
-        .build(k)
-        .key("apply-port");
+    let can_apply = s.port_edited() && s.pending_port.is_none();
+    let apply = pill("apply-port", "Apply", None, Pill::Secondary, can_apply, t, |s, _| s.apply_port());
 
     let note = match (&s.port_error, s.pending_port) {
         (Some(error), _) => note(error.clone(), true, t),
@@ -163,8 +160,17 @@ const FITS: [(ImageFit, &str); 5] = [
     (ImageFit::None, "Original"),
 ];
 
-fn layout(s: &Ui, t: &Theme) -> El {
-    section("layout-settings", "Layout", t).child(
+/// The theme modes in the order the settings offer them, with their labels
+const MODES: [(ThemeMode, &str); 3] = [
+    (ThemeMode::System, "System"),
+    (ThemeMode::Dark, "Dark"),
+    (ThemeMode::Light, "Light"),
+];
+
+fn appearance(s: &Ui, t: &Theme) -> El {
+    let labels = MODES.map(|(_, label)| label);
+    let mode = MODES.iter().position(|(mode, _)| *mode == s.settings.theme);
+    let setting = |label: &'static str, detail: String, control: El| {
         row()
             .w_full()
             .gap(16.0)
@@ -174,15 +180,68 @@ fn layout(s: &Ui, t: &Theme) -> El {
                     .grow(1.0)
                     .min_w(0.0)
                     .gap(2.0)
-                    .child(text("Card position").font(theme::BODY).color(t.text))
-                    .child(note(
-                        format!("{}, for when the window is bigger than the cards", s.settings.card_anchor.label()),
-                        false,
-                        t,
-                    )),
+                    .child(text(label).font(theme::BODY).color(t.text))
+                    .child(note(detail, false, t)),
             )
-            .child(anchor_picker(s.settings.card_anchor, t)),
-    )
+            .child(control)
+    };
+
+    section("appearance-settings", "Appearance", t)
+        .child(setting(
+            "Theme",
+            "Light or dark".into(),
+            SegmentedControl::new(&labels, mode)
+                .label("Theme")
+                .fit()
+                .on_pick(|s: &mut Ui, i, _| s.settings_mut(|s| s.theme = MODES[i].0))
+                .build(&t.kit)
+                .key("theme-mode"),
+        ))
+        .child(setting(
+            "Accent",
+            s.settings.accent.label().into(),
+            accent_picker(s.settings.accent, t),
+        ))
+        .child(setting(
+            "Card position",
+            format!("{}, for when the window is bigger than the cards", s.settings.card_anchor.label()),
+            anchor_picker(s.settings.card_anchor, t),
+        ))
+}
+
+/// A gem for each accent, in its colour as it shows in this theme. The chosen one wears a ring
+fn accent_picker(current: Accent, t: &Theme) -> El {
+    let swatch = |accent: Accent| {
+        let selected = accent == current;
+        let color = theme::accent_color(accent, t.dark);
+        let gem = el()
+            .size(18.0, 18.0)
+            .radius(9.0)
+            .linear_gradient(std::f32::consts::PI * 0.75, [(0.0, color), (1.0, color.alpha(0.7))])
+            .border(1.0, t.text.alpha(0.18));
+        el().key(format!("accent-{}", accent.label().to_lowercase()))
+            .size(28.0, 28.0)
+            .radius(14.0)
+            .center()
+            .role("radio")
+            .label(accent.label())
+            .help(accent.label())
+            .checked(selected)
+            .focusable(true)
+            .border(1.5, if selected { color } else { Color::TRANSPARENT })
+            .hover(t.text.alpha(0.08))
+            .cursor(rune::Cursor::Pointer)
+            .on_press(move |s: &mut Ui| s.settings_mut(|s| s.accent = accent))
+            .child(gem)
+    };
+    row()
+        .key("accent-picker")
+        .role("radiogroup")
+        .label("Accent")
+        .focus_group()
+        .focus_follows()
+        .gap(2.0)
+        .children(Accent::ALL.into_iter().map(swatch))
 }
 
 /// A small window with nine spots to put the cards in. The chosen spot shows the cards as a
@@ -192,7 +251,10 @@ fn anchor_picker(current: Anchor, t: &Theme) -> El {
     let spot = |anchor: Anchor| {
         let selected = anchor == current;
         let mark = if selected {
-            el().size(20.0, 13.0).radius(3.0).fill(t.accent)
+            el().size(20.0, 13.0)
+                .radius(2.0)
+                .fill(t.accent)
+                .shadow(0.0, 8.0, t.accent.alpha(0.5))
         } else {
             el().size(5.0, 5.0).radius(2.5).fill(t.faint)
         };
@@ -205,7 +267,7 @@ fn anchor_picker(current: Anchor, t: &Theme) -> El {
             .label(anchor.label())
             .checked(selected)
             .focusable(true)
-            .hover(t.kit.c.hover)
+            .hover(t.accent.alpha(0.12))
             .cursor(rune::Cursor::Pointer)
             .on_press(move |s: &mut Ui| s.settings_mut(|s| s.card_anchor = anchor))
             .child(mark)
@@ -222,9 +284,9 @@ fn anchor_picker(current: Anchor, t: &Theme) -> El {
         .focus_follows()
         .padding(4.0)
         .gap(2.0)
-        .radius(8.0)
+        .radius(4.0)
         .fill(t.well)
-        .border(1.0, t.card_border)
+        .border(1.0, t.accent_line)
         .children(rows)
 }
 
@@ -246,20 +308,19 @@ fn background(s: &Ui, t: &Theme) -> El {
             .min_w(0.0),
     );
     if chosen {
-        picker = picker.child(
-            Button::new("Remove")
-                .variant(ButtonVariant::Ghost)
-                .on_press(|s: &mut Ui| s.remove_background())
-                .build(k)
-                .key("remove-background"),
-        );
+        picker = picker.child(pill("remove-background", "Remove", None, Pill::Quiet, true, t, |s, _| {
+            s.remove_background()
+        }));
     }
-    picker = picker.child(
-        Button::new(if chosen { "Change…" } else { "Choose image…" })
-            .on_press_tx(|s: &mut Ui, tx: &mut Tx| s.choose_background(tx))
-            .build(k)
-            .key("choose-background"),
-    );
+    picker = picker.child(pill(
+        "choose-background",
+        if chosen { "Change…" } else { "Choose image…" },
+        None,
+        Pill::Secondary,
+        true,
+        t,
+        |s: &mut Ui, tx: &mut Tx| s.choose_background(tx),
+    ));
 
     let mut section = section("background-settings", "Background", t).child(picker);
     if !chosen {
@@ -331,15 +392,15 @@ fn slider(value: f32, t: &Theme) -> El {
         .child(
             el().size(KNOB, KNOB)
                 .radius(KNOB / 2.0)
-                .fill(t.text)
+                .fill(t.primary)
                 .border(2.0, t.accent)
+                .shadow(0.0, 8.0, t.accent.alpha(0.45))
                 .mx(-KNOB / 2.0),
         )
-        .child(track(t.card_border).grow(1.0))
+        .child(track(t.line).grow(1.0))
 }
 
 fn updates(s: &Ui, t: &Theme) -> El {
-    let k = &t.kit;
     let version = env!("CARGO_PKG_VERSION");
     let (status, error) = match &s.update {
         Update::Idle => (format!("Version {version}"), false),
@@ -350,12 +411,13 @@ fn updates(s: &Ui, t: &Theme) -> El {
         Update::Failed(e) => (format!("Couldn't update: {e}"), true),
     };
     let action = match &s.update {
-        Update::Available { .. } => Button::new("Update")
-            .variant(ButtonVariant::Contrast)
-            .on_press(|s: &mut Ui| s.install_update()),
-        update => Button::new("Check now")
-            .disabled(matches!(update, Update::Checking | Update::Installing))
-            .on_press(|s: &mut Ui| s.check_for_update()),
+        Update::Available { .. } => pill("update-action", "Update", None, Pill::Primary, true, t, |s, _| s.install_update()),
+        update => {
+            let busy = matches!(update, Update::Checking | Update::Installing);
+            pill("update-action", "Check now", None, Pill::Secondary, !busy, t, |s, _| {
+                s.check_for_update()
+            })
+        }
     };
 
     section("update-settings", "Updates", t)
@@ -380,6 +442,6 @@ fn updates(s: &Ui, t: &Theme) -> El {
                         .grow(1.0)
                         .min_w(0.0),
                 )
-                .child(action.build(k).key("update-action")),
+                .child(action),
         )
 }

@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 
-use super::settings::Anchor;
+use super::settings::{Accent, Anchor};
 use super::state::{Account, CaptureError, Inventory, LiveSync, Notice, Panel, Ui, Update};
 
 /// A name and what it changes in a fresh window
@@ -127,6 +127,18 @@ pub const SCENES: &[Scene] = &[
         s.settings.card_anchor = Anchor::Left;
         s.panel = Some(Panel::Settings);
     }),
+    ("appearance", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        s.settings.accent = Accent::Sapphire;
+        s.panel = Some(Panel::Settings);
+    }),
+    ("gold", |s| gem(s, Accent::Gold)),
+    ("silver", |s| gem(s, Accent::Silver)),
+    ("ruby", |s| gem(s, Accent::Ruby)),
+    ("amethyst", |s| gem(s, Accent::Amethyst)),
+    ("emerald", |s| gem(s, Accent::Emerald)),
+    ("sapphire", |s| gem(s, Accent::Sapphire)),
     ("saved", |s| {
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));
@@ -168,6 +180,13 @@ fn background(s: &mut Ui, opacity: f32) {
     s.settings.background_image =
         std::env::var("SCENE_BACKGROUND").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/hsr_hyperdrive.jpg").into());
     s.settings.background_opacity = opacity;
+}
+
+/// The ready screen in an accent, with live sync connected
+fn gem(s: &mut Ui, accent: Accent) {
+    running(s, 1);
+    logged_in(s, UID, Some(INVENTORY));
+    s.settings.accent = accent;
 }
 
 fn logged_in(s: &mut Ui, uid: u32, inventory: Option<Inventory>) {

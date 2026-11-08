@@ -30,6 +30,7 @@ use crate::accounts::MultiAccountManager;
 use crate::capture::Tap;
 use crate::websocket::{PortCommand, PortSource, start_websocket_server};
 
+mod controller;
 mod icons;
 #[cfg(windows)]
 mod run_on_start;
@@ -57,15 +58,14 @@ pub struct Options {
     pub no_update: bool,
     /// Flags for Rune's own tooling, such as `--snap` for headless snapshots
     pub ui_args: Vec<String>,
+    /// Open the test controller instead of capturing (see [`controller`])
+    pub test_controller: bool,
 }
 
 /// Shows the window and captures from `tap` until the app quits
 pub fn run(tap: Tap, options: Options) {
-    let (settings, settings_file) = settings::load();
-    let rt = tokio::runtime::Handle::current();
-
     let spec = AppSpec {
-        min_size: Some((400.0, 540.0)),
+        min_size: Some((420.0, 620.0)),
         scenes: scenes::SCENES,
         poll: Some(|s: &mut Ui, _, _| s.expire(Instant::now())),
         setup: Some(|s: &mut Ui, waker| {
@@ -78,13 +78,23 @@ pub fn run(tap: Tap, options: Options) {
                 let _ = image.wait();
             }
         }),
-        // Inter for the interface, the system's monospace font for logs and addresses
-        families: ("Inter", "ui-monospace"),
-        ..AppSpec::new(TITLE, (440.0, 600.0), || Ui::new(settings::Settings::default()), view::view)
+        fonts: theme::FONTS,
+        families: theme::FAMILIES,
+        ..AppSpec::new(TITLE, (460.0, 700.0), || Ui::new(settings::Settings::default()), view::view)
     };
 
     let mut app = App::new(spec).args(options.ui_args.clone()).keep_running();
     let handle = app.handle();
+
+    if options.test_controller {
+        let mut app = app.init(controller::mock_ui).on_close(|_, tx| tx.quit()).on_window(set_window_icon);
+        app.window(controller::window(handle));
+        app.run();
+        return;
+    }
+
+    let (settings, settings_file) = settings::load();
+    let rt = tokio::runtime::Handle::current();
 
     // Starting minimized hides the window in the tray if there is one to bring it back from,
     // otherwise it opens minimized
@@ -97,12 +107,13 @@ pub fn run(tap: Tap, options: Options) {
     }
 
     app.init(move || {
+        // Snapshots and scripts draw the scenes from the default settings, with nothing running
+        // behind them, so they look the same on every machine
+        if rune::tooling::headless_run().is_some() {
+            return Ui::new(settings::Settings::default());
+        }
         let mut ui = Ui::new(settings.clone());
         ui.needs_admin = options.needs_admin;
-        // Snapshots and scripts draw the scenes, with nothing running behind them
-        if rune::tooling::headless_run().is_some() {
-            return ui;
-        }
 
         let tray = tray(handle.clone());
         if start_in_tray && tray.is_none() {

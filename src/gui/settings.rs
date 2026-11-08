@@ -26,6 +26,50 @@ pub enum ImageFit {
     None,
 }
 
+/// Light or dark
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum ThemeMode {
+    /// Whatever the system uses
+    #[default]
+    System,
+    Dark,
+    Light,
+}
+
+/// The colour that marks what matters, named after the gems relics are set with
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Accent {
+    #[default]
+    Gold,
+    Silver,
+    Ruby,
+    Amethyst,
+    Emerald,
+    Sapphire,
+}
+
+impl Accent {
+    pub const ALL: [Accent; 6] = [
+        Accent::Gold,
+        Accent::Silver,
+        Accent::Ruby,
+        Accent::Amethyst,
+        Accent::Emerald,
+        Accent::Sapphire,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Accent::Gold => "Gold",
+            Accent::Silver => "Silver",
+            Accent::Ruby => "Ruby",
+            Accent::Amethyst => "Amethyst",
+            Accent::Emerald => "Emerald",
+            Accent::Sapphire => "Sapphire",
+        }
+    }
+}
+
 /// Where the cards sit in a window that's bigger than they are
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Anchor {
@@ -91,6 +135,8 @@ pub struct Settings {
     pub background_opacity: f32,
     /// Where the cards sit when the window is bigger than they are
     pub card_anchor: Anchor,
+    pub theme: ThemeMode,
+    pub accent: Accent,
     /// Install updates without asking
     pub always_update: bool,
     /// Closing the window leaves the app running in the system tray
@@ -111,6 +157,8 @@ impl Default for Settings {
             image_fit: ImageFit::default(),
             background_opacity: 0.12,
             card_anchor: Anchor::default(),
+            theme: ThemeMode::default(),
+            accent: Accent::default(),
             always_update: false,
             close_to_tray: false,
             run_on_start: false,

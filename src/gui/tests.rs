@@ -4,7 +4,7 @@
 use rune::{Env, FileDialogKind, Runtime};
 
 use super::scenes::SCENES;
-use super::settings::{Anchor, Settings};
+use super::settings::{Accent, Anchor, Settings};
 use super::state::{Panel, Ui};
 use super::view::view;
 
@@ -15,7 +15,7 @@ fn runtime(scene: &str) -> Runtime<Ui> {
     let mut rt = Runtime::new(
         ui,
         view,
-        (440.0, 600.0),
+        (460.0, 700.0),
         Env {
             system_dark: true,
             scale: 1.0,
@@ -26,6 +26,12 @@ fn runtime(scene: &str) -> Runtime<Ui> {
 }
 
 fn click(rt: &mut Runtime<Ui>, key: &str) {
+    // Settings scroll, bring what's pressed into view first as a person would
+    let target = key.to_string();
+    rt.update(move |_, tx| tx.scroll_into_view(&target));
+    for _ in 0..30 {
+        rt.frame(1.0 / 60.0);
+    }
     let (x, y) = rt.find(key).unwrap_or_else(|| panic!("nothing keyed {key}"));
     rt.pointer_down(x, y);
     rt.pointer_up(x, y);
@@ -99,6 +105,13 @@ fn the_position_picker_moves_the_cards() {
     assert_eq!(rt.state.settings.card_anchor, Anchor::BottomRight);
     click(&mut rt, "anchor-0-1");
     assert_eq!(rt.state.settings.card_anchor, Anchor::Left);
+}
+
+#[test]
+fn a_gem_swatch_changes_the_accent() {
+    let mut rt = runtime("settings");
+    click(&mut rt, "accent-ruby");
+    assert_eq!(rt.state.settings.accent, Accent::Ruby);
 }
 
 #[test]

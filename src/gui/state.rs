@@ -755,6 +755,9 @@ mod tests {
         assert_eq!(settings.background_opacity, 0.3);
         assert!(settings.close_to_tray);
         assert_eq!(settings.ws_port, 4000);
+        // Older files have no theme or accent, they get the defaults
+        assert_eq!(settings.theme, super::super::settings::ThemeMode::System);
+        assert_eq!(settings.accent, super::super::settings::Accent::Gold);
     }
 
     #[test]
