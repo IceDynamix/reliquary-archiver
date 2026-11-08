@@ -16,12 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: moonrepo/setup-rust@v1
-      - name: Download npcap sdk
-        run: curl --silent --show-error --fail -o ./npcap-sdk.zip "https://npcap.com/dist/npcap-sdk-1.13.zip"
-      - name: Extract npcap x64 libs
-        run: |
-          unzip -p npcap-sdk.zip Lib/x64/Packet.lib > Packet.lib
-          unzip -p npcap-sdk.zip Lib/x64/wpcap.lib > wpcap.lib
       - name: Build pcap Windows exe
         run: cargo build --verbose --no-default-features --features pcap,stream,gui
       - name: Move pcap exe

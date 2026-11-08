@@ -8,6 +8,7 @@
 //! Live backends only need to implement [`DeviceBackend`], [`DeviceSource`] takes care of
 //! device discovery and merging. File based sources implement [`PacketSource`] directly.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::path::PathBuf;
@@ -248,6 +249,7 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
         // Spawn task to manage stream and discover new devices
         tokio::spawn(async move {
             let mut merged_stream = StreamMap::new();
+            let mut errors = DiscoveryErrors::default();
             let mut check_interval = interval(Duration::from_secs(10));
 
             loop {
@@ -264,7 +266,7 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
                     }
 
                     // Check for new devices every 10 seconds
-                    _ = check_interval.tick() => add_new_devices(&backend, &mut merged_stream),
+                    _ = check_interval.tick() => add_new_devices(&backend, &mut merged_stream, &mut errors),
                 }
             }
         });
@@ -273,14 +275,43 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
     }
 }
 
-fn add_new_devices<B: DeviceBackend>(backend: &B, streams: &mut StreamMap<String, PacketStream>) {
+/// The errors device discovery last ran into, so that one that keeps happening on every check
+/// is only logged as a warning the first time
+#[derive(Default)]
+struct DiscoveryErrors {
+    /// Why listing the devices failed
+    list: Option<String>,
+    /// Why each device that could not be opened failed, by device name
+    open: HashMap<String, String>,
+}
+
+fn add_new_devices<B: DeviceBackend>(
+    backend: &B,
+    streams: &mut StreamMap<String, PacketStream>,
+    errors: &mut DiscoveryErrors,
+) {
     let devices = match backend.list_devices() {
         Ok(devices) => devices,
         Err(e) => {
-            tracing::warn!("Failed to list devices during periodic check: {:#?}", e);
+            let error = e.to_string();
+            if errors.list.as_ref() == Some(&error) {
+                tracing::debug!(%error, "Failed to list devices (still failing)");
+            } else {
+                tracing::warn!(%error, "Failed to list devices");
+                errors.list = Some(error);
+            }
             return;
         }
     };
+
+    if errors.list.take().is_some() {
+        tracing::info!("Listing devices works again");
+    }
+
+    // Forget devices that are no longer listed, so that if they come back and fail again it gets logged
+    errors
+        .open
+        .retain(|name, _| devices.iter().any(|device| B::device_name(device) == *name));
 
     for device in devices {
         let device_name = B::device_name(&device);
@@ -288,14 +319,23 @@ fn add_new_devices<B: DeviceBackend>(backend: &B, streams: &mut StreamMap<String
             continue;
         }
 
-        tracing::info!("Discovered new device: {}", device_name);
-
         match B::open_device(&device) {
             Ok(stream) => {
+                if errors.open.remove(&device_name).is_some() {
+                    tracing::info!("Opened device that previously failed: {}", device_name);
+                } else {
+                    tracing::info!("Discovered new device: {}", device_name);
+                }
                 streams.insert(device_name, stream);
             }
             Err(e) => {
-                tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
+                let error = e.to_string();
+                if errors.open.get(&device_name) == Some(&error) {
+                    tracing::debug!(%error, "Could not open device {} (still failing)", device_name);
+                } else {
+                    tracing::warn!(%error, "Could not open device {}", device_name);
+                    errors.open.insert(device_name, error);
+                }
             }
         }
     }
