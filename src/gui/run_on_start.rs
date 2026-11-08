@@ -37,18 +37,16 @@ const REGISTRY_KEY_PATH: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\R
 pub fn set_run_on_start(enabled: bool) -> Result<(), RegistryError> {
     let key = CURRENT_USER
         .create(REGISTRY_KEY_PATH)
-        .map_err(|e| RegistryError::KeyCreationFailed)?;
+        .map_err(|_| RegistryError::KeyCreationFailed)?;
 
-    let path_to_exe = current_exe().map_err(|e| RegistryError::PathUnobtainable)?;
+    let path_to_exe = current_exe().map_err(|_| RegistryError::PathUnobtainable)?;
 
-    let operation_successful = if enabled {
+    if enabled {
         key.set_string(REGISTRY_KEY_NAME, path_to_exe.to_str().unwrap())
-            .map_err(|e| RegistryError::AddFailed)
+            .map_err(|_| RegistryError::AddFailed)
     } else {
-        key.remove_value(REGISTRY_KEY_NAME).map_err(|e| RegistryError::RemoveFailed)
-    };
-
-    operation_successful
+        key.remove_value(REGISTRY_KEY_NAME).map_err(|_| RegistryError::RemoveFailed)
+    }
 }
 
 /// Checks if the registry state matches the expected setting.
@@ -94,7 +92,7 @@ pub fn registry_matches_settings(enabled: bool) -> Result<bool, RegistryError> {
 
     let matches = enabled == paths_match;
 
-    if (!paths_match) {
+    if !paths_match {
         tracing::info!("Path in registry does not match path to exe. Removing registry key");
         key.remove_value(REGISTRY_KEY_NAME).unwrap();
     }

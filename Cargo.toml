@@ -30,17 +30,26 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
 open = "5.3.2"
-rfd = { optional = true, version = "0.17.2" }
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 # unreleased 3.0: sets immediate mode on Windows (rust-pcap/pcap#381) and reports a vanished interface as its own error
 pcap = { optional = true, git = "https://github.com/rust-pcap/pcap", rev = "f3476f62e45740e84595754386612f4e354d152a", features = ["capture-stream"] }
-raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "662f22f2ef1c689478a1bb715902120200bd34ce", features = ["tokio"] }
+rune = { optional = true, git = "https://github.com/anomalyco/rune", rev = "49db645a37bea92460a4fbcec3593f513f7d3bc0", default-features = false, features = [
+    "accessibility",
+    "dbus",
+    "embedded-fonts",
+    "native-file-dialog",
+] }
+rune-kit = { optional = true, git = "https://github.com/anomalyco/rune", rev = "49db645a37bea92460a4fbcec3593f513f7d3bc0" }
+png = { optional = true, version = "0.18" }
+# Rune decodes images with this crate, the extra formats are for custom backgrounds
+image = { optional = true, version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 
 [target.'cfg(windows)'.dependencies]
 self_update = { version = "0.44.0", features = ['ureq', 'rustls'], default-features = false }
+rfd = { optional = true, version = "0.17.2" }
 pktmon = { optional = true, version = "0.6.2", features = ["tokio"] }
-windows = { optional = true, version = "0.61" }
+windows = { optional = true, version = "0.62" }
 windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
@@ -67,11 +76,17 @@ overflow-checks = false # see comment above
 default = ["pcap", "stream"]
 gui = [
     "stream",
-    "dep:raxis",
+    "dep:rune",
+    "dep:rune-kit",
+    "dep:png",
+    "dep:image",
     "dep:rfd",
     "windows/Win32_Foundation",
     "windows/Win32_System_Console",
+    "windows/Win32_System_LibraryLoader",
     "windows/Win32_System_Registry",
+    "windows/Win32_UI_Shell",
+    "windows/Win32_UI_WindowsAndMessaging",
     "windows-registry"
 ]
 stream = ["dep:axum"]

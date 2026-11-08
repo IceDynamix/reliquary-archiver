@@ -14,7 +14,7 @@ use crate::capture::SourceSpec;
 mod websocket;
 
 #[cfg(feature = "gui")]
-mod rgui;
+mod gui;
 
 #[cfg(windows)]
 mod update;
@@ -94,13 +94,16 @@ struct Args {
     #[cfg(all(windows, feature = "gui"))]
     #[arg(long, short = 'd')]
     detach: bool,
+
+    /// Everything after this goes to the GUI's own tooling, e.g. `--ui --snap out.png --scene ready`
+    /// renders a screen to an image without opening a window or capturing anything
+    #[cfg(feature = "gui")]
+    #[arg(long, hide = true, num_args = 0.., allow_hyphen_values = true)]
+    ui: Option<Vec<String>>,
 }
 
 #[cfg(not(any(feature = "pktmon", feature = "pcap")))]
 compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
-
-#[cfg(all(not(windows), feature = "gui"))]
-compile_error!("GUI is only available on windows");
 
 #[cfg(all(not(windows), feature = "pktmon"))]
 compile_error!("The \"pktmon\" capture backend is only available on windows");
@@ -153,24 +156,30 @@ async fn main() {
 }
 
 async fn run(args: Args) {
+    #[cfg(feature = "gui")]
+    let gui_mode = !args.headless;
+    #[cfg(not(feature = "gui"))]
+    let gui_mode = false;
+
     // Only self update on Windows, since that's the only platform we ship releases for
     // In GUI mode, the update check is handled by the GUI after it launches
     #[cfg(windows)]
+    if !gui_mode
+        && !args.no_update
+        && !std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1")
+        && let Err(e) = update::update_interactive(args.auth_token.as_deref(), args.always_update)
     {
-        #[cfg(feature = "gui")]
-        let gui_mode = !args.headless;
-        #[cfg(not(feature = "gui"))]
-        let gui_mode = false;
-
-        if !gui_mode && !args.no_update && !std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1") {
-            if let Err(e) = update::update_interactive(args.auth_token.as_deref(), args.always_update) {
-                error!("Failed to update: {}", e);
-            }
-        }
+        error!("Failed to update: {}", e);
     }
 
     #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-    if !elevation::is_admin() {
+    let needs_admin = !elevation::is_admin();
+    #[cfg(not(all(not(feature = "pcap"), feature = "pktmon")))]
+    let needs_admin = false;
+
+    // The GUI explains why and offers to restart itself, the CLI asks right away
+    #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+    if needs_admin && !gui_mode {
         elevation::prompt_and_escalate();
         return;
     }
@@ -184,7 +193,7 @@ async fn run(args: Args) {
     };
 
     #[cfg(feature = "gui")]
-    if !args.headless {
+    if gui_mode {
         // The GUI taps traffic for as long as it runs, recordings are opened from inside it
         let tap = match source_spec {
             SourceSpec::Tap(tap) => tap,
@@ -194,16 +203,27 @@ async fn run(args: Args) {
             }
         };
 
-        rgui::run(tap).unwrap();
+        gui::run(
+            tap,
+            gui::Options {
+                needs_admin,
+                no_update: args.no_update,
+                ui_args: args.ui.clone().unwrap_or_default(),
+            },
+        );
 
         // Check if we need to spawn the updated version after GUI exits
-        if update::should_spawn_after_exit() {
-            if let Err(e) = update::spawn_updated_version() {
-                error!("Failed to spawn updated version: {}", e);
-            }
+        #[cfg(windows)]
+        if update::should_spawn_after_exit()
+            && let Err(e) = update::spawn_updated_version()
+        {
+            error!("Failed to spawn updated version: {}", e);
         }
         return;
     }
+
+    #[cfg(not(feature = "gui"))]
+    let _ = (gui_mode, needs_admin);
 
     cli::run(args, source_spec).await;
 }

@@ -98,12 +98,6 @@ impl MultiAccountManager {
         self.uid_to_conv.get(&uid).and_then(|conv_id| self.exporters.get(conv_id)).cloned()
     }
 
-    /// Get the exporter of any one account, for when the caller doesn't care which
-    #[cfg(feature = "gui")]
-    pub fn get_first_account_exporter(&self) -> Option<Arc<Mutex<OptimizerExporter>>> {
-        self.uid_to_conv.values().find_map(|conv_id| self.exporters.get(conv_id)).cloned()
-    }
-
     /// Spawn a task to forward events from an exporter's channel to the manager's unified event channel
     #[cfg(feature = "stream")]
     fn spawn_exporter_subscription(&mut self, uid: u32, exporter: Arc<Mutex<OptimizerExporter>>) {

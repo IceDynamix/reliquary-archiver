@@ -1,12 +1,10 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use futures::{FutureExt, Stream, StreamExt, stream};
-use reliquary_archiver::export::fribbels::OptimizerEvent;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{error, info, instrument, warn};
 
@@ -18,16 +16,14 @@ use crate::session::{CaptureSession, SessionEvent};
 pub enum WorkerEvent {
     /// A packet arrived from the network
     PacketReceived,
+    /// The capture couldn't be opened or broke down. It keeps retrying, a packet arriving means it works again
+    CaptureFailed(String),
     /// What the capture session made of a packet
     Session(SessionEvent),
     /// An account logged in, for the first time or again on a new connection
-    AccountLoggedIn {
-        uid: u32,
-    },
-    ExportEvent {
-        uid: u32,
-        event: OptimizerEvent,
-    },
+    AccountLoggedIn { uid: u32 },
+    /// An account's data changed
+    AccountChanged { uid: u32 },
 }
 
 /// Creates a new [`Stream`] that produces the items sent from a [`Future`]
@@ -74,7 +70,7 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>, tap: Tap) -> im
 
             let event = match event {
                 AccountEvent::Discovered { uid } | AccountEvent::Reconnected { uid } => WorkerEvent::AccountLoggedIn { uid },
-                AccountEvent::ExporterEvent { uid, event } => WorkerEvent::ExportEvent { uid, event },
+                AccountEvent::ExporterEvent { uid, .. } => WorkerEvent::AccountChanged { uid },
             };
 
             output.send(event).await.ok();
@@ -97,6 +93,7 @@ async fn tap_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc:
             Ok(packet) => packet,
             Err(e) => {
                 warn!(%e);
+                output.send(WorkerEvent::CaptureFailed(e.to_string())).await.ok();
                 continue;
             }
         };

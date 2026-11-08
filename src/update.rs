@@ -96,17 +96,9 @@ pub fn update_noninteractive() -> Result<bool, Box<dyn std::error::Error + Send 
     Ok(false)
 }
 
-/// Information about an available update
+/// Checks for a newer release without prompting or downloading, and returns its version
 #[cfg(feature = "gui")]
-#[derive(Debug, Clone)]
-pub struct UpdateInfo {
-    pub current_version: String,
-    pub latest_version: String,
-}
-
-/// Check if an update is available without prompting or downloading
-#[cfg(feature = "gui")]
-pub fn check_for_update() -> Result<Option<UpdateInfo>, Box<dyn std::error::Error + Send + Sync>> {
+pub fn check_for_update() -> Result<Option<String>, Box<dyn std::error::Error + Send + Sync>> {
     use self_update::backends::github::ReleaseList;
 
     let releases = ReleaseList::configure()
@@ -130,10 +122,7 @@ pub fn check_for_update() -> Result<Option<UpdateInfo>, Box<dyn std::error::Erro
         return Ok(None);
     }
 
-    Ok(Some(UpdateInfo {
-        current_version: current_version.to_string(),
-        latest_version: latest_version.clone(),
-    }))
+    Ok(Some(latest_version.clone()))
 }
 
 /// Spawn the new version after update and exit

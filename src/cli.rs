@@ -193,7 +193,7 @@ fn write_json(path: &Path, export: &Export) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(windows, feature = "gui"))]
 fn pick_alternative_path(file_name: &str) -> Option<PathBuf> {
     rfd::FileDialog::new()
         .set_title("Select output file location")
@@ -202,7 +202,7 @@ fn pick_alternative_path(file_name: &str) -> Option<PathBuf> {
         .save_file()
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(all(windows, feature = "gui")))]
 fn pick_alternative_path(_file_name: &str) -> Option<PathBuf> {
     None
 }

@@ -1,8 +1,8 @@
 //! User settings and their persistence.
 //!
-//! Settings are stored as JSON in the user's local app data folder. They are loaded once before the
-//! GUI starts, and [`rgui::update`](crate::rgui::update) saves them whenever a message leaves them
-//! different from what was saved last, so code that changes settings doesn't have to save them.
+//! Settings are stored as JSON in the user's local app data folder (the config folder off Windows).
+//! They are loaded once before the GUI starts, and saved by [`Ui::settings_mut`](super::state::Ui::settings_mut)
+//! whenever a change leaves them different from what was saved last.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -10,50 +10,95 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use tokio::sync::watch;
 
-use crate::rgui::run_on_start::registry_matches_settings;
-
-/// Background image scaling mode.
-///
-/// Controls how a custom background image is displayed within the window.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Default)]
+/// How a custom background image fills the window
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ImageFit {
-    /// Stretch to fill the container
+    /// Stretched to the window's shape
     Fill,
-    /// Scale to fit inside the container while maintaining aspect ratio
+    /// As large as fits inside the window, keeping its shape
     Contain,
-    /// Scale to cover the container while maintaining aspect ratio (may crop, default)
+    /// Covers the whole window, keeping its shape and cropping what doesn't fit
     #[default]
     Cover,
-    /// Like contain but never scale up beyond intrinsic size
+    /// Like contain, but never larger than the image itself
     ScaleDown,
-    /// Display at intrinsic size with no scaling
+    /// At the image's own size, centred
     None,
+}
+
+/// Where the cards sit in a window that's bigger than they are
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum Anchor {
+    TopLeft,
+    #[default]
+    Top,
+    TopRight,
+    Left,
+    Center,
+    Right,
+    BottomLeft,
+    Bottom,
+    BottomRight,
+}
+
+impl Anchor {
+    /// Row by row, from the top left
+    pub const ALL: [Anchor; 9] = [
+        Anchor::TopLeft,
+        Anchor::Top,
+        Anchor::TopRight,
+        Anchor::Left,
+        Anchor::Center,
+        Anchor::Right,
+        Anchor::BottomLeft,
+        Anchor::Bottom,
+        Anchor::BottomRight,
+    ];
+
+    /// The column and row of the 3 by 3 grid this is in, each 0, 1 or 2
+    pub fn cell(self) -> (usize, usize) {
+        let index = Anchor::ALL.iter().position(|a| *a == self).unwrap_or(1);
+        (index % 3, index / 3)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Anchor::TopLeft => "Top left",
+            Anchor::Top => "Top",
+            Anchor::TopRight => "Top right",
+            Anchor::Left => "Left",
+            Anchor::Center => "Center",
+            Anchor::Right => "Right",
+            Anchor::BottomLeft => "Bottom left",
+            Anchor::Bottom => "Bottom",
+            Anchor::BottomRight => "Bottom right",
+        }
+    }
 }
 
 /// User-configurable application settings.
 ///
 /// These settings are persisted to disk as JSON in the user's app data folder.
 /// Settings are saved automatically whenever they change, see [`SettingsFile`].
+/// Fields that older versions wrote and that are gone now are ignored when loading.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Path to a custom background image (empty string = no image)
+    /// Path to an image drawn behind the window's content, empty for none
     pub background_image: String,
-    /// How the background image is scaled/positioned
     pub image_fit: ImageFit,
-    /// Opacity of the background image (0.0 - 1.0)
+    /// How strongly the background image shows, from 0 to 1
     pub background_opacity: f32,
-    /// Whether to render text shadows for better readability over images
-    pub text_shadow_enabled: bool,
-    /// Automatically apply updates without prompting
+    /// Where the cards sit when the window is bigger than they are
+    pub card_anchor: Anchor,
+    /// Install updates without asking
     pub always_update: bool,
-    /// Hide to system tray instead of closing when clicking X
-    pub minimize_to_tray_on_close: bool,
-    /// Hide to system tray instead of taskbar when minimizing
-    pub minimize_to_tray_on_minimize: bool,
+    /// Closing the window leaves the app running in the system tray
+    #[serde(alias = "minimize_to_tray_on_close")]
+    pub close_to_tray: bool,
     /// Launch the application on Windows startup
     pub run_on_start: bool,
-    /// Start the application minimized/hidden
+    /// Start without showing the window
     pub start_minimized: bool,
     /// Port for the WebSocket server (0 = auto-assign)
     pub ws_port: u16,
@@ -62,13 +107,12 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            background_image: "".to_string(),
+            background_image: String::new(),
             image_fit: ImageFit::default(),
             background_opacity: 0.12,
-            text_shadow_enabled: false,
+            card_anchor: Anchor::default(),
             always_update: false,
-            minimize_to_tray_on_close: false,
-            minimize_to_tray_on_minimize: false,
+            close_to_tray: false,
             run_on_start: false,
             start_minimized: false,
             ws_port: 23313,
@@ -76,9 +120,17 @@ impl Default for Settings {
     }
 }
 
-/// Returns the path to the settings file within the app data directory.
-fn settings_path(appdata: PathBuf) -> PathBuf {
-    appdata.join("reliquary-archiver").join("settings.json")
+/// The folder the settings file goes in: the local app data folder on Windows, the user's config
+/// folder elsewhere
+fn settings_dir() -> Option<PathBuf> {
+    let base = if cfg!(windows) {
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    };
+    base.filter(|path| path.is_absolute()).map(|path| path.join("reliquary-archiver"))
 }
 
 /// The settings file, and what it holds.
@@ -145,12 +197,19 @@ impl SettingsFile {
     }
 }
 
-impl Drop for SettingsFile {
-    /// The writer task doesn't get to run anymore once the app exits, so write what it hasn't gotten to
-    fn drop(&mut self) {
+impl SettingsFile {
+    /// Writes what the writer task hasn't gotten to yet, for when the app is about to exit
+    pub fn flush(&self) {
         if let Some(path) = &self.path {
             flush(path, &self.written, || self.to_save.borrow().clone());
         }
+    }
+}
+
+impl Drop for SettingsFile {
+    /// The writer task doesn't get to run anymore once the app exits, so write what it hasn't gotten to
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
@@ -183,11 +242,8 @@ fn write(path: &Path, settings: &Settings) -> io::Result<()> {
     })
 }
 
-/// Loads settings synchronously from disk before the GUI initializes.
-///
-/// Uses the new `raxis::get_local_app_data()` synchronous helper to resolve the
-/// settings path without needing an async task, preventing race conditions between
-/// settings loading and other startup tasks (update checks, WebSocket port binding).
+/// Loads settings synchronously from disk before the GUI initializes, so the update check and
+/// the WebSocket server start with the user's settings.
 ///
 /// Returns the settings to use and the settings file. Without a usable settings file, the
 /// defaults are used and nothing is written until a setting is changed.
@@ -195,12 +251,12 @@ pub fn load() -> (Settings, SettingsFile) {
     // For when saving could destroy settings the file still holds
     let unsaved_defaults = || (Settings::default(), SettingsFile::new(None, Settings::default()));
 
-    let Some(appdata) = raxis::get_local_app_data() else {
-        tracing::warn!("Could not determine local app data path, using default settings that won't be saved");
+    let Some(dir) = settings_dir() else {
+        tracing::warn!("Could not determine where to keep settings, using default settings that won't be saved");
         return unsaved_defaults();
     };
 
-    let path = settings_path(appdata);
+    let path = dir.join("settings.json");
     let defaults = || (Settings::default(), SettingsFile::new(Some(path.clone()), Settings::default()));
 
     let content = match std::fs::read_to_string(&path) {
@@ -215,6 +271,7 @@ pub fn load() -> (Settings, SettingsFile) {
         }
     };
 
+    #[cfg_attr(not(windows), allow(unused_mut))]
     let mut settings: Settings = match serde_json::from_str(&content) {
         Ok(s) => s,
         Err(e) => {
@@ -246,7 +303,8 @@ pub fn load() -> (Settings, SettingsFile) {
     // e.g. user moves the exe after enabling/disabling run on start — in case
     // of mismatch, update settings in memory. They differ from the file now, so
     // the first update saves the correction.
-    if let Ok(false) = registry_matches_settings(settings.run_on_start) {
+    #[cfg(windows)]
+    if let Ok(false) = super::run_on_start::registry_matches_settings(settings.run_on_start) {
         settings.run_on_start = !settings.run_on_start;
     }
 

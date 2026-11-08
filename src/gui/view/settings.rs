@@ -1,0 +1,385 @@
+//! The settings panel. Every change applies and saves at once, except the port, which is only
+//! saved once the server could open it.
+
+use rune::{Drag, El, ScrollSpec, Tx, col, el, row, text};
+use rune_kit::{Button, ButtonVariant, ControlSize, Dialog, SegmentedControl, Switch, TextInput};
+
+use crate::gui::settings::{Anchor, ImageFit};
+use crate::gui::state::{Panel, Ui, Update};
+use crate::gui::theme::{self, Theme};
+
+pub fn dialog(s: &Ui, t: &Theme, layer: &mut Vec<El>) {
+    let mut body = col()
+        .key("settings-body")
+        .w_full()
+        .max_h(420.0)
+        .min_h(0.0)
+        .child(live_sync(s, t))
+        .child(window(s, t))
+        .child(layout(s, t))
+        .child(background(s, t));
+    if s.updates_supported {
+        body = body.child(updates(s, t));
+    }
+    Dialog::new("settings", "Settings")
+        .open(s.panel == Some(Panel::Settings))
+        .width(400.0)
+        .fit()
+        .on_close(|s: &mut Ui| s.panel = None)
+        .child(body.scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0))
+        .build(&t.kit, layer);
+}
+
+fn section(key: &'static str, title: &'static str, t: &Theme) -> El {
+    col()
+        .key(key)
+        .w_full()
+        .px(16.0)
+        .pt(4.0)
+        .pb(18.0)
+        .gap(10.0)
+        .child(text(title).font(theme::TITLE).color(t.text))
+}
+
+/// A setting that's on or off: what it does on the left, its switch on the right
+fn toggle(key: &'static str, label: &'static str, description: Option<&str>, on: bool, toggle: fn(&mut Ui), t: &Theme) -> El {
+    let switch = Switch::new(on)
+        .label(label)
+        .hide_label()
+        .control_size(ControlSize::Small)
+        .on_toggle(toggle)
+        .build(&t.kit)
+        .key("switch");
+    let mut text_col = col()
+        .grow(1.0)
+        .min_w(0.0)
+        .gap(2.0)
+        .child(text(label).font(theme::BODY).color(t.text).wrap());
+    if let Some(description) = description {
+        text_col = text_col.child(text(description.to_string()).font(theme::SMALL).color(t.faint).wrap());
+    }
+    row().key(key).w_full().gap(12.0).center_y().child(text_col).child(switch)
+}
+
+fn note(content: impl Into<String>, error: bool, t: &Theme) -> El {
+    text(content).font(theme::SMALL).color(if error { t.bad } else { t.faint }).wrap()
+}
+
+fn live_sync(s: &Ui, t: &Theme) -> El {
+    let k = &t.kit;
+    let field = TextInput::new(&s.port_edit)
+        .label("Port")
+        .placeholder("23313")
+        .width(Some(120.0))
+        .invalid(s.port_error.is_some())
+        .on_edit(|s: &mut Ui| &mut s.port_edit)
+        .on_key(|s: &mut Ui, ev: &rune::KeyEvent, _| {
+            if ev.key == rune::Key::Enter {
+                s.apply_port();
+                return true;
+            }
+            false
+        })
+        .build(k)
+        .key("port");
+    let apply = Button::new("Apply")
+        .disabled(!s.port_edited() || s.pending_port.is_some())
+        .on_press(|s: &mut Ui| s.apply_port())
+        .build(k)
+        .key("apply-port");
+
+    let note = match (&s.port_error, s.pending_port) {
+        (Some(error), _) => note(error.clone(), true, t),
+        (None, Some(port)) => note(format!("Moving the server to port {port}…"), false, t),
+        (None, None) => note(
+            "The optimizer connects to ws://localhost:<port>/ws. Port 0 picks any free port.",
+            false,
+            t,
+        ),
+    };
+
+    section("live-sync-settings", "Live sync", t)
+        .child(
+            row()
+                .gap(8.0)
+                .center_y()
+                .child(text("Port").font(theme::BODY).color(t.text).grow(1.0))
+                .child(field)
+                .child(apply),
+        )
+        .child(note)
+}
+
+fn window(s: &Ui, t: &Theme) -> El {
+    let mut section = section("window-settings", "Window", t);
+
+    if s.has_tray {
+        section = section.child(toggle(
+            "close-to-tray",
+            "Keep running in the tray when closed",
+            Some("Live sync keeps working while the window is closed"),
+            s.settings.close_to_tray,
+            |s| s.settings_mut(|s| s.close_to_tray = !s.close_to_tray),
+            t,
+        ));
+    }
+
+    let start_hidden = if s.has_tray && s.settings.close_to_tray {
+        "Starts in the tray"
+    } else {
+        "Starts with the window minimized"
+    };
+    section = section.child(toggle(
+        "start-minimized",
+        "Start minimized",
+        Some(start_hidden),
+        s.settings.start_minimized,
+        |s| s.settings_mut(|s| s.start_minimized = !s.start_minimized),
+        t,
+    ));
+
+    if cfg!(windows) {
+        section = section.child(toggle(
+            "run-on-start",
+            "Start with Windows",
+            None,
+            s.settings.run_on_start,
+            |s| s.set_run_on_start(!s.settings.run_on_start),
+            t,
+        ));
+        if let Some(error) = &s.run_on_start_error {
+            section = section.child(note(format!("Couldn't change that: {error}"), true, t));
+        }
+    }
+    section
+}
+
+/// The fit modes in the order the settings offer them, with their labels
+const FITS: [(ImageFit, &str); 5] = [
+    (ImageFit::Cover, "Cover"),
+    (ImageFit::Contain, "Fit"),
+    (ImageFit::Fill, "Stretch"),
+    (ImageFit::ScaleDown, "Shrink"),
+    (ImageFit::None, "Original"),
+];
+
+fn layout(s: &Ui, t: &Theme) -> El {
+    section("layout-settings", "Layout", t).child(
+        row()
+            .w_full()
+            .gap(16.0)
+            .center_y()
+            .child(
+                col()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .gap(2.0)
+                    .child(text("Card position").font(theme::BODY).color(t.text))
+                    .child(note(
+                        format!("{}, for when the window is bigger than the cards", s.settings.card_anchor.label()),
+                        false,
+                        t,
+                    )),
+            )
+            .child(anchor_picker(s.settings.card_anchor, t)),
+    )
+}
+
+/// A small window with nine spots to put the cards in. The chosen spot shows the cards as a
+/// block, the others are dots to click
+fn anchor_picker(current: Anchor, t: &Theme) -> El {
+    const CELL: (f32, f32) = (30.0, 22.0);
+    let spot = |anchor: Anchor| {
+        let selected = anchor == current;
+        let mark = if selected {
+            el().size(20.0, 13.0).radius(3.0).fill(t.accent)
+        } else {
+            el().size(5.0, 5.0).radius(2.5).fill(t.faint)
+        };
+        let (column, row) = anchor.cell();
+        el().key(format!("anchor-{column}-{row}"))
+            .size(CELL.0, CELL.1)
+            .center()
+            .radius(4.0)
+            .role("radio")
+            .label(anchor.label())
+            .checked(selected)
+            .focusable(true)
+            .hover(t.kit.c.hover)
+            .cursor(rune::Cursor::Pointer)
+            .on_press(move |s: &mut Ui| s.settings_mut(|s| s.card_anchor = anchor))
+            .child(mark)
+    };
+    let rows = Anchor::ALL
+        .chunks(3)
+        .map(|anchors| row().gap(2.0).children(anchors.iter().copied().map(spot)));
+
+    col()
+        .key("card-anchor")
+        .role("radiogroup")
+        .label("Card position")
+        .focus_group()
+        .focus_follows()
+        .padding(4.0)
+        .gap(2.0)
+        .radius(8.0)
+        .fill(t.well)
+        .border(1.0, t.card_border)
+        .children(rows)
+}
+
+fn background(s: &Ui, t: &Theme) -> El {
+    let k = &t.kit;
+    let path = &s.settings.background_image;
+    let chosen = !path.is_empty();
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| "None".to_string(), |name| name.to_string_lossy().into_owned());
+
+    let mut picker = row().gap(8.0).center_y().child(
+        text(name)
+            .key("background-name")
+            .font(theme::BODY)
+            .color(if chosen { t.text } else { t.faint })
+            .truncate()
+            .grow(1.0)
+            .min_w(0.0),
+    );
+    if chosen {
+        picker = picker.child(
+            Button::new("Remove")
+                .variant(ButtonVariant::Ghost)
+                .on_press(|s: &mut Ui| s.remove_background())
+                .build(k)
+                .key("remove-background"),
+        );
+    }
+    picker = picker.child(
+        Button::new(if chosen { "Change…" } else { "Choose image…" })
+            .on_press_tx(|s: &mut Ui, tx: &mut Tx| s.choose_background(tx))
+            .build(k)
+            .key("choose-background"),
+    );
+
+    let mut section = section("background-settings", "Background", t).child(picker);
+    if !chosen {
+        return section.child(note(
+            "An image of your choice behind the window, faded so the text stays easy to read.",
+            false,
+            t,
+        ));
+    }
+    if let Some(error) = s.background.as_ref().and_then(|(_, image)| image.error()) {
+        section = section.child(note(format!("Couldn't load that image: {error}"), true, t));
+    }
+
+    let labels = FITS.map(|(_, label)| label);
+    let fit = FITS.iter().position(|(fit, _)| *fit == s.settings.image_fit);
+    let opacity = s.settings.background_opacity;
+    section
+        .child(
+            row()
+                .gap(12.0)
+                .center_y()
+                .child(text("Fit").font(theme::BODY).color(t.text).grow(1.0))
+                .child(
+                    SegmentedControl::new(&labels, fit)
+                        .label("Background fit")
+                        .fit()
+                        .on_pick(|s: &mut Ui, i, _| s.set_image_fit(FITS[i].0))
+                        .build(k)
+                        .key("background-fit"),
+                ),
+        )
+        .child(
+            row()
+                .gap(12.0)
+                .center_y()
+                .child(text("Opacity").font(theme::BODY).color(t.text).w(64.0))
+                .child(slider(opacity, t).grow(1.0))
+                .child(
+                    text(format!("{}%", (opacity * 100.0).round()))
+                        .key("opacity-value")
+                        .font(theme::LABEL)
+                        .color(t.muted)
+                        .w(36.0),
+                ),
+        )
+}
+
+/// A horizontal slider over 0 to 1, dragged with the pointer or stepped with the arrow keys
+fn slider(value: f32, t: &Theme) -> El {
+    const KNOB: f32 = 14.0;
+    let set = |s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
+        let usable = (drag.w - KNOB).max(1.0);
+        s.set_background_opacity((drag.x - KNOB / 2.0) / usable);
+    };
+    let track = |fill| el().h(4.0).radius(2.0).fill(fill);
+    row()
+        .key("opacity-slider")
+        .role("slider")
+        .label("Background opacity")
+        .range_value(f64::from(value), 0.0, 1.0)
+        .focusable(true)
+        .h(24.0)
+        .min_w(0.0)
+        .center_y()
+        .cursor(rune::Cursor::Pointer)
+        .on_drag(set)
+        .on_step(move |s: &mut Ui, delta, _| s.set_background_opacity(s.settings.background_opacity + delta as f32 * 0.05))
+        .child(track(t.accent).w_frac(value))
+        .child(
+            el().size(KNOB, KNOB)
+                .radius(KNOB / 2.0)
+                .fill(t.text)
+                .border(2.0, t.accent)
+                .mx(-KNOB / 2.0),
+        )
+        .child(track(t.card_border).grow(1.0))
+}
+
+fn updates(s: &Ui, t: &Theme) -> El {
+    let k = &t.kit;
+    let version = env!("CARGO_PKG_VERSION");
+    let (status, error) = match &s.update {
+        Update::Idle => (format!("Version {version}"), false),
+        Update::Checking => ("Checking for updates…".to_string(), false),
+        Update::UpToDate => (format!("Version {version} is the latest"), false),
+        Update::Available { version: latest } => (format!("Version {latest} is available, you have {version}"), false),
+        Update::Installing => ("Installing…".to_string(), false),
+        Update::Failed(e) => (format!("Couldn't update: {e}"), true),
+    };
+    let action = match &s.update {
+        Update::Available { .. } => Button::new("Update")
+            .variant(ButtonVariant::Contrast)
+            .on_press(|s: &mut Ui| s.install_update()),
+        update => Button::new("Check now")
+            .disabled(matches!(update, Update::Checking | Update::Installing))
+            .on_press(|s: &mut Ui| s.check_for_update()),
+    };
+
+    section("update-settings", "Updates", t)
+        .child(toggle(
+            "always-update",
+            "Install updates automatically",
+            None,
+            s.settings.always_update,
+            |s| s.settings_mut(|s| s.always_update = !s.always_update),
+            t,
+        ))
+        .child(
+            row()
+                .gap(8.0)
+                .center_y()
+                .child(
+                    text(status)
+                        .key("update-status")
+                        .font(theme::SMALL)
+                        .color(if error { t.bad } else { t.muted })
+                        .wrap()
+                        .grow(1.0)
+                        .min_w(0.0),
+                )
+                .child(action.build(k).key("update-action")),
+        )
+}

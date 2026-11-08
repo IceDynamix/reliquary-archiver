@@ -43,7 +43,7 @@ fn confirm(msg: &str) -> bool {
     input.starts_with("y") || input.is_empty()
 }
 
-fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
+pub fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows::Win32::System::Console::GetConsoleWindow;
