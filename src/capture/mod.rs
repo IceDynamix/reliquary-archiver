@@ -120,7 +120,6 @@ pub enum Replay {
 #[derive(Debug, Clone)]
 pub enum SourceSpec {
     Tap(Tap),
-    #[cfg(any(feature = "pcap", feature = "pktmon"))]
     Replay(Replay),
 }
 
@@ -134,7 +133,6 @@ impl SourceSpec {
     pub fn open(&self) -> Result<PacketStream> {
         match self {
             SourceSpec::Tap(tap) => Ok(tap.open()),
-            #[cfg(any(feature = "pcap", feature = "pktmon"))]
             SourceSpec::Replay(replay) => replay.open(),
         }
     }
@@ -146,7 +144,6 @@ impl From<Tap> for SourceSpec {
     }
 }
 
-#[cfg(any(feature = "pcap", feature = "pktmon"))]
 impl From<Replay> for SourceSpec {
     fn from(replay: Replay) -> Self {
         SourceSpec::Replay(replay)
@@ -254,13 +251,14 @@ impl Replay {
     }
 
     /// Start reading packets from the recording
-    #[cfg(any(feature = "pcap", feature = "pktmon"))]
     pub fn open(&self) -> Result<PacketStream> {
         let source: Box<dyn PacketSource> = match self {
             #[cfg(feature = "pcap")]
             Replay::Pcap(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
             #[cfg(feature = "pktmon")]
             Replay::Etl(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
+            #[cfg(not(any(feature = "pcap", feature = "pktmon")))]
+            _ => unreachable!("Neither pcap or pktmon features are enabled, so there is no Replay."),
         };
 
         source.open()
