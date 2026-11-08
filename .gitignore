@@ -10,3 +10,4 @@ npcap-sdk*.zip
 *.bat
 *.vscode
 *.code-workspace
+/archive_outputs

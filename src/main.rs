@@ -1,4 +1,5 @@
 #![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
+extern crate core;
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -35,7 +36,8 @@ struct Args {
     /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
     output: Option<PathBuf>,
 
-    /// Read packets from .pcap file instead of capturing live packets
+    /// Read packets from .pcap file instead of capturing live packets. A pipe, or - for stdin,
+    /// is read as packets are written to it
     #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,

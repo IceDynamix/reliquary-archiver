@@ -35,6 +35,11 @@ impl TryFrom<&Args> for SourceSpec {
     fn try_from(args: &Args) -> Result<Self, Self::Error> {
         #[cfg(feature = "pcap")]
         if let Some(path) = &args.pcap {
+            // A pipe's packets arrive as they're written, so it's tapped rather than replayed
+            if crate::capture::pipe::is_pipe(path) {
+                return Ok(Tap::PcapPipe(path.clone()).into());
+            }
+
             return Ok(Replay::Pcap(path.clone()).into());
         }
 

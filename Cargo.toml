@@ -38,9 +38,9 @@ pcap = { optional = true, git = "https://github.com/rust-pcap/pcap", rev = "f347
 raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "662f22f2ef1c689478a1bb715902120200bd34ce", features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
-self_update = {version = "0.44.0", features = ['ureq', 'rustls'], default-features = false}
+self_update = { version = "0.44.0", features = ['ureq', 'rustls'], default-features = false }
 pktmon = { optional = true, version = "0.6.2", features = ["tokio"] }
-windows = { optional = true, version = "0.61"}
+windows = { optional = true, version = "0.61" }
 windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
