@@ -84,7 +84,8 @@ impl Default for Store {
             export_out_of_date: false,
             connection_stats: StatsStore::default(),
             export_stats: ExportStats::default(),
-            log_level: LevelFilter::INFO, // TODO: This is not right
+            // Matches the console filter's startup default, unless RUST_LOG overrides it
+            log_level: LevelFilter::INFO,
             settings: Settings::default(),
             update_state: None,
         }
@@ -136,6 +137,8 @@ pub struct StatsStore {
     pub decryption_key_missing: usize,
     /// Count of network errors encountered
     pub network_errors: usize,
+    /// Game traffic is arriving but nothing decodes from it, the capture missed data
+    pub capture_stalled: bool,
     /// Timestamp of the last received packet
     pub last_packet_time: Option<Instant>,
     /// Timestamp of the last decoded command

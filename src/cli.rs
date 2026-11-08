@@ -40,7 +40,7 @@ impl TryFrom<&Args> for SourceSpec {
 
         #[cfg(feature = "pktmon")]
         if let Some(path) = &args.etl {
-            return SourceSpec::EtlFile(path.clone());
+            return Ok(SourceSpec::EtlFile(path.clone()));
         }
 
         #[cfg(feature = "pcap-parser")]
@@ -143,7 +143,6 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
                     );
                     break 'recv;
                 }
-                SessionEvent::Fatal => break 'recv,
                 _ => {}
             }
         }

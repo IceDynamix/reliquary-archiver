@@ -39,6 +39,34 @@ pub async fn wait_for_new_lines() {
     LOG_NOTIFY.notified().await;
 }
 
+/// What the console logs when nothing more verbose was asked for: the app's own info logs, plus
+/// warnings from the libraries that decode and capture traffic. Those warnings (missed packets,
+/// KCP errors) are often the only sign of why a capture got stuck, so they belong in screenshots.
+///
+/// Targets match by prefix and the longest one wins, so `reliquary=warn` doesn't override
+/// `reliquary_archiver=info`.
+const DEFAULT_DIRECTIVES: &str = "reliquary_archiver=info,reliquary=warn,pktmon=warn";
+
+/// One step up from [`DEFAULT_DIRECTIVES`]. The libraries' info logs include every decoded
+/// command and every new conversation, which is what diagnosing a stuck capture needs.
+#[cfg(any(feature = "gui", test))]
+const DEBUG_DIRECTIVES: &str = "reliquary_archiver=debug,reliquary=info,pktmon=info";
+
+/// The console filter for a level picked in the GUI. The capture libraries stay one level
+/// quieter than the app, other crates stay quiet, and trace shows everything.
+#[cfg(feature = "gui")]
+fn directives_for_level(level: LevelFilter) -> String {
+    match level {
+        LevelFilter::INFO => DEFAULT_DIRECTIVES.to_string(),
+        LevelFilter::DEBUG => DEBUG_DIRECTIVES.to_string(),
+        level => level.to_string(),
+    }
+}
+
+fn console_filter(directives: &str) -> EnvFilter {
+    EnvFilter::builder().parse_lossy(directives)
+}
+
 /// Changes which levels are logged to the console and the log buffer
 #[cfg(feature = "gui")]
 pub fn set_console_level(level: LevelFilter) {
@@ -46,7 +74,8 @@ pub fn set_console_level(level: LevelFilter) {
         return;
     };
 
-    let result = handle.modify(|filter| *filter = EnvFilter::default().add_directive(level.into()));
+    let filter = console_filter(&directives_for_level(level));
+    let result = handle.modify(|f| *f = filter);
     if let Err(e) = result {
         tracing::error!("Failed to change log level: {}", e);
     }
@@ -115,24 +144,25 @@ impl<'a, A: io::Write, B: io::Write> MakeWriter<'a> for DualWriter<A, B> {
 pub fn tracing_init(verbose: u8, log_path: Option<&Path>) {
     tracing_log::LogTracer::init().unwrap();
 
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(
+    // RUST_LOG replaces the defaults entirely when it's set
+    let directives = std::env::var(EnvFilter::DEFAULT_ENV)
+        .ok()
+        .filter(|directives| !directives.is_empty())
+        .unwrap_or_else(|| {
             match verbose {
-                0 => "reliquary_archiver=info",
+                0 => DEFAULT_DIRECTIVES,
                 1 => "info",
                 2 => "debug",
                 _ => "trace",
             }
-            .parse()
-            .unwrap(),
-        )
-        .from_env_lossy();
+            .to_string()
+        });
 
-    let (console_filter, handle) = reload::Layer::new(env_filter);
+    let (filter, handle) = reload::Layer::new(console_filter(&directives));
     let console_log = tracing_subscriber::fmt::layer()
         .with_ansi(false)
         .with_writer(DualWriter::new(VecWriter, io::stdout()))
-        .with_filter(console_filter);
+        .with_filter(filter);
 
     CONSOLE_FILTER.set(handle).ok();
 
@@ -170,5 +200,79 @@ pub fn write_crashlog(payload: &(dyn Any + Send)) {
 
     if write!(file, "{log}\n\n{panic_message}").is_ok() {
         info!("wrote crashlog to crashlog.txt");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_directives_parse() {
+        // parse_lossy drops invalid directives silently, so check them strictly here
+        EnvFilter::builder().parse(DEFAULT_DIRECTIVES).unwrap();
+        EnvFilter::builder().parse(DEBUG_DIRECTIVES).unwrap();
+    }
+
+    /// Logs one event per target and level through `directives` and returns what got through
+    fn logged_through(directives: &str) -> String {
+        let lines = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let writer = {
+            let lines = lines.clone();
+            move || SharedWriter(lines.clone())
+        };
+
+        let subscriber = Registry::default().with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(writer)
+                .with_filter(console_filter(directives)),
+        );
+
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::debug!(target: "reliquary_archiver::session", "app debug");
+            tracing::info!(target: "reliquary_archiver::session", "app info");
+            tracing::info!(target: "reliquary::network", "library info");
+            tracing::warn!(target: "reliquary::network::kcp", "library warning");
+            tracing::info!(target: "pktmon::realtime", "pktmon info");
+            tracing::warn!(target: "pktmon::realtime", "pktmon warning");
+            tracing::warn!(target: "hyper", "unrelated warning");
+        });
+
+        String::from_utf8(lines.lock().unwrap().clone()).unwrap()
+    }
+
+    #[test]
+    fn default_directives_show_library_warnings_only() {
+        let output = logged_through(DEFAULT_DIRECTIVES);
+        assert!(output.contains("app info"));
+        assert!(output.contains("library warning"));
+        assert!(output.contains("pktmon warning"));
+        assert!(!output.contains("app debug"));
+        assert!(!output.contains("library info"));
+        assert!(!output.contains("pktmon info"));
+        assert!(!output.contains("unrelated warning"));
+    }
+
+    #[test]
+    fn debug_directives_show_library_info() {
+        let output = logged_through(DEBUG_DIRECTIVES);
+        assert!(output.contains("app debug"));
+        assert!(output.contains("library info"));
+        assert!(output.contains("pktmon info"));
+        assert!(!output.contains("unrelated warning"));
+    }
+
+    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for SharedWriter {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
     }
 }

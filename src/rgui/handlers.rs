@@ -256,6 +256,7 @@ pub fn handle_connection_check(state: &mut RootState, now: Instant) -> Option<Ta
         if now.duration_since(last_packet_time) > Duration::from_secs(60) {
             state.store.connection_stats.connected = false;
             state.store.connection_stats.connection_active = false;
+            state.store.connection_stats.capture_stalled = false;
             state.store.connection_stats.packets_received = 0;
             state.store.connection_stats.commands_received = 0;
         }
@@ -341,8 +342,14 @@ fn handle_session_event(state: &mut RootState, event: SessionEvent) {
         SessionEvent::DecryptionKeyMissing => {
             stats.decryption_key_missing += 1;
         }
-        SessionEvent::DecodeError | SessionEvent::Fatal => {
+        SessionEvent::DecodeError => {
             stats.network_errors += 1;
+        }
+        SessionEvent::Stalled => {
+            stats.capture_stalled = true;
+        }
+        SessionEvent::Recovered => {
+            stats.capture_stalled = false;
         }
         // Logins reach the GUI through the account manager, as WorkerEvent::AccountLoggedIn
         SessionEvent::AccountSeen { .. } | SessionEvent::LoginFinished => {}
