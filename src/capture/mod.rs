@@ -2,7 +2,8 @@
 //!
 //! Everything that can produce game traffic implements [`PacketSource`], which opens into a
 //! [`PacketStream`] of Ethernet frames. Callers describe what they want with a [`SourceSpec`]
-//! and call [`open_source`]; which backend ends up serving it is decided here and nowhere else.
+//! (a [`Tap`] that runs until stopped, or a [`Replay`] of a recording) and open it; which
+//! backend ends up serving it is decided here and nowhere else.
 //!
 //! Live backends only need to implement [`DeviceBackend`], [`DeviceSource`] takes care of
 //! device discovery and merging. File based sources implement [`PacketSource`] directly.
@@ -78,41 +79,112 @@ pub trait PacketSource: Send + 'static {
     fn open(self: Box<Self>) -> Result<PacketStream>;
 }
 
+/// A source that delivers packets until it's stopped, reopening itself whenever it fails
+#[derive(Debug, Clone)]
+pub enum Tap {
+    /// Capture traffic from the network devices
+    #[cfg(feature = "pcap")]
+    Pcap,
+    /// Capture traffic from the network devices
+    #[cfg(feature = "pktmon")]
+    // pcap is preferred when both backends are built in
+    #[cfg_attr(feature = "pcap", allow(dead_code))]
+    Pktmon,
+    /// Read pcap data as it's written to a pipe or fifo
+    #[cfg(feature = "pcap-parser")]
+    PcapPipe(PathBuf),
+}
+
+/// A recorded capture, read once from start to end
+#[derive(Debug, Clone)]
+pub enum Replay {
+    /// A recorded .pcap or .pcapng file
+    #[cfg(feature = "pcap")]
+    Pcap(PathBuf),
+    /// A recorded .etl file
+    #[cfg(feature = "pktmon")]
+    Etl(PathBuf),
+}
+
 /// Describes where packets should be read from
 #[derive(Debug, Clone)]
 pub enum SourceSpec {
-    /// Capture live traffic from the network
-    #[cfg(feature = "pcap")]
-    LivePcap,
-    /// Capture live traffic from the network
-    #[cfg(feature = "pktmon")]
-    LivePktmon,
-    /// Read a recorded .pcap file
-    #[cfg(feature = "pcap")]
-    PcapFile(PathBuf),
-    /// Read a streaming .pcap file (using pipes or fifo)
-    #[cfg(feature = "pcap-parser")]
-    PcapFileLive(PathBuf),
-    /// Read a recorded .etl file
-    #[cfg(feature = "pktmon")]
-    EtlFile(PathBuf),
+    Tap(Tap),
+    Replay(Replay),
 }
 
 impl SourceSpec {
-    pub fn is_live(&self) -> bool {
-        match self {
-            #[cfg(feature = "pcap")]
-            SourceSpec::LivePcap => true,
-            #[cfg(feature = "pktmon")]
-            SourceSpec::LivePktmon => true,
-            #[cfg(feature = "pcap-parser")]
-            SourceSpec::PcapFileLive(_) => true,
-            #[cfg(feature = "pcap")]
-            SourceSpec::PcapFile(file) => *file == *"-",
-            _ => false,
-        }
+    /// Whether the source keeps delivering packets until it's stopped
+    pub fn is_tap(&self) -> bool {
+        matches!(self, SourceSpec::Tap(_))
     }
 
+    /// Start reading packets from the source
+    pub fn open(&self) -> Result<PacketStream> {
+        match self {
+            SourceSpec::Tap(tap) => Ok(tap.open()),
+            SourceSpec::Replay(replay) => replay.open(),
+        }
+    }
+}
+
+impl From<Tap> for SourceSpec {
+    fn from(tap: Tap) -> Self {
+        SourceSpec::Tap(tap)
+    }
+}
+
+impl From<Replay> for SourceSpec {
+    fn from(replay: Replay) -> Self {
+        SourceSpec::Replay(replay)
+    }
+}
+
+impl Tap {
+    /// Start reading packets from the source
+    ///
+    /// The stream never ends. When the capture can't be opened the error is passed along and
+    /// opening is retried a second later, and when it stops it's reopened 10 seconds later.
+    pub fn open(&self) -> PacketStream {
+        use tokio::time::{Duration, sleep};
+
+        let tap = self.clone();
+        async_stream::stream! {
+            loop {
+                match tap.open_once() {
+                    Ok(mut packets) => {
+                        while let Some(packet) = packets.next().await {
+                            yield packet;
+                        }
+
+                        tracing::warn!("capture ended unexpectedly, restarting in 10 seconds");
+                        sleep(Duration::from_secs(10)).await;
+                    }
+                    Err(e) => {
+                        yield Err(e);
+                        sleep(Duration::from_secs(1)).await;
+                    }
+                }
+            }
+        }
+        .boxed()
+    }
+
+    fn open_once(&self) -> Result<PacketStream> {
+        let source: Box<dyn PacketSource> = match self {
+            #[cfg(feature = "pcap")]
+            Tap::Pcap => Box::new(DeviceSource(pcap::PcapBackend)),
+            #[cfg(feature = "pktmon")]
+            Tap::Pktmon => Box::new(DeviceSource(pktmon::PktmonBackend)),
+            #[cfg(feature = "pcap-parser")]
+            Tap::PcapPipe(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
+        };
+
+        source.open()
+    }
+}
+
+impl Replay {
     /// The extensions of the capture files that can be read
     #[cfg(feature = "gui")]
     pub fn file_extensions() -> Vec<&'static str> {
@@ -124,36 +196,29 @@ impl SourceSpec {
         extensions
     }
 
-    /// Picks the source that can read the capture file, going by its extension
+    /// The recording at `path`, if its extension is one that can be read
     #[cfg(feature = "gui")]
-    pub fn for_file(path: PathBuf) -> Option<Self> {
+    pub fn for_path(path: PathBuf) -> Option<Self> {
         let extension = path.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {
             #[cfg(feature = "pcap")]
-            "pcap" | "pcapng" => Some(SourceSpec::PcapFile(path)),
+            "pcap" | "pcapng" => Some(Replay::Pcap(path)),
             #[cfg(feature = "pktmon")]
-            "etl" => Some(SourceSpec::EtlFile(path)),
+            "etl" => Some(Replay::Etl(path)),
             _ => None,
         }
     }
-}
 
-/// Open the packet source described by `spec`
-pub fn open_source(spec: &SourceSpec) -> Result<PacketStream> {
-    let source: Box<dyn PacketSource> = match spec {
-        #[cfg(feature = "pcap")]
-        SourceSpec::LivePcap => Box::new(DeviceSource(pcap::PcapBackend)),
-        #[cfg(feature = "pktmon")]
-        SourceSpec::LivePktmon => Box::new(DeviceSource(pktmon::PktmonBackend)),
-        #[cfg(feature = "pcap")]
-        SourceSpec::PcapFile(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
-        #[cfg(feature = "pktmon")]
-        SourceSpec::EtlFile(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
-        #[cfg(feature = "pcap-parser")]
-        SourceSpec::PcapFileLive(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
-    };
-
-    source.open()
+    /// Start reading packets from the recording
+    pub fn open(&self) -> Result<PacketStream> {
+        // Matching on the value rather than the reference, since with only pcap-parser enabled there are no variants
+        match *self {
+            #[cfg(feature = "pcap")]
+            Replay::Pcap(ref path) => Box::new(pcap::PcapFileSource::new(path.clone())).open(),
+            #[cfg(feature = "pktmon")]
+            Replay::Etl(ref path) => Box::new(pktmon::EtlFileSource::new(path.clone())).open(),
+        }
+    }
 }
 
 /// A live capture backend that reads from one or more network devices

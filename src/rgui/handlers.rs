@@ -12,7 +12,7 @@ use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::OptimizerEvent;
 use tracing::info;
 
-use crate::capture::SourceSpec;
+use crate::capture::Replay;
 use crate::logging;
 use crate::rgui::components::update::{self, UpdateMessage};
 use crate::rgui::messages::{AccountMessage, ExportMessage, LogMessage, RootMessage, WebSocketMessage, WebSocketStatus, WindowMessage};
@@ -48,13 +48,13 @@ pub fn handle_export_message(state: &mut RootState, message: ExportMessage) -> O
         ExportMessage::Refresh => Some(refresh_export_task(state, state.store.selected_account)),
 
         ExportMessage::LoadCaptureFile(path) => {
-            let Some(source) = SourceSpec::for_file(path.clone()) else {
+            let Some(replay) = Replay::for_path(path.clone()) else {
                 tracing::warn!("Can't read capture files like {}", path.display());
                 return None;
             };
 
             tracing::info!("Processing capture file: {}", path.display());
-            Some(Task::future(session::export_from_file(source)).and_then(|export| Task::done(RootMessage::new_export(export))))
+            Some(Task::future(session::export_from_file(replay)).and_then(|export| Task::done(RootMessage::new_export(export))))
         }
     }
 }
