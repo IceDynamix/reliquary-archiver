@@ -57,7 +57,7 @@ Options:
   -h, --help                     Print help
 
 Pcap Only:
-      --pcap <PCAP>              Read packets from .pcap file instead of capturing live packets
+      --pcap <PCAP>              Read packets from .pcap file instead of capturing live packets. A pipe, or - for stdin, is read as packets are written to it
 
 Pktmon Only:
       --etl <ETL>                Read packets from .etl file instead of capturing live packets

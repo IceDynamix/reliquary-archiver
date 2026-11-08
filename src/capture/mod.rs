@@ -22,8 +22,8 @@ use tracing::instrument;
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
 
-#[cfg(feature = "pcap-parser")]
-pub mod pcap_file;
+#[cfg(feature = "pcap")]
+pub mod pipe;
 
 #[cfg(feature = "pcap")]
 pub mod pcap;
@@ -79,7 +79,7 @@ pub trait PacketSource: Send + 'static {
     fn open(self: Box<Self>) -> Result<PacketStream>;
 }
 
-/// A source that delivers packets until it's stopped, reopening itself whenever it fails
+/// A source that delivers packets as they happen, reopening itself whenever it fails
 #[derive(Debug, Clone)]
 pub enum Tap {
     /// Capture traffic from the network devices
@@ -90,8 +90,11 @@ pub enum Tap {
     // pcap is preferred when both backends are built in
     #[cfg_attr(feature = "pcap", allow(dead_code))]
     Pktmon,
-    /// Read pcap data as it's written to a pipe or fifo
-    #[cfg(feature = "pcap-parser")]
+    /// Read pcap data from a pipe (or `-` for stdin) as it's written to it
+    ///
+    /// Whether a pipe will keep delivering can't be known ahead of time (`cat file.pcap |` is a
+    /// pipe too), so it's only reopened when it ends if it's a named pipe a new writer can connect to
+    #[cfg(feature = "pcap")]
     PcapPipe(PathBuf),
 }
 
@@ -143,8 +146,9 @@ impl From<Replay> for SourceSpec {
 impl Tap {
     /// Start reading packets from the source
     ///
-    /// The stream never ends. When the capture can't be opened the error is passed along and
-    /// opening is retried a second later, and when it stops it's reopened 10 seconds later.
+    /// When the capture can't be opened the error is passed along and opening is retried a
+    /// second later. When it ends it's reopened if [`Tap::reopen_delay`] says so, otherwise the
+    /// stream ends too.
     pub fn open(&self) -> PacketStream {
         use tokio::time::{Duration, sleep};
 
@@ -157,8 +161,17 @@ impl Tap {
                             yield packet;
                         }
 
-                        tracing::warn!("capture ended unexpectedly, restarting in 10 seconds");
-                        sleep(Duration::from_secs(10)).await;
+                        let Some(delay) = tap.reopen_delay() else {
+                            tracing::info!("capture finished");
+                            break;
+                        };
+
+                        if delay.is_zero() {
+                            tracing::info!("pipe writer finished, waiting for the next one");
+                        } else {
+                            tracing::warn!("capture ended unexpectedly, reopening in {} seconds", delay.as_secs());
+                            sleep(delay).await;
+                        }
                     }
                     Err(e) => {
                         yield Err(e);
@@ -170,14 +183,31 @@ impl Tap {
         .boxed()
     }
 
+    /// How long to wait before reopening the tap after it ends, or `None` if it's done for good
+    fn reopen_delay(&self) -> Option<std::time::Duration> {
+        use std::time::Duration;
+
+        match self {
+            // Device captures shouldn't end, give whatever went wrong a moment to recover
+            #[cfg(feature = "pcap")]
+            Tap::Pcap => Some(Duration::from_secs(10)),
+            #[cfg(feature = "pktmon")]
+            Tap::Pktmon => Some(Duration::from_secs(10)),
+            // Opening a named pipe waits for the next writer, so there's no need to hold off
+            #[cfg(feature = "pcap")]
+            Tap::PcapPipe(path) => pipe::is_named_pipe(path).then_some(Duration::ZERO),
+        }
+    }
+
     fn open_once(&self) -> Result<PacketStream> {
         let source: Box<dyn PacketSource> = match self {
             #[cfg(feature = "pcap")]
             Tap::Pcap => Box::new(DeviceSource(pcap::PcapBackend)),
             #[cfg(feature = "pktmon")]
             Tap::Pktmon => Box::new(DeviceSource(pktmon::PktmonBackend)),
-            #[cfg(feature = "pcap-parser")]
-            Tap::PcapPipe(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
+            // libpcap reads a pipe as packets are written to it, and stdin for "-"
+            #[cfg(feature = "pcap")]
+            Tap::PcapPipe(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
         };
 
         source.open()
@@ -211,13 +241,14 @@ impl Replay {
 
     /// Start reading packets from the recording
     pub fn open(&self) -> Result<PacketStream> {
-        // Matching on the value rather than the reference, since with only pcap-parser enabled there are no variants
-        match *self {
+        let source: Box<dyn PacketSource> = match self {
             #[cfg(feature = "pcap")]
-            Replay::Pcap(ref path) => Box::new(pcap::PcapFileSource::new(path.clone())).open(),
+            Replay::Pcap(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
             #[cfg(feature = "pktmon")]
-            Replay::Etl(ref path) => Box::new(pktmon::EtlFileSource::new(path.clone())).open(),
-        }
+            Replay::Etl(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
+        };
+
+        source.open()
     }
 }
 

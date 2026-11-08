@@ -36,15 +36,11 @@ struct Args {
     /// Path to output .json file to, per default: archive_output-%Y-%m-%dT%H-%M-%S.json
     output: Option<PathBuf>,
 
-    /// Read packets from .pcap file instead of capturing live packets
+    /// Read packets from .pcap file instead of capturing live packets. A pipe, or - for stdin,
+    /// is read as packets are written to it
     #[cfg(feature = "pcap")]
     #[arg(long)]
     pcap: Option<PathBuf>,
-
-    /// Read packets from a streaming .pcap file instead of capturing live packets
-    #[cfg(feature = "pcap-parser")]
-    #[arg(long)]
-    pcap_file_live: Option<PathBuf>,
 
     /// Read packets from .etl file instead of capturing live packets
     #[cfg(feature = "pktmon")]
@@ -100,7 +96,7 @@ struct Args {
     detach: bool,
 }
 
-#[cfg(not(any(feature = "pktmon", feature = "pcap", feature = "pcap-parser")))]
+#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
 compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
 
 #[cfg(all(not(windows), feature = "gui"))]

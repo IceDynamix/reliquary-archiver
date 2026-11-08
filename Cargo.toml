@@ -34,7 +34,6 @@ rfd = { optional = true, version = "0.17.2" }
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 pcap = { optional = true, version = "2.2.0", features = ["capture-stream"] }
-pcaparse = { optional = true, git = "https://github.com/traceflight/pcaparse.git", rev = "f6d0e853d959a4243ad87605425f357cad2e417a", features = ["async-trait", "tokio", "tokio-byteorder"] }
 raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "662f22f2ef1c689478a1bb715902120200bd34ce", features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -76,7 +75,6 @@ gui = [
 ]
 stream = ["dep:axum"]
 pcap = ["dep:pcap"]
-pcap-parser = ["dep:pcaparse"]
 pktmon = [
     "dep:pktmon",
     # windows dependencies necessary for admin detection and escalation

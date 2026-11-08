@@ -15,7 +15,7 @@ use tracing::{error, info, instrument, warn};
 
 use crate::Args;
 use crate::accounts::MultiAccountManager;
-use crate::capture::{SourceSpec, Tap};
+use crate::capture::{Replay, SourceSpec, Tap};
 use crate::session::{CaptureSession, SessionEvent};
 
 pub async fn run(args: Args, source: SourceSpec) {
@@ -35,17 +35,17 @@ impl TryFrom<&Args> for SourceSpec {
     fn try_from(args: &Args) -> Result<Self, Self::Error> {
         #[cfg(feature = "pcap")]
         if let Some(path) = &args.pcap {
-            return Ok(crate::capture::Replay::Pcap(path.clone()).into());
+            // A pipe's packets arrive as they're written, so it's tapped rather than replayed
+            if crate::capture::pipe::is_pipe(path) {
+                return Ok(Tap::PcapPipe(path.clone()).into());
+            }
+
+            return Ok(Replay::Pcap(path.clone()).into());
         }
 
         #[cfg(feature = "pktmon")]
         if let Some(path) = &args.etl {
-            return Ok(crate::capture::Replay::Etl(path.clone()).into());
-        }
-
-        #[cfg(feature = "pcap-parser")]
-        if let Some(path) = &args.pcap_file_live {
-            return Ok(Tap::PcapPipe(path.clone()).into());
+            return Ok(Replay::Etl(path.clone()).into());
         }
 
         // pcap is preferred when both backends are built in
@@ -54,9 +54,6 @@ impl TryFrom<&Args> for SourceSpec {
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
         return Ok(Tap::Pktmon.into());
-
-        #[cfg(not(any(feature = "pcap", feature = "pktmon")))]
-        Err("pcap-parser requires the --pcap-file-live option")
     }
 }
 
