@@ -342,7 +342,7 @@ fn handle_session_event(state: &mut RootState, event: SessionEvent) {
         SessionEvent::DecryptionKeyMissing => {
             stats.decryption_key_missing += 1;
         }
-        SessionEvent::DecodeError | SessionEvent::Fatal => {
+        SessionEvent::DecodeError => {
             stats.network_errors += 1;
         }
         SessionEvent::Stalled => {

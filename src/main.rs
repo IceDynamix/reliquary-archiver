@@ -23,6 +23,7 @@ mod accounts;
 mod capture;
 mod cli;
 mod logging;
+mod merge;
 mod session;
 mod stall;
 
