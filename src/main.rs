@@ -24,6 +24,7 @@ mod capture;
 mod cli;
 mod logging;
 mod session;
+mod stall;
 
 #[derive(Parser, Debug, Clone)]
 struct Args {

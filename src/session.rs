@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Instant;
 
 use futures::lock::Mutex;
 use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
@@ -18,6 +19,7 @@ use tracing::{info, trace, warn};
 
 use crate::accounts::MultiAccountManager;
 use crate::capture::Packet;
+use crate::stall::{STALL_THRESHOLD, StallChange, StallDetector};
 
 /// Something that happened while processing a packet
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +40,11 @@ pub enum SessionEvent {
     DecodeError,
     /// The sniffer can't make sense of the traffic anymore
     Fatal,
+    /// Game traffic keeps arriving but nothing decodes from it, so the capture missed data and
+    /// the rest of this connection can't be read. Logging in again starts a fresh connection.
+    Stalled,
+    /// Commands are being decoded again after [`SessionEvent::Stalled`]
+    Recovered,
 }
 
 pub struct CaptureSession {
@@ -46,6 +53,7 @@ pub struct CaptureSession {
     /// Sources that sent something that isn't game traffic and are ignored from then on
     poisoned_sources: Option<HashSet<u64>>,
     latest_uid: Option<u32>,
+    stall: StallDetector,
 }
 
 impl CaptureSession {
@@ -57,10 +65,24 @@ impl CaptureSession {
             manager,
             poisoned_sources: poison_sources.then(HashSet::new),
             latest_uid: None,
+            stall: StallDetector::default(),
         }
     }
 
     pub async fn handle_packet(&mut self, packet: Packet) -> Vec<SessionEvent> {
+        let mut events = self.decode_packet(packet).await;
+
+        // Anything that got this far was game traffic, whether or not it decoded
+        if !events.is_empty() {
+            let change = self.stall.traffic(Instant::now());
+            push_stall_change(&mut events, change);
+        }
+
+        events
+    }
+
+    /// Decodes the packet and routes its commands. Returns no events for packets that aren't game traffic.
+    async fn decode_packet(&mut self, packet: Packet) -> Vec<SessionEvent> {
         let mut events = Vec::new();
 
         if self
@@ -100,16 +122,25 @@ impl CaptureSession {
                     }
 
                     events.push(SessionEvent::ConnectionEstablished);
+
+                    let change = self.stall.connection_established(Instant::now());
+                    push_stall_change(&mut events, change);
                 }
                 GamePacket::Connection(ConnectionPacket::Disconnected) => {
                     info!("detected connection disconnected");
                     events.push(SessionEvent::Disconnected);
+
+                    let change = self.stall.disconnected();
+                    push_stall_change(&mut events, change);
                 }
                 GamePacket::Connection(_) => {}
                 GamePacket::Commands {
                     conv_id,
                     result: Ok(command),
                 } => {
+                    let change = self.stall.command_decoded(Instant::now());
+                    push_stall_change(&mut events, change);
+
                     self.handle_command(conv_id, command, &mut events).await;
                 }
                 GamePacket::Commands { conv_id, result: Err(e) } => {
@@ -186,6 +217,24 @@ impl CaptureSession {
     /// Export whatever has been captured for the latest account
     pub async fn export(&self) -> Option<Export> {
         self.latest_exporter().await?.lock().await.export()
+    }
+}
+
+fn push_stall_change(events: &mut Vec<SessionEvent>, change: Option<StallChange>) {
+    match change {
+        Some(StallChange::Stalled) => {
+            warn!(
+                "game traffic is still arriving, but nothing could be decoded from it for {} seconds. The capture missed some data, \
+                 so the rest of this login can't be read. Log out to the title screen and log back in to capture again.",
+                STALL_THRESHOLD.as_secs()
+            );
+            events.push(SessionEvent::Stalled);
+        }
+        Some(StallChange::Recovered) => {
+            info!("capture is decoding game data again");
+            events.push(SessionEvent::Recovered);
+        }
+        None => {}
     }
 }
 
