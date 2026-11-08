@@ -34,13 +34,14 @@ use raxis::runtime::window::builder::InitialDisplay;
 use raxis::{ContextMenuItem, SystemCommand, SystemCommandResponse, TrayEvent, TrayIconConfig};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-use crate::capture::SourceSpec;
-use crate::{logging, Args};
+
+use crate::capture::Tap;
 use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketStatus, WindowMessage};
 use crate::rgui::state::RootState;
 use crate::rgui::view::view;
 use crate::rgui::worker::archiver_worker;
 use crate::websocket::{PortCommand, PortSource, start_websocket_server};
+use crate::{Args, logging};
 
 // Module declarations
 pub mod components;
@@ -122,7 +123,7 @@ fn route(state: &mut RootState, message: RootMessage) -> Option<Task<RootMessage
 ///
 /// # Errors
 /// Returns an error if the GUI framework fails to initialize.
-pub fn run(spec: SourceSpec) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run(tap: Tap) -> Result<(), Box<dyn std::error::Error>> {
     use std::sync::Arc;
 
     use futures::lock::Mutex;
@@ -165,7 +166,7 @@ pub fn run(spec: SourceSpec) -> Result<(), Box<dyn std::error::Error>> {
         Some(Task::batch(vec![
             Task::future(state.settings_file.writer()).discard(),
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
-            Task::run(archiver_worker(manager.clone(), spec.clone()), RootMessage::WorkerEvent),
+            Task::run(archiver_worker(manager.clone(), tap.clone()), RootMessage::WorkerEvent),
             Task::future(start_websocket_server(
                 PortSource::Dynamic(WatchStream::new(port_rx.clone())),
                 manager.clone(),

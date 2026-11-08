@@ -287,10 +287,10 @@ fn command_error_event(error: &GameCommandError) -> SessionEvent {
 
 /// Reads a recorded capture from start to end and exports the account found in it
 #[cfg(feature = "gui")]
-pub async fn export_from_file(spec: crate::capture::SourceSpec) -> Option<Export> {
+pub async fn export_from_file(replay: crate::capture::Replay) -> Option<Export> {
     use futures::StreamExt;
 
-    let mut packets = match crate::capture::open_source(&spec) {
+    let mut packets = match replay.open() {
         Ok(packets) => packets,
         Err(e) => {
             tracing::error!(%e, "could not read capture file");
