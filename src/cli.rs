@@ -35,6 +35,9 @@ impl TryFrom<&Args> for SourceSpec {
     fn try_from(args: &Args) -> Result<Self, Self::Error> {
         #[cfg(feature = "pcap")]
         if let Some(path) = &args.pcap {
+            if *path == *"-" {
+                return Ok(crate::capture::SourceSpec::Tap(Tap::PcapStdIn));
+            }
             return Ok(crate::capture::Replay::Pcap(path.clone()).into());
         }
 

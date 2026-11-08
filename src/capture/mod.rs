@@ -85,6 +85,9 @@ pub enum Tap {
     /// Capture traffic from the network devices
     #[cfg(feature = "pcap")]
     Pcap,
+    /// (Streaming) Pcap file over Standard Input
+    #[cfg(feature = "pcap")]
+    PcapStdIn,
     /// Capture traffic from the network devices
     #[cfg(feature = "pktmon")]
     // pcap is preferred when both backends are built in
@@ -174,6 +177,8 @@ impl Tap {
         let source: Box<dyn PacketSource> = match self {
             #[cfg(feature = "pcap")]
             Tap::Pcap => Box::new(DeviceSource(pcap::PcapBackend)),
+            #[cfg(feature = "pcap")]
+            Tap::PcapStdIn => Box::new(pcap::PcapFileSource::new(PathBuf::from("-"))),
             #[cfg(feature = "pktmon")]
             Tap::Pktmon => Box::new(DeviceSource(pktmon::PktmonBackend)),
             #[cfg(feature = "pcap-parser")]
