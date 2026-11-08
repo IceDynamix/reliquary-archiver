@@ -10,11 +10,11 @@ pub static SETTINGS: Icon = Icon {
     body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.25" fill="currentColor"/><circle cx="15" cy="17" r="2.25" fill="currentColor"/></g>"#,
 };
 
-/// Logs: a page of text
+/// Logs: a terminal prompt
 pub static LOGS: Icon = Icon {
     name: "ra-logs",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3.5H7a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-10z"/><polyline points="14 3.5 14 8.5 19 8.5"/><line x1="8.5" y1="13" x2="15.5" y2="13"/><line x1="8.5" y1="16.5" x2="13" y2="16.5"/></g>"#,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 8 9 12 5 16"/><line x1="12" y1="16" x2="19" y2="16"/></g>"#,
 };
 
 /// Opening a capture file

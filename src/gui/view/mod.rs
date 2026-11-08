@@ -8,12 +8,13 @@ use super::icons;
 use super::settings::{ImageFit, ThemeMode};
 use super::state::{LiveSync, Notice, Panel, Ui, Update};
 use super::theme::{self, Theme};
-use parts::{Pill, kicker, pill, plate, ring_button};
+use parts::{Pill, pill, plate, ring_button};
 
 mod delivery;
 mod logs;
 pub mod parts;
 mod settings;
+mod sky;
 mod status;
 
 const GITHUB_URL: &str = "https://github.com/IceDynamix/reliquary-archiver";
@@ -74,7 +75,10 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
     );
     page = match background(s, cx, &t) {
         Some(background) => page.child(background),
-        None => page.child(parts::scattered_tiles(&t)),
+        None => {
+            let [w, h] = cx.layout_size("page").unwrap_or([460.0, 700.0]);
+            page.child(sky::sky(w, h, &t))
+        }
     };
     let page = page.child(content);
 
@@ -152,8 +156,12 @@ fn header(s: &Ui, t: &Theme) -> El {
         .child(
             col()
                 .gap(1.0)
-                .child(kicker(concat!("Reliquary · v", env!("CARGO_PKG_VERSION")), t.muted))
-                .child(text("Archiver").font(theme::TITLE).color(t.text)),
+                .child(text("Reliquary Archiver").font(theme::TITLE).color(t.text))
+                .child(
+                    text(concat!("Version ", env!("CARGO_PKG_VERSION")))
+                        .font(theme::SMALL)
+                        .color(t.muted),
+                ),
         );
 
     row()

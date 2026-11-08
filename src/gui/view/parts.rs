@@ -289,32 +289,6 @@ pub fn tile(w: f32, h: f32, look: TileLook, content: Option<El>) -> El {
         .child(el().size(w, h).center().children(content))
 }
 
-/// A tile drawn in hairlines only, for the faint ones behind the window's content
-fn tile_outline(w: f32, h: f32, ink: Color) -> El {
-    let depth = tile_depth(h);
-    // Of the side underneath only the part below the top side shows
-    let under = vec![[0.0, h], [0.0, h + depth], [w, h + depth], [w, h]];
-    let shape = Shape::new()
-        .stroke_with(side(w, h, 0.0), true, 1.5, LineCap::Butt, ink)
-        .stroke_with(under, false, 1.5, LineCap::Butt, ink);
-    el().size(w, h + depth)
-        .shape(shape)
-        .child(el().size(w, h).center().child(icon(&super::icons::ZHONG, w * 0.55).color(ink)))
-}
-
-/// Large tiles scattered behind the window's content, faint enough to stay out of the way
-pub fn scattered_tiles(t: &Theme) -> El {
-    let ink = t.accent.alpha(if t.dark { 0.07 } else { 0.11 });
-    let placed = |x: f32, y: f32, w: f32, turn: f32| el().absolute(x, y).child(tile_outline(w, w * 1.3, ink).rotate(turn));
-    el().key("scattered-tiles")
-        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .inert()
-        .a11y_hidden()
-        .child(placed(-70.0, 330.0, 230.0, -0.22))
-        .child(placed(320.0, -40.0, 150.0, 0.3))
-        .child(placed(250.0, 520.0, 110.0, 0.12))
-}
-
 /// What a sheet is called and how it closes
 pub struct Sheet {
     pub key: &'static str,
