@@ -10,7 +10,7 @@ use raxis::widgets::rule::Rule;
 use raxis::widgets::text::{ParagraphAlignment, Text};
 use raxis::{HookManager, column, row, w_id};
 
-use crate::capture::SourceSpec;
+use crate::capture::Replay;
 use crate::rgui::components::file_download::download_view;
 use crate::rgui::messages::{ExportMessage, RootMessage};
 use crate::rgui::state::Store;
@@ -28,7 +28,7 @@ pub fn view(store: &Store, hook: &mut HookManager<RootMessage>) -> Element<RootM
             shell.dispatch_task(
                 Task::future(async {
                     rfd::AsyncFileDialog::new()
-                        .add_filter("Packet Capture", SourceSpec::file_extensions().as_slice())
+                        .add_filter("Packet Capture", Replay::file_extensions().as_slice())
                         .set_title("Select packet capture file")
                         .pick_file()
                         .await

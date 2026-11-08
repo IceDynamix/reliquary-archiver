@@ -11,7 +11,7 @@ use tokio::sync::broadcast::error::RecvError;
 use tracing::{error, info, instrument, warn};
 
 use crate::accounts::{AccountEvent, MultiAccountManager};
-use crate::capture::{self, SourceSpec};
+use crate::capture::Tap;
 use crate::session::{CaptureSession, SessionEvent};
 
 #[derive(Debug, Clone)]
@@ -45,10 +45,10 @@ pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> i
 }
 
 #[instrument(skip_all)]
-pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>, spec: SourceSpec) -> impl Stream<Item = WorkerEvent> {
+pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>, tap: Tap) -> impl Stream<Item = WorkerEvent> {
     stream_channel(100, |mut output: mpsc::Sender<WorkerEvent>| async move {
         tokio::spawn({
-            let capture = live_capture(manager.clone(), output.clone(), spec);
+            let capture = tap_capture(manager.clone(), output.clone(), tap);
 
             async move {
                 // Without this a panic would end the capture silently while the window stays open
@@ -83,41 +83,28 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>, spec: SourceSpe
 }
 
 #[instrument(skip_all)]
-async fn live_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc::Sender<WorkerEvent>, spec: SourceSpec) {
+async fn tap_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc::Sender<WorkerEvent>, tap: Tap) {
     // The GUI keeps capturing for as long as it runs, a single bad packet shouldn't cost it a network interface
     let mut session = CaptureSession::new(manager, false);
 
-    // Outer loop to restart capture when it exits
-    loop {
-        let mut packets = match capture::open_source(&spec) {
-            Ok(packets) => packets,
+    // The tap reopens itself whenever it fails, so this runs for as long as the GUI does
+    let mut packets = tap.open();
+
+    info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
+
+    while let Some(packet) = packets.next().await {
+        let packet = match packet {
+            Ok(packet) => packet,
             Err(e) => {
-                warn!(error = %e, "Failed to start packet capture, retrying in 1 second...");
-                tokio::time::sleep(Duration::from_secs(1)).await;
+                warn!(%e);
                 continue;
             }
         };
 
-        info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
+        output.send(WorkerEvent::PacketReceived).await.ok();
 
-        while let Some(packet) = packets.next().await {
-            let packet = match packet {
-                Ok(packet) => packet,
-                Err(e) => {
-                    warn!(%e);
-                    continue;
-                }
-            };
-
-            output.send(WorkerEvent::PacketReceived).await.ok();
-
-            for event in session.handle_packet(packet).await {
-                output.send(WorkerEvent::Session(event)).await.ok();
-            }
+        for event in session.handle_packet(packet).await {
+            output.send(WorkerEvent::Session(event)).await.ok();
         }
-
-        warn!("live capture stream ended unexpectedly");
-        info!("capture ended, restarting...");
-        tokio::time::sleep(Duration::from_secs(10)).await;
     }
 }

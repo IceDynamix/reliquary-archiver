@@ -183,17 +183,22 @@ async fn run(args: Args) {
         Ok(spec) => spec,
         Err(err) => {
             error!("Cannot start capturing: {}", err);
-            return
+            return;
         }
     };
 
     #[cfg(feature = "gui")]
     if !args.headless {
-        if !source_spec.is_live() {
-            error!("Only live sources are allowed: pcap (live), pktmon and pcap-file-live");
-            return;
-        }
-        rgui::run(source_spec).unwrap();
+        // The GUI taps traffic for as long as it runs, recordings are opened from inside it
+        let tap = match source_spec {
+            SourceSpec::Tap(tap) => tap,
+            SourceSpec::Replay(_) => {
+                error!("The GUI can't be started with a capture file, open it from the GUI or add --headless");
+                return;
+            }
+        };
+
+        rgui::run(tap).unwrap();
 
         // Check if we need to spawn the updated version after GUI exits
         if update::should_spawn_after_exit() {

@@ -15,7 +15,7 @@ use tracing::{error, info, instrument, warn};
 
 use crate::Args;
 use crate::accounts::MultiAccountManager;
-use crate::capture::{self, SourceSpec};
+use crate::capture::{SourceSpec, Tap};
 use crate::session::{CaptureSession, SessionEvent};
 
 pub async fn run(args: Args, source: SourceSpec) {
@@ -35,30 +35,28 @@ impl TryFrom<&Args> for SourceSpec {
     fn try_from(args: &Args) -> Result<Self, Self::Error> {
         #[cfg(feature = "pcap")]
         if let Some(path) = &args.pcap {
-            return Ok(SourceSpec::PcapFile(path.clone()));
+            return Ok(crate::capture::Replay::Pcap(path.clone()).into());
         }
 
         #[cfg(feature = "pktmon")]
         if let Some(path) = &args.etl {
-            return Ok(SourceSpec::EtlFile(path.clone()));
+            return Ok(crate::capture::Replay::Etl(path.clone()).into());
         }
 
         #[cfg(feature = "pcap-parser")]
         if let Some(path) = &args.pcap_file_live {
-            return Ok(SourceSpec::PcapFileLive(path.clone()));
+            return Ok(Tap::PcapPipe(path.clone()).into());
         }
+
+        // pcap is preferred when both backends are built in
         #[cfg(feature = "pcap")]
-        {
-            Ok(SourceSpec::LivePcap)
-        }
-        #[cfg(feature = "pktmon")]
-        {
-            Ok(SourceSpec::LivePktmon)
-        }
-        #[cfg(all(feature = "pcap-parser", not(any(feature = "pktmon", feature = "pcap"))))]
-        {
-            Err("pcap-parser requires the --pcap-file-live option")
-        }
+        return Ok(Tap::Pcap.into());
+
+        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+        return Ok(Tap::Pktmon.into());
+
+        #[cfg(not(any(feature = "pcap", feature = "pktmon")))]
+        Err("pcap-parser requires the --pcap-file-live option")
     }
 }
 
@@ -68,7 +66,7 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
 
     // Recorded captures are read from start to end, streaming only makes sense for live traffic
     #[cfg(feature = "stream")]
-    let selected_account_tx = (args.stream && source.is_live()).then(|| {
+    let selected_account_tx = (args.stream && source.is_tap()).then(|| {
         use crate::websocket::{PortSource, start_websocket_server};
 
         let (tx, rx) = tokio::sync::watch::channel::<Option<u32>>(None);
@@ -85,9 +83,9 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
     #[cfg(not(feature = "stream"))]
     let streaming = false;
 
-    let mut packets = capture::open_source(source).expect("Failed to start packet capture").fuse();
+    let mut packets = source.open().expect("Failed to start packet capture").fuse();
 
-    let timeout = if !source.is_live() {
+    let timeout = if !source.is_tap() {
         None
     } else if streaming {
         info!("WebSocket streaming enabled - capture will run until manually stopped");
@@ -97,7 +95,7 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
         Some(Duration::from_secs(args.timeout))
     };
 
-    if source.is_live() {
+    if source.is_tap() {
         info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");
     }
 
