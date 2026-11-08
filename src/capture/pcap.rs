@@ -51,18 +51,25 @@ impl DeviceBackend for PcapBackend {
             .stream(Codec { source_id })
             .map_err(|e| CaptureError::Capture(Box::new(e)))?;
 
+        // A capture that fails once keeps failing: on Windows the stream retries straight away, so
+        // one error turns into thousands a second. End the stream on the first error instead.
+        // DeviceSource then drops this device, and opens it again if it's still listed on its
+        // next check for new devices.
         Ok(stream
             .take_while(move |r| {
                 future::ready(match r {
-                    // Check if this is a device removal error
-                    Err(pcap::Error::PcapError(error_msg)) if error_msg.contains("ERROR_DEVICE_REMOVED") => {
-                        warn!(%error_msg, %device_name, "Device removed, terminating capture stream");
-                        false // Stop the stream immediately
+                    Ok(_) => true,
+                    Err(pcap::Error::InterfaceDisappeared) => {
+                        info!(%device_name, "Device went away, stopping its capture");
+                        false
                     }
-                    _ => true, // Continue for Ok packets and other errors
+                    Err(e) => {
+                        warn!(%e, %device_name, "Capture failed, stopping it until the device is picked up again");
+                        false
+                    }
                 })
             })
-            .map(|r| r.map_err(|e| CaptureError::Capture(Box::new(e))))
+            .filter_map(|r| future::ready(r.ok().map(Ok)))
             .boxed())
     }
 }

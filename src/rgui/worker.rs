@@ -87,7 +87,7 @@ async fn tap_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc:
     // The GUI keeps capturing for as long as it runs, a single bad packet shouldn't cost it a network interface
     let mut session = CaptureSession::new(manager, false);
 
-    // The tap reopens itself whenever it fails, so this runs for as long as the GUI does
+    // The tap reopens itself whenever it fails, so this only ends if the tap is done for good
     let mut packets = tap.open();
 
     info!("instructions: go to main menu screen and go to the \"Click to Start\" screen");

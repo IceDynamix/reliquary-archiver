@@ -8,6 +8,7 @@
 //! Live backends only need to implement [`DeviceBackend`], [`DeviceSource`] takes care of
 //! device discovery and merging. File based sources implement [`PacketSource`] directly.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt::{Debug, Display};
 use std::path::PathBuf;
@@ -22,8 +23,8 @@ use tracing::instrument;
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
 
-#[cfg(feature = "pcap-parser")]
-pub mod pcap_file;
+#[cfg(feature = "pcap")]
+pub mod pipe;
 
 #[cfg(feature = "pcap")]
 pub mod pcap;
@@ -79,7 +80,7 @@ pub trait PacketSource: Send + 'static {
     fn open(self: Box<Self>) -> Result<PacketStream>;
 }
 
-/// A source that delivers packets until it's stopped, reopening itself whenever it fails
+/// A source that delivers packets as they happen, reopening itself whenever it fails
 #[derive(Debug, Clone)]
 pub enum Tap {
     /// Capture traffic from the network devices
@@ -93,8 +94,11 @@ pub enum Tap {
     // pcap is preferred when both backends are built in
     #[cfg_attr(feature = "pcap", allow(dead_code))]
     Pktmon,
-    /// Read pcap data as it's written to a pipe or fifo
-    #[cfg(feature = "pcap-parser")]
+    /// Read pcap data from a pipe (or `-` for stdin) as it's written to it
+    ///
+    /// Whether a pipe will keep delivering can't be known ahead of time (`cat file.pcap |` is a
+    /// pipe too), so it's only reopened when it ends if it's a named pipe a new writer can connect to
+    #[cfg(feature = "pcap")]
     PcapPipe(PathBuf),
 }
 
@@ -146,8 +150,9 @@ impl From<Replay> for SourceSpec {
 impl Tap {
     /// Start reading packets from the source
     ///
-    /// The stream never ends. When the capture can't be opened the error is passed along and
-    /// opening is retried a second later, and when it stops it's reopened 10 seconds later.
+    /// When the capture can't be opened the error is passed along and opening is retried a
+    /// second later. When it ends it's reopened if [`Tap::reopen_delay`] says so, otherwise the
+    /// stream ends too.
     pub fn open(&self) -> PacketStream {
         use tokio::time::{Duration, sleep};
 
@@ -160,8 +165,17 @@ impl Tap {
                             yield packet;
                         }
 
-                        tracing::warn!("capture ended unexpectedly, restarting in 10 seconds");
-                        sleep(Duration::from_secs(10)).await;
+                        let Some(delay) = tap.reopen_delay() else {
+                            tracing::info!("capture finished");
+                            break;
+                        };
+
+                        if delay.is_zero() {
+                            tracing::info!("pipe writer finished, waiting for the next one");
+                        } else {
+                            tracing::warn!("capture ended unexpectedly, reopening in {} seconds", delay.as_secs());
+                            sleep(delay).await;
+                        }
                     }
                     Err(e) => {
                         yield Err(e);
@@ -173,6 +187,22 @@ impl Tap {
         .boxed()
     }
 
+    /// How long to wait before reopening the tap after it ends, or `None` if it's done for good
+    fn reopen_delay(&self) -> Option<std::time::Duration> {
+        use std::time::Duration;
+
+        match self {
+            // Device captures shouldn't end, give whatever went wrong a moment to recover
+            #[cfg(feature = "pcap")]
+            Tap::Pcap => Some(Duration::from_secs(10)),
+            #[cfg(feature = "pktmon")]
+            Tap::Pktmon => Some(Duration::from_secs(10)),
+            // Opening a named pipe waits for the next writer, so there's no need to hold off
+            #[cfg(feature = "pcap")]
+            Tap::PcapPipe(path) => pipe::is_named_pipe(path).then_some(Duration::ZERO),
+        }
+    }
+
     fn open_once(&self) -> Result<PacketStream> {
         let source: Box<dyn PacketSource> = match self {
             #[cfg(feature = "pcap")]
@@ -181,8 +211,9 @@ impl Tap {
             Tap::PcapStdIn => Box::new(pcap::PcapFileSource::new(PathBuf::from("-"))),
             #[cfg(feature = "pktmon")]
             Tap::Pktmon => Box::new(DeviceSource(pktmon::PktmonBackend)),
-            #[cfg(feature = "pcap-parser")]
-            Tap::PcapPipe(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
+            // libpcap reads a pipe as packets are written to it, and stdin for "-"
+            #[cfg(feature = "pcap")]
+            Tap::PcapPipe(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
         };
 
         source.open()
@@ -216,13 +247,14 @@ impl Replay {
 
     /// Start reading packets from the recording
     pub fn open(&self) -> Result<PacketStream> {
-        // Matching on the value rather than the reference, since with only pcap-parser enabled there are no variants
-        match *self {
+        let source: Box<dyn PacketSource> = match self {
             #[cfg(feature = "pcap")]
-            Replay::Pcap(ref path) => Box::new(pcap::PcapFileSource::new(path.clone())).open(),
+            Replay::Pcap(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
             #[cfg(feature = "pktmon")]
-            Replay::Etl(ref path) => Box::new(pktmon::EtlFileSource::new(path.clone())).open(),
-        }
+            Replay::Etl(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
+        };
+
+        source.open()
     }
 }
 
@@ -260,6 +292,7 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
         // Spawn task to manage stream and discover new devices
         tokio::spawn(async move {
             let mut merged_stream = StreamMap::new();
+            let mut errors = DiscoveryErrors::default();
             let mut check_interval = interval(Duration::from_secs(10));
 
             loop {
@@ -276,7 +309,7 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
                     }
 
                     // Check for new devices every 10 seconds
-                    _ = check_interval.tick() => add_new_devices(&backend, &mut merged_stream),
+                    _ = check_interval.tick() => add_new_devices(&backend, &mut merged_stream, &mut errors),
                 }
             }
         });
@@ -285,14 +318,43 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
     }
 }
 
-fn add_new_devices<B: DeviceBackend>(backend: &B, streams: &mut StreamMap<String, PacketStream>) {
+/// The errors device discovery last ran into, so that one that keeps happening on every check
+/// is only logged as a warning the first time
+#[derive(Default)]
+struct DiscoveryErrors {
+    /// Why listing the devices failed
+    list: Option<String>,
+    /// Why each device that could not be opened failed, by device name
+    open: HashMap<String, String>,
+}
+
+fn add_new_devices<B: DeviceBackend>(
+    backend: &B,
+    streams: &mut StreamMap<String, PacketStream>,
+    errors: &mut DiscoveryErrors,
+) {
     let devices = match backend.list_devices() {
         Ok(devices) => devices,
         Err(e) => {
-            tracing::warn!("Failed to list devices during periodic check: {:#?}", e);
+            let error = e.to_string();
+            if errors.list.as_ref() == Some(&error) {
+                tracing::debug!(%error, "Failed to list devices (still failing)");
+            } else {
+                tracing::warn!(%error, "Failed to list devices");
+                errors.list = Some(error);
+            }
             return;
         }
     };
+
+    if errors.list.take().is_some() {
+        tracing::info!("Listing devices works again");
+    }
+
+    // Forget devices that are no longer listed, so that if they come back and fail again it gets logged
+    errors
+        .open
+        .retain(|name, _| devices.iter().any(|device| B::device_name(device) == *name));
 
     for device in devices {
         let device_name = B::device_name(&device);
@@ -300,14 +362,23 @@ fn add_new_devices<B: DeviceBackend>(backend: &B, streams: &mut StreamMap<String
             continue;
         }
 
-        tracing::info!("Discovered new device: {}", device_name);
-
         match B::open_device(&device) {
             Ok(stream) => {
+                if errors.open.remove(&device_name).is_some() {
+                    tracing::info!("Opened device that previously failed: {}", device_name);
+                } else {
+                    tracing::info!("Discovered new device: {}", device_name);
+                }
                 streams.insert(device_name, stream);
             }
             Err(e) => {
-                tracing::warn!("Capture initialization error on new device {}: {:#?}", device_name, e);
+                let error = e.to_string();
+                if errors.open.get(&device_name) == Some(&error) {
+                    tracing::debug!(%error, "Could not open device {} (still failing)", device_name);
+                } else {
+                    tracing::warn!(%error, "Could not open device {}", device_name);
+                    errors.open.insert(device_name, error);
+                }
             }
         }
     }

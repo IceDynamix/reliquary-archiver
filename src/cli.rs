@@ -15,7 +15,7 @@ use tracing::{error, info, instrument, warn};
 
 use crate::Args;
 use crate::accounts::MultiAccountManager;
-use crate::capture::{SourceSpec, Tap};
+use crate::capture::{Replay, SourceSpec, Tap};
 use crate::session::{CaptureSession, SessionEvent};
 
 pub async fn run(args: Args, source: SourceSpec) {
@@ -35,15 +35,17 @@ impl TryFrom<&Args> for SourceSpec {
     fn try_from(args: &Args) -> Result<Self, Self::Error> {
         #[cfg(feature = "pcap")]
         if let Some(path) = &args.pcap {
-            if *path == *"-" {
-                return Ok(crate::capture::SourceSpec::Tap(Tap::PcapStdIn));
+            // A pipe's packets arrive as they're written, so it's tapped rather than replayed
+            if crate::capture::pipe::is_pipe(path) {
+                return Ok(Tap::PcapPipe(path.clone()).into());
             }
-            return Ok(crate::capture::Replay::Pcap(path.clone()).into());
+
+            return Ok(Replay::Pcap(path.clone()).into());
         }
 
         #[cfg(feature = "pktmon")]
         if let Some(path) = &args.etl {
-            return Ok(crate::capture::Replay::Etl(path.clone()).into());
+            return Ok(Replay::Etl(path.clone()).into());
         }
 
         #[cfg(feature = "pcap-parser")]
