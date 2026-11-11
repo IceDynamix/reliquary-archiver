@@ -323,11 +323,7 @@ struct DiscoveryErrors {
     open: HashMap<String, String>,
 }
 
-fn add_new_devices<B: DeviceBackend>(
-    backend: &B,
-    streams: &mut StreamMap<String, PacketStream>,
-    errors: &mut DiscoveryErrors,
-) {
+fn add_new_devices<B: DeviceBackend>(backend: &B, streams: &mut StreamMap<String, PacketStream>, errors: &mut DiscoveryErrors) {
     let devices = match backend.list_devices() {
         Ok(devices) => devices,
         Err(e) => {

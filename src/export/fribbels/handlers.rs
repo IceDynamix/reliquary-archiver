@@ -1,11 +1,14 @@
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::proto::AvatarPathData::AvatarPathData;
+use reliquary::network::command::proto::ConfirmRelicBoxScRsp::ConfirmRelicBoxScRsp;
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::command::proto::GetAvatarDataScRsp::GetAvatarDataScRsp;
 use reliquary::network::command::proto::GetBagScRsp::GetBagScRsp;
 use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp;
+use reliquary::network::command::proto::GetRelicBoxDataScRsp::GetRelicBoxDataScRsp;
 use reliquary::network::command::proto::Material::Material as ProtoMaterial;
+use reliquary::network::command::proto::OpenRelicBoxScRsp::OpenRelicBoxScRsp;
 use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp;
 use reliquary::network::command::proto::PlayerLoginScRsp::PlayerLoginScRsp;
 use reliquary::network::command::proto::PlayerSyncScNotify::PlayerSyncScNotify;
@@ -306,5 +309,34 @@ impl OptimizerExporter {
         }
 
         Some(OptimizerEvent::GachaResult(gacha_result))
+    }
+
+    pub(super) fn handle_relic_box_data(&mut self, data: GetRelicBoxDataScRsp) -> Vec<OptimizerEvent> {
+        let ids = data.OAJFAFIDKPI.clone();
+        ids.into_iter()
+            .map(|id| {
+                self.recon_relics.push(id);
+                OptimizerEvent::RelicBox(RelicBoxEvent::Add { relic_id: id })
+            })
+            .collect()
+    }
+
+    pub(super) fn handle_relic_box_open(&mut self, relic: OpenRelicBoxScRsp) -> Option<OptimizerEvent> {
+        if relic.GNLAAIDFOJF == 0 {
+            let Some(relic) = export_proto_box_relic(self.database, &relic.LCMADDIMION) else {
+                warn!("Failed to parse relic recon relic");
+                return None;
+            };
+            Some(OptimizerEvent::RelicBox(RelicBoxEvent::Open { relic }))
+        } else {
+            self.recon_relics.push(relic.GNLAAIDFOJF);
+            Some(OptimizerEvent::RelicBox(RelicBoxEvent::Add {
+                relic_id: relic.GNLAAIDFOJF,
+            }))
+        }
+    }
+
+    pub(super) fn handle_relic_box_confirm(&mut self, _confirm: ConfirmRelicBoxScRsp) -> Option<OptimizerEvent> {
+        Some(OptimizerEvent::RelicBox(RelicBoxEvent::Confirmed))
     }
 }
