@@ -100,7 +100,10 @@ pub enum RelicBoxEvent {
     /// Fired when a user opens a box and is prompted to choose a relic
     Open { relic: BoxRelic },
     /// Fired when a user opens a box but does not need to choose a relic (i.e. first 6 relics of each event)
-    Add { relic_id: u32 },
+    Add {
+        #[serde_as(as = "DisplayFromStr")]
+        relic_id: u32,
+    },
 }
 
 #[serde_as]
