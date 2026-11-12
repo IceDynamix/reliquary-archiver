@@ -255,13 +255,10 @@ impl OptimizerExporter {
                 _ => BannerType::Character,
             };
 
-            self.banners.insert(
-                banner.gacha_id,
-                BannerInfo {
-                    rate_up_item_list: banner.item_detail_list,
-                    banner_type,
-                },
-            );
+            self.banners.insert(banner.gacha_id, BannerInfo {
+                rate_up_item_list: banner.item_detail_list,
+                banner_type,
+            });
         }
     }
 
