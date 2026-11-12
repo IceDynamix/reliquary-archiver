@@ -1,5 +1,6 @@
 use reliquary::network::command::proto::AvatarPathData::AvatarPathData as ProtoAvatarPathData;
 use reliquary::network::command::proto::AvatarPathSkillTree::AvatarPathSkillTree as ProtoSkillTree;
+use reliquary::network::command::proto::BoxRelic::BoxRelic as ProtoBoxRelic;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::command::proto::Material::Material as ProtoMaterial;
 use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
@@ -87,6 +88,49 @@ pub fn export_proto_relic(db: &Database, proto: &ProtoRelic) -> Option<Relic> {
     })
 }
 
+#[tracing::instrument(name = "relic", skip_all, fields(id = proto.tid))]
+pub fn export_proto_box_relic(db: &Database, proto: &ProtoBoxRelic) -> Option<BoxRelic> {
+    let Some(relic_config) = db.relic_config.get(&proto.tid) else {
+        warn!("unknown relic, skipping");
+        return None;
+    };
+
+    let set_id = relic_config.SetID;
+    let Some(set_config) = db.relic_set_config.get(&set_id) else {
+        warn!(set_id, "unknown relic set, skipping relic");
+        return None;
+    };
+    let Some(main_affix_config) = db.relic_main_affix_config.get(&relic_config.MainAffixGroup, &proto.main_affix_id) else {
+        warn!(main_affix_id = proto.main_affix_id, "unknown main affix, skipping relic");
+        return None;
+    };
+
+    let slot = slot_type_to_export(&relic_config.Type)?;
+    let rarity = relic_config.MaxLevel / 3;
+
+    let export_substats =
+        |affixes: &[RelicAffix]| -> Vec<Substat> { affixes.iter().filter_map(|substat| export_substat(db, rarity, substat)).collect() };
+
+    let mainstat = main_stat_to_export(&main_affix_config.Property)?.to_string();
+    let substats = export_substats(&proto.sub_affix_list);
+
+    let set_name = set_config
+        .SetName
+        .lookup(&db.text_map)
+        .map(|s| s.to_string())
+        .unwrap_or("".to_string());
+
+    Some(BoxRelic {
+        set_id,
+        name: set_name,
+        slot,
+        rarity,
+        level: proto.level,
+        mainstat,
+        substats,
+    })
+}
+
 /// Converts a relic substat to an export substat
 #[tracing::instrument(name = "substat", skip_all)]
 pub fn export_substat(db: &Database, rarity: u32, substat: &RelicAffix) -> Option<Substat> {
@@ -147,6 +191,12 @@ pub fn export_proto_multipath_character(db: &Database, proto: &ProtoAvatarPathDa
     let id = proto.avatar_id;
     let name = db.lookup_avatar_name(id)?;
     let path = avatar_path_lookup(db, id)?.to_owned();
+    let affinitive_eidolons = db
+        .avatar_ex_rank_config
+        .0
+        .iter()
+        .any(|config| config.ACCJKGEKHKP == id)
+        .then(|| proto.ExRankList.clone());
 
     let span = info_span!("character", name, path);
     let _enter = span.enter();
@@ -169,6 +219,7 @@ pub fn export_proto_multipath_character(db: &Database, proto: &ProtoAvatarPathDa
         skills,
         traces,
         memosprite,
+        affinitive_eidolons,
         ability_version,
     })
 }
@@ -276,6 +327,10 @@ pub fn export_skill_tree(proto: &[ProtoSkillTree]) -> (Skills, Traces, Option<Me
             22 => {
                 trace!("detected elation skill trace");
                 skills.elation = Some(level);
+            }
+            23 => {
+                trace!("detected Aeon Aha elation debt trace");
+                traces.elation_debt = true;
             }
 
             _ => {

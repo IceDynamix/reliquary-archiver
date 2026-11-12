@@ -220,24 +220,18 @@ fn gacha_pity_follows_the_pulled_rarities() {
     assert_eq!(result.pull_results, vec![ARROWS, ARROWS, MARCH_7TH, ARROWS]);
     assert!(matches!(result.pity_5, PityUpdate::AddPity { amount: 4 }));
     // March 7th is not the rate up, so the next 4* is guaranteed to be one
-    assert!(matches!(
-        result.pity_4,
-        PityUpdate::ResetPity {
-            amount: 1,
-            set_guarantee: true
-        }
-    ));
+    assert!(matches!(result.pity_4, PityUpdate::ResetPity {
+        amount: 1,
+        set_guarantee: true
+    }));
 
     let Some(OptimizerEvent::GachaResult(result)) = exporter.handle_gacha(pull(&[HIMEKO])) else {
         panic!("expected a gacha result");
     };
-    assert!(matches!(
-        result.pity_5,
-        PityUpdate::ResetPity {
-            amount: 0,
-            set_guarantee: false
-        }
-    ));
+    assert!(matches!(result.pity_5, PityUpdate::ResetPity {
+        amount: 0,
+        set_guarantee: false
+    }));
 }
 
 #[test]
