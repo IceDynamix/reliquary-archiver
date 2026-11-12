@@ -22,6 +22,8 @@ pub struct OptimizerExporter {
     pub(super) materials: BTreeMap<u32, Material>,
     pub(super) light_cones: BTreeMap<u32, LightCone>,
     pub(super) relics: BTreeMap<u32, Relic>,
+    /// relic recon relics keep a stable id throughout the event
+    pub(super) recon_relics: Vec<u32>,
     /// All known characters. Level and ascension are only filled in once the base avatar is known
     pub(super) characters: BTreeMap<u32, Character>,
     pub(super) multipath_base_avatars: HashMap<u32, ProtoCharacter>,
@@ -52,6 +54,7 @@ impl OptimizerExporter {
             materials: BTreeMap::new(),
             light_cones: BTreeMap::new(),
             relics: BTreeMap::new(),
+            recon_relics: Vec::new(),
             characters: BTreeMap::new(),
             multipath_base_avatars: HashMap::new(),
             unresolved_multipath_characters: HashSet::new(),
@@ -221,6 +224,26 @@ impl Exporter for OptimizerExporter {
                     }
                 }
             }
+            command_id::GetRelicBoxDataScRsp => {
+                debug!("detected get relic recon data packet");
+                if let Some(cmd) = parse(&command, "relic recon state") {
+                    for event in self.handle_relic_box_data(cmd) {
+                        self.emit_event(event);
+                    }
+                }
+            }
+            command_id::OpenRelicBoxScRsp => {
+                debug!("detected open relic recon box packet");
+                if let Some(event) = parse(&command, "relic recon drop").and_then(|cmd| self.handle_relic_box_open(cmd)) {
+                    self.emit_event(event);
+                }
+            }
+            command_id::ConfirmRelicBoxScRsp => {
+                debug!("detected confirm relic recon choice packet");
+                if let Some(event) = parse(&command, "relic recon confirmation").and_then(|cmd| self.handle_relic_box_confirm(cmd)) {
+                    self.emit_event(event);
+                }
+            }
             _ => {
                 trace!(command_id = command.command_id, tag = command.get_command_name(), "ignored");
             }
@@ -290,6 +313,7 @@ impl Exporter for OptimizerExporter {
             light_cones: self.light_cones.values().cloned().collect(),
             relics: self.relics.values().cloned().collect(),
             characters: self.characters.values().cloned().collect(),
+            recon_relics: self.recon_relics.clone(),
         };
 
         Some(export)

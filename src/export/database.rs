@@ -1,8 +1,8 @@
 use std::sync::OnceLock;
 
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap, RelicConfigMap,
-    RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
+    AvatarConfigMap, AvatarExRankConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap,
+    RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::text_map::TextMap;
 use serde::de::DeserializeOwned;
@@ -10,6 +10,7 @@ use tracing::{info, instrument};
 
 pub struct Database {
     pub avatar_config: AvatarConfigMap,
+    pub avatar_ex_rank_config: AvatarExRankConfigMap,
     pub avatar_skill_tree_config: AvatarSkillTreeConfigMap,
     pub equipment_config: EquipmentConfigMap,
     pub item_config: ItemConfigMap,
@@ -45,6 +46,7 @@ impl Database {
         // https://github.com/rust-lang/rust/issues/53749
         Database {
             avatar_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/AvatarConfig.json"))),
+            avatar_ex_rank_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/AvatarExRankConfig.json"))),
             avatar_skill_tree_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/AvatarSkillTreeConfig.json"))),
             equipment_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/EquipmentConfig.json"))),
             item_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/ItemConfig.json"))),

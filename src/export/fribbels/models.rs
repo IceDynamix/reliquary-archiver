@@ -1,3 +1,5 @@
+use std::ops::Not;
+
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, serde_as};
 
@@ -12,6 +14,7 @@ pub struct Export {
     pub light_cones: Vec<LightCone>,
     pub relics: Vec<Relic>,
     pub characters: Vec<Character>,
+    pub recon_relics: Vec<u32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -52,6 +55,7 @@ pub enum OptimizerEvent {
     UpdateCharacters(Vec<Character>),
     DeleteRelics(#[serde_as(as = "Vec<DisplayFromStr>")] Vec<u32>),
     DeleteLightCones(#[serde_as(as = "Vec<DisplayFromStr>")] Vec<u32>),
+    RelicBox(RelicBoxEvent),
 }
 
 #[serde_as]
@@ -87,6 +91,34 @@ impl PityUpdate {
             set_guarantee: guarantee,
         }
     }
+}
+
+#[serde_as]
+#[derive(Serialize, Debug, Clone)]
+#[serde(tag = "kind")]
+pub enum RelicBoxEvent {
+    /// Fired when a user confirms their choice of relic
+    Confirmed,
+    /// Fired when a user opens a box and is prompted to choose a relic
+    Open { relic: BoxRelic },
+    /// Fired when a user opens a box but does not need to choose a relic (i.e. first 6 relics of each event)
+    Add {
+        #[serde_as(as = "DisplayFromStr")]
+        relic_id: u32,
+    },
+}
+
+#[serde_as]
+#[derive(Serialize, Debug, Clone)]
+pub struct BoxRelic {
+    #[serde_as(as = "DisplayFromStr")]
+    pub set_id: u32,
+    pub name: String,
+    pub slot: &'static str,
+    pub rarity: u32,
+    pub level: u32,
+    pub mainstat: String,
+    pub substats: Vec<Substat>,
 }
 
 #[serde_as]
@@ -159,6 +191,8 @@ pub struct Character {
     pub traces: Traces,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memosprite: Option<Memosprite>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affinitive_eidolons: Option<Vec<u32>>,
     pub ability_version: u32,
 }
 
@@ -188,6 +222,8 @@ pub struct Traces {
     pub stat_9: bool,
     pub stat_10: bool,
     pub special: bool,
+    #[serde(skip_serializing_if = "<&bool>::not")]
+    pub elation_debt: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
