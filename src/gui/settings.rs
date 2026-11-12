@@ -168,9 +168,9 @@ impl Default for Settings {
     }
 }
 
-/// The folder the settings file goes in: the local app data folder on Windows, the user's config
-/// folder elsewhere
-fn settings_dir() -> Option<PathBuf> {
+/// The app's own folder, which the settings file and the scaled backgrounds go in: in the local
+/// app data folder on Windows, in the user's config folder elsewhere
+pub fn data_dir() -> Option<PathBuf> {
     let base = if cfg!(windows) {
         std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
     } else {
@@ -299,7 +299,7 @@ pub fn load() -> (Settings, SettingsFile) {
     // For when saving could destroy settings the file still holds
     let unsaved_defaults = || (Settings::default(), SettingsFile::new(None, Settings::default()));
 
-    let Some(dir) = settings_dir() else {
+    let Some(dir) = data_dir() else {
         tracing::warn!("Could not determine where to keep settings, using default settings that won't be saved");
         return unsaved_defaults();
     };

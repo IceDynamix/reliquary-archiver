@@ -217,10 +217,14 @@ fn reset(s: &mut Ui) {
     };
     let images = s.images.take();
     let background = s.background.take();
+    let loader = s.background_loader.take();
+    let loading = s.background_loading.take();
     *s = mock_ui();
     s.settings = settings;
     s.images = images;
     s.background = background;
+    s.background_loader = loader;
+    s.background_loading = loading;
 }
 
 /// The image `SCENE_BACKGROUND` names, else the splash image in the repository

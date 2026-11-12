@@ -42,8 +42,8 @@ rune = { optional = true, git = "https://github.com/anomalyco/rune", rev = "49db
 ] }
 rune-kit = { optional = true, git = "https://github.com/anomalyco/rune", rev = "49db645a37bea92460a4fbcec3593f513f7d3bc0" }
 png = { optional = true, version = "0.18" }
-# Rune decodes images with this crate, the extra formats are for custom backgrounds
-image = { optional = true, version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+# Decodes custom backgrounds (Rune decodes with it too); QOI keeps their scaled copies
+image = { optional = true, version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "qoi"] }
 
 [target.'cfg(windows)'.dependencies]
 self_update = { version = "0.44.0", features = ['ureq', 'rustls'], default-features = false }
@@ -67,10 +67,47 @@ winres = "0.1.12"
 # to circumvent the addition that happens in the kcp library
 overflow-checks = false
 
+# Image decoding unoptimized is slow enough to notice: a large background took over ten seconds
+# to show in a debug build. The codecs, and Rune for its mip maps, are optimized even there
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.image-webp]
+opt-level = 3
+[profile.dev.package.qoi]
+opt-level = 3
+[profile.dev.package.rune]
+opt-level = 3
+
 [profile.release]
 opt-level = "z"         # optimize for size
 lto = true
 overflow-checks = false # see comment above
+
+# Size optimization makes image decoding several times slower; a background took two seconds
+[profile.release.package.image]
+opt-level = 3
+[profile.release.package.zune-jpeg]
+opt-level = 3
+[profile.release.package.zune-core]
+opt-level = 3
+[profile.release.package.png]
+opt-level = 3
+[profile.release.package.fdeflate]
+opt-level = 3
+[profile.release.package.image-webp]
+opt-level = 3
+[profile.release.package.qoi]
+opt-level = 3
+[profile.release.package.rune]
+opt-level = 3
 
 [features]
 default = ["pcap", "stream"]

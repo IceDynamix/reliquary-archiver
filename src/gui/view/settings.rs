@@ -338,7 +338,14 @@ fn background(s: &Ui, t: &Theme) -> El {
             t,
         ));
     }
-    if let Some(error) = s.background.as_ref().and_then(|(_, image)| image.error()) {
+    let error = s
+        .background_error
+        .clone()
+        .or_else(|| s.background.as_ref().and_then(|(_, image)| image.error()).map(|e| e.to_string()));
+    if s.background_loading.is_some() {
+        section = section.child(note("Loading the image…", false, t));
+    }
+    if let Some(error) = error {
         section = section.child(note(format!("Couldn't load that image: {error}"), true, t));
     }
 

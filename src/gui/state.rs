@@ -12,6 +12,7 @@ use reliquary_archiver::export::fribbels::Export;
 use rune::{FileDialogOptions, FileDialogResult, Image, ImageCache, TextEdit, Tx};
 use tracing::level_filters::LevelFilter;
 
+use super::background;
 use super::services::{self, Services};
 use super::settings::{ImageFit, Settings};
 use crate::session::SessionEvent;
@@ -62,6 +63,12 @@ pub struct Ui {
     pub images: Option<ImageCache>,
     /// The background image and the path it was loaded from
     pub background: Option<(String, Image)>,
+    /// Gets background images ready off the UI thread, set up with the window
+    pub background_loader: Option<rune::Latest<(String, Result<background::Prepared, String>)>>,
+    /// The background the loader is working on
+    pub background_loading: Option<String>,
+    /// Why the background couldn't be read
+    pub background_error: Option<String>,
 }
 
 #[derive(Default)]
@@ -180,6 +187,9 @@ impl Ui {
             services: None,
             images: None,
             background: None,
+            background_loader: None,
+            background_loading: None,
+            background_error: None,
         }
     }
 
@@ -502,22 +512,84 @@ impl Ui {
 
     // Background
 
-    /// Loads the background image the settings name, if it isn't loaded already
+    /// Starts loading the background image the settings name, if it isn't loaded or on its way
     pub fn load_background(&mut self) {
-        let path = &self.settings.background_image;
+        let path = self.settings.background_image.clone();
         if path.is_empty() {
             self.background = None;
+            self.background_loading = None;
+            self.background_error = None;
             return;
         }
-        if self.background.as_ref().is_some_and(|(loaded, _)| loaded == path) {
+        if self.background.as_ref().is_some_and(|(loaded, _)| *loaded == path) || self.background_loading.as_ref() == Some(&path) {
             return;
         }
+        let (Some(images), Some(loader)) = (&self.images, &self.background_loader) else {
+            return;
+        };
+        self.background_error = None;
+        if background::is_raster(&path) {
+            self.background_loading = Some(path.clone());
+            loader.request(path, |path| {
+                let prepared = background::prepare(&path);
+                (path, prepared)
+            });
+        } else {
+            // Rune draws vector images at the size they're shown at, which only needs the size
+            let image = images.file(&path, 1024.0, 1.0);
+            self.background = Some((path, image));
+        }
+    }
+
+    /// Loads the background on this thread and waits for it, for snapshots, which draw a single frame
+    pub fn load_background_now(&mut self) {
+        let path = self.settings.background_image.clone();
         let Some(images) = &self.images else {
             return;
         };
-        // Raster images decode at their own size, the size arguments only matter for SVGs
-        let image = images.file(path, 1024.0, 1.0);
-        self.background = Some((path.clone(), image));
+        if path.is_empty() {
+            return;
+        }
+        let image = if background::is_raster(&path) {
+            match background::prepare(&path) {
+                Ok(prepared) => images.rgba(prepared.width, prepared.height, prepared.rgba),
+                Err(e) => {
+                    self.background_error = Some(e);
+                    return;
+                }
+            }
+        } else {
+            images.file(&path, 1024.0, 1.0)
+        };
+        let _ = image.wait();
+        self.background = Some((path, image));
+    }
+
+    /// Takes a background the loader finished. True when that changed anything
+    pub fn background_ready(&mut self) -> bool {
+        let Some((path, prepared)) = self.background_loader.as_ref().and_then(|loader| loader.take()) else {
+            return false;
+        };
+        if self.background_loading.as_ref() == Some(&path) {
+            self.background_loading = None;
+        }
+        // The user picked another image meanwhile
+        if path != self.settings.background_image {
+            return false;
+        }
+        match prepared {
+            Ok(prepared) => {
+                if let Some(images) = &self.images {
+                    self.background = Some((path, images.rgba(prepared.width, prepared.height, prepared.rgba)));
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%e, "couldn't load the background");
+                self.background = None;
+                self.background_error = Some(e);
+            }
+        }
+        true
     }
 
     pub fn choose_background(&mut self, tx: &mut Tx) {
@@ -536,7 +608,7 @@ impl Ui {
 
     pub fn remove_background(&mut self) {
         self.settings_mut(|s| s.background_image.clear());
-        self.background = None;
+        self.load_background();
     }
 
     pub fn set_image_fit(&mut self, fit: ImageFit) {

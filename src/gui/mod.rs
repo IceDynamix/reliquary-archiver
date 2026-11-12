@@ -30,6 +30,7 @@ use crate::accounts::MultiAccountManager;
 use crate::capture::Tap;
 use crate::websocket::{PortCommand, PortSource, start_websocket_server};
 
+mod background;
 mod controller;
 mod icons;
 #[cfg(windows)]
@@ -67,15 +68,18 @@ pub fn run(tap: Tap, options: Options) {
     let spec = AppSpec {
         min_size: Some((420.0, 620.0)),
         scenes: scenes::SCENES,
-        poll: Some(|s: &mut Ui, _, _| s.expire(Instant::now())),
+        poll: Some(|s: &mut Ui, _, _| {
+            let expired = s.expire(Instant::now());
+            s.background_ready() || expired
+        }),
         setup: Some(|s: &mut Ui, waker| {
-            s.images = Some(rune::ImageCache::new(waker));
-            s.load_background();
+            s.images = Some(rune::ImageCache::new(waker.clone()));
+            s.background_loader = Some(rune::Latest::new(waker));
             // Snapshots draw a single frame, the background has to be there for it
-            if rune::tooling::headless_run().is_some()
-                && let Some((_, image)) = &s.background
-            {
-                let _ = image.wait();
+            if rune::tooling::headless_run().is_some() {
+                s.load_background_now();
+            } else {
+                s.load_background();
             }
         }),
         fonts: theme::FONTS,
