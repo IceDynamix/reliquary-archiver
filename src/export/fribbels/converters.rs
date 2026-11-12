@@ -2,7 +2,7 @@ use reliquary::network::command::proto::AvatarPathData::AvatarPathData as ProtoA
 use reliquary::network::command::proto::AvatarPathSkillTree::AvatarPathSkillTree as ProtoSkillTree;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::command::proto::Material::Material as ProtoMaterial;
-use reliquary::network::command::proto::PNGBDDIBCDD::PNGBDDIBCDD as ProtoBoxRelic;
+use reliquary::network::command::proto::BoxRelic::BoxRelic as ProtoBoxRelic;
 use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use tracing::{debug, info_span, instrument, trace, warn};
@@ -191,7 +191,7 @@ pub fn export_proto_multipath_character(db: &Database, proto: &ProtoAvatarPathDa
     let id = proto.avatar_id;
     let name = db.lookup_avatar_name(id)?;
     let path = avatar_path_lookup(db, id)?.to_owned();
-    let affinitive_eidolons = if let Some(avatar_ex_rank_config) = db.avatar_ex_rank_config.0.iter().find(|config| {
+    let affinitive_eidolons = if let Some(_) = db.avatar_ex_rank_config.0.iter().find(|config| {
         config.ACCJKGEKHKP == id
     }) {
         Some(proto.ExRankList.clone())

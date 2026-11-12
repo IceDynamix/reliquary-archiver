@@ -312,7 +312,7 @@ impl OptimizerExporter {
     }
 
     pub(super) fn handle_relic_box_data(&mut self, data: GetRelicBoxDataScRsp) -> Vec<OptimizerEvent> {
-        let ids = data.OAJFAFIDKPI.clone();
+        let ids = data.relic_id_list.clone();
         ids.into_iter()
             .map(|id| {
                 self.recon_relics.push(id);
