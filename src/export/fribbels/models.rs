@@ -92,6 +92,7 @@ impl PityUpdate {
     }
 }
 
+#[serde_as]
 #[derive(Serialize, Debug, Clone)]
 #[serde(tag = "kind")]
 pub enum RelicBoxEvent {
@@ -189,8 +190,8 @@ pub struct Character {
     pub traces: Traces,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub memosprite: Option<Memosprite>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub affinitive_eidolons: Vec<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affinitive_eidolons: Option<Vec<u32>>,
     pub ability_version: u32,
 }
 

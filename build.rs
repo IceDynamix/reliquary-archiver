@@ -4,8 +4,7 @@ use std::fs::File;
 use std::path::Path;
 
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap, RelicConfigMap,
-    RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
+    AvatarConfigMap, AvatarExRankConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap, RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::{ResourceMap, TextMapEntry};
 use ureq::serde::Serialize;
@@ -102,6 +101,7 @@ fn main() {
     download_config!(RelicConfigMap);
     download_config!(RelicMainAffixConfigMap);
     download_config!(RelicSubAffixConfigMap);
+    download_config!(AvatarExRankConfigMap);
 
     save_text_map(&text_hashes, "EN");
 

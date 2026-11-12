@@ -191,7 +191,13 @@ pub fn export_proto_multipath_character(db: &Database, proto: &ProtoAvatarPathDa
     let id = proto.avatar_id;
     let name = db.lookup_avatar_name(id)?;
     let path = avatar_path_lookup(db, id)?.to_owned();
-    let affinitive_eidolons = proto.ExRankList.clone();
+    let affinitive_eidolons = if let Some(avatar_ex_rank_config) = db.avatar_ex_rank_config.0.iter().find(|config| {
+        config.ACCJKGEKHKP == id
+    }) {
+        Some(proto.ExRankList.clone())
+    }else {
+        None
+    };
 
     let span = info_span!("character", name, path);
     let _enter = span.enter();
