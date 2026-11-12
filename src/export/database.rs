@@ -1,7 +1,8 @@
 use std::sync::OnceLock;
 
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarExRankConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap, RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
+    AvatarConfigMap, AvatarExRankConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap,
+    RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::text_map::TextMap;
 use serde::de::DeserializeOwned;

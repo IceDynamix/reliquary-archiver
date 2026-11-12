@@ -255,13 +255,10 @@ impl OptimizerExporter {
                 _ => BannerType::Character,
             };
 
-            self.banners.insert(
-                banner.gacha_id,
-                BannerInfo {
-                    rate_up_item_list: banner.item_detail_list,
-                    banner_type,
-                },
-            );
+            self.banners.insert(banner.gacha_id, BannerInfo {
+                rate_up_item_list: banner.item_detail_list,
+                banner_type,
+            });
         }
     }
 
@@ -321,17 +318,17 @@ impl OptimizerExporter {
             .collect()
     }
 
-    pub(super) fn handle_relic_box_open(&mut self, relic: OpenRelicBoxScRsp) -> Option<OptimizerEvent> {
-        if relic.GNLAAIDFOJF == 0 {
-            let Some(relic) = export_proto_box_relic(self.database, &relic.LCMADDIMION) else {
+    pub(super) fn handle_relic_box_open(&mut self, relic_box: OpenRelicBoxScRsp) -> Option<OptimizerEvent> {
+        if relic_box.relic_id == 0 {
+            let Some(relic) = export_proto_box_relic(self.database, &relic_box.box_relic) else {
                 warn!("Failed to parse relic recon relic");
                 return None;
             };
             Some(OptimizerEvent::RelicBox(RelicBoxEvent::Open { relic }))
         } else {
-            self.recon_relics.push(relic.GNLAAIDFOJF);
+            self.recon_relics.push(relic_box.relic_id);
             Some(OptimizerEvent::RelicBox(RelicBoxEvent::Add {
-                relic_id: relic.GNLAAIDFOJF,
+                relic_id: relic_box.relic_id,
             }))
         }
     }

@@ -4,7 +4,8 @@ use std::fs::File;
 use std::path::Path;
 
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarExRankConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap, RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
+    AvatarConfigMap, AvatarExRankConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap,
+    RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::{ResourceMap, TextMapEntry};
 use ureq::serde::Serialize;
@@ -80,23 +81,18 @@ fn main() {
     // for the export
     let mut text_hashes: HashSet<TextMapEntry> = HashSet::new();
 
-    download_config_and_store_text_hashes!(
-        AvatarConfigMap,
-        AvatarName,
-        text_hashes,
-        [&resource_path::<AvatarConfigMap>(), &resource_path_of("AvatarConfigLD.json"),]
-    );
+    download_config_and_store_text_hashes!(AvatarConfigMap, AvatarName, text_hashes, [
+        &resource_path::<AvatarConfigMap>(),
+        &resource_path_of("AvatarConfigLD.json"),
+    ]);
     download_config_and_store_text_hashes!(EquipmentConfigMap, EquipmentName, text_hashes);
     download_config_and_store_text_hashes!(RelicSetConfigMap, SetName, text_hashes);
     download_config_and_store_partial_text_hashes!(ItemConfigMap, ItemName, text_hashes);
 
-    download_config!(
-        AvatarSkillTreeConfigMap,
-        [
-            &resource_path::<AvatarSkillTreeConfigMap>(),
-            &resource_path_of("AvatarSkillTreeConfigLD.json"),
-        ]
-    );
+    download_config!(AvatarSkillTreeConfigMap, [
+        &resource_path::<AvatarSkillTreeConfigMap>(),
+        &resource_path_of("AvatarSkillTreeConfigLD.json"),
+    ]);
     download_config!(MultiplePathAvatarConfigMap);
     download_config!(RelicConfigMap);
     download_config!(RelicMainAffixConfigMap);
