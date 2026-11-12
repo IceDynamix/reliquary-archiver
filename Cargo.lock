@@ -2402,8 +2402,8 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "reliquary"
-version = "24.0.1"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v24.0.1#938287c5cbba930ad68aa3f7010cf7ad953bc654"
+version = "25.0.0"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v25.0.0#ba9319be47e406ef5bf52c6b7b04b859c65a8026"
 dependencies = [
  "base64 0.22.1",
  "etherparse",
@@ -2455,7 +2455,7 @@ dependencies = [
 [[package]]
 name = "reliquary-proc-macro"
 version = "0.1.2"
-source = "git+https://github.com/IceDynamix/reliquary?tag=v24.0.1#938287c5cbba930ad68aa3f7010cf7ad953bc654"
+source = "git+https://github.com/IceDynamix/reliquary?tag=v25.0.0#ba9319be47e406ef5bf52c6b7b04b859c65a8026"
 dependencies = [
  "quote",
  "syn 2.0.119",
