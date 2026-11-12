@@ -14,7 +14,7 @@ use std::fmt::{Debug, Display};
 use std::path::PathBuf;
 
 use futures::StreamExt;
-use futures::stream::BoxStream;
+use futures::stream::{empty, BoxStream};
 use tokio::sync::mpsc;
 use tokio_stream::StreamMap;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
@@ -22,6 +22,9 @@ use tracing::instrument;
 
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
+
+#[cfg(feature = "pcap-parser")]
+pub mod pcap_file;
 
 #[cfg(feature = "pcap")]
 pub mod pipe;
@@ -97,6 +100,9 @@ pub enum Tap {
     /// pipe too), so it's only reopened when it ends if it's a named pipe a new writer can connect to
     #[cfg(feature = "pcap")]
     PcapPipe(PathBuf),
+    /// Read pcap data as it's written to a pipe or fifo
+    #[cfg(feature = "pcap-parser")]
+    PcaparsePipe(PathBuf),
 }
 
 /// A recorded capture, read once from start to end
@@ -197,6 +203,8 @@ impl Tap {
             // Opening a named pipe waits for the next writer, so there's no need to hold off
             #[cfg(feature = "pcap")]
             Tap::PcapPipe(path) => pipe::is_named_pipe(path).then_some(Duration::ZERO),
+            #[cfg(feature = "pcap-parser")]
+            Tap::PcaparsePipe(_) => Some(Duration::ZERO),
         }
     }
 
@@ -209,6 +217,8 @@ impl Tap {
             // libpcap reads a pipe as packets are written to it, and stdin for "-"
             #[cfg(feature = "pcap")]
             Tap::PcapPipe(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
+            #[cfg(feature = "pcap-parser")]
+            Tap::PcaparsePipe(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
         };
 
         source.open()
@@ -247,6 +257,8 @@ impl Replay {
             Replay::Pcap(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
             #[cfg(feature = "pktmon")]
             Replay::Etl(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
+            #[cfg(not(any(feature = "pcap", feature = "pktmon")))]
+            _ => unreachable!("Neither pcap or pktmon features are enabled, so there is no Replay."),
         };
 
         source.open()

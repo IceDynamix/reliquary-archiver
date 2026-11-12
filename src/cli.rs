@@ -48,12 +48,20 @@ impl TryFrom<&Args> for SourceSpec {
             return Ok(Replay::Etl(path.clone()).into());
         }
 
+        #[cfg(feature = "pcap-parser")]
+        if let Some(path) = &args.pcap_file_live {
+            return Ok(Tap::PcaparsePipe(path.clone()).into());
+        }
+
         // pcap is preferred when both backends are built in
         #[cfg(feature = "pcap")]
         return Ok(Tap::Pcap.into());
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
         return Ok(Tap::Pktmon.into());
+
+        #[cfg(not(any(feature = "pcap", feature = "pktmon")))]
+        Err("pcap-parser requires the --pcap-file-live option")
     }
 }
 
