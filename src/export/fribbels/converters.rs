@@ -1,8 +1,8 @@
 use reliquary::network::command::proto::AvatarPathData::AvatarPathData as ProtoAvatarPathData;
 use reliquary::network::command::proto::AvatarPathSkillTree::AvatarPathSkillTree as ProtoSkillTree;
+use reliquary::network::command::proto::BoxRelic::BoxRelic as ProtoBoxRelic;
 use reliquary::network::command::proto::Equipment::Equipment as ProtoLightCone;
 use reliquary::network::command::proto::Material::Material as ProtoMaterial;
-use reliquary::network::command::proto::BoxRelic::BoxRelic as ProtoBoxRelic;
 use reliquary::network::command::proto::Relic::Relic as ProtoRelic;
 use reliquary::network::command::proto::RelicAffix::RelicAffix;
 use tracing::{debug, info_span, instrument, trace, warn};
