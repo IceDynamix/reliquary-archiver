@@ -141,7 +141,7 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
                     #[cfg(not(feature = "stream"))]
                     let _ = uid;
                 }
-                SessionEvent::LoginFinished if !streaming => {
+                SessionEvent::LoginFinished if !streaming && !args.keep_reading => {
                     info!("detected login end, assume initialization is finished");
                     break 'recv;
                 }
@@ -156,7 +156,7 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
         }
 
         // Check if initialized for early exit in non-streaming mode
-        if !streaming && session.is_initialized().await {
+        if (!streaming && session.is_initialized().await) && !args.keep_reading {
             info!("retrieved all relevant packets, stop listening");
             break 'recv;
         }

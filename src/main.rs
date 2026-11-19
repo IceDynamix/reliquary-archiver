@@ -99,6 +99,10 @@ struct Args {
     #[cfg(all(windows, feature = "gui"))]
     #[arg(long, short = 'd')]
     detach: bool,
+
+    /// Continues reading from replay even if all of the export is ready (mainly used for debugging)
+    #[arg(short, long)]
+    keep_reading: bool
 }
 
 #[cfg(not(any(feature = "pktmon", feature = "pcap", feature = "pcap-parser")))]
