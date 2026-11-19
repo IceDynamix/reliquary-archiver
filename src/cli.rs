@@ -15,6 +15,7 @@ use tracing::{error, info, instrument, warn};
 
 use crate::Args;
 use crate::accounts::MultiAccountManager;
+use crate::capture::pipe::is_pipe;
 use crate::capture::{Replay, SourceSpec, Tap};
 use crate::session::{CaptureSession, SessionEvent};
 
@@ -50,7 +51,11 @@ impl TryFrom<&Args> for SourceSpec {
 
         #[cfg(feature = "pcap-parser")]
         if let Some(path) = &args.pcap_file_live {
-            return Ok(Tap::PcaparsePipe(path.clone()).into());
+            return Ok(if is_pipe(path) {
+                Tap::PcaparsePipe(path.clone()).into()
+            } else {
+                Replay::Pcaparse(path.clone()).into()
+            })
         }
 
         // pcap is preferred when both backends are built in

@@ -14,7 +14,7 @@ use std::fmt::{Debug, Display};
 use std::path::PathBuf;
 
 use futures::StreamExt;
-use futures::stream::{empty, BoxStream};
+use futures::stream::BoxStream;
 use tokio::sync::mpsc;
 use tokio_stream::StreamMap;
 use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
@@ -26,7 +26,7 @@ pub mod pktmon;
 #[cfg(feature = "pcap-parser")]
 pub mod pcap_file;
 
-#[cfg(feature = "pcap")]
+#[cfg(any(feature = "pcap", feature = "pcap-parser"))]
 pub mod pipe;
 
 #[cfg(feature = "pcap")]
@@ -114,6 +114,8 @@ pub enum Replay {
     /// A recorded .etl file
     #[cfg(feature = "pktmon")]
     Etl(PathBuf),
+    #[cfg(feature = "pcap-parser")]
+    Pcaparse(PathBuf),
 }
 
 /// Describes where packets should be read from
@@ -257,8 +259,8 @@ impl Replay {
             Replay::Pcap(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
             #[cfg(feature = "pktmon")]
             Replay::Etl(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
-            #[cfg(not(any(feature = "pcap", feature = "pktmon")))]
-            _ => unreachable!("Neither pcap or pktmon features are enabled, so there is no Replay."),
+            #[cfg(feature = "pcap-parser")]
+            Replay::Pcaparse(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
         };
 
         source.open()
