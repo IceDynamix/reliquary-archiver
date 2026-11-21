@@ -8,7 +8,7 @@
 use std::time::Instant;
 
 use super::settings::{Accent, Anchor};
-use super::state::{Account, CaptureError, Inventory, LiveSync, Notice, Panel, Ui, Update};
+use super::state::{Account, CaptureError, Funds, Inventory, LiveSync, Notice, Panel, Screen, Ui, Update};
 
 /// A name and what it changes in a fresh window
 pub type Scene = (&'static str, fn(&mut Ui));
@@ -38,6 +38,7 @@ pub const SCENES: &[Scene] = &[
                 light_cones: 96,
                 characters: 31,
                 materials: 140,
+                funds: INVENTORY.funds,
             }),
         );
         logged_in(s, UID, Some(INVENTORY));
@@ -139,6 +140,121 @@ pub const SCENES: &[Scene] = &[
     ("amethyst", |s| gem(s, Accent::Amethyst)),
     ("emerald", |s| gem(s, Accent::Emerald)),
     ("sapphire", |s| gem(s, Accent::Sapphire)),
+    ("warps", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, true);
+    }),
+    ("warps-sheet", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, true);
+        s.panel = Some(Panel::Warps);
+    }),
+    ("warps-sheet-history", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, true);
+        s.panel = Some(Panel::Warps);
+        s.warps.pool = crate::warps::Pool::LightCone;
+    }),
+    ("warps-new", |s| {
+        running(s, 0);
+        logged_in(s, UID, Some(INVENTORY));
+        s.warps.summaries.insert(UID, crate::gui::scenes::empty_summary());
+        s.panel = Some(Panel::Warps);
+    }),
+    ("warps-syncing", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, false);
+        s.warps.busy = Some("Syncing Character warps… 120".into());
+    }),
+    ("warp-screen", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, true);
+        roster(s);
+        s.screen = Screen::Warps;
+    }),
+    // Another of the running banners picked, one the account owns
+    ("warp-screen-picked", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, true);
+        roster(s);
+        s.screen = Screen::Warps;
+        s.warps.featured.insert(crate::warps::Pool::Character, 1506);
+    }),
+    // Not logged in this run: no funds or roster, so no budget
+    ("warp-screen-offline", |s| {
+        running(s, 1);
+        warps(s, true);
+        s.warps.accounts = vec![UID];
+        s.screen = Screen::Warps;
+    }),
+    ("warp-screen-lc", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, true);
+        roster(s);
+        s.screen = Screen::Warps;
+        s.warps.pool = crate::warps::Pool::LightCone;
+    }),
+    // The warp screen with a real database, the one `WARPS_DB` names
+    ("warp-screen-db", |s| {
+        running(s, 1);
+        let Some(summary) = std::env::var_os("WARPS_DB").and_then(|path| crate::warps::service::summary_of(path.as_ref(), None)) else {
+            return;
+        };
+        logged_in(s, summary.uid, Some(INVENTORY));
+        s.warps.accounts = vec![summary.uid];
+        s.warps.summaries.insert(summary.uid, summary);
+        s.screen = Screen::Warps;
+        if let Ok(pool) = std::env::var("WARPS_POOL") {
+            s.warps.pool = crate::warps::Pool::from_gacha_type(pool.parse().unwrap_or(11)).unwrap_or(crate::warps::Pool::Character);
+        }
+    }),
+    // The warps of a real database, the one `WARPS_DB` names
+    ("warps-db", |s| {
+        running(s, 1);
+        let Some(summary) = std::env::var_os("WARPS_DB").and_then(|path| crate::warps::service::summary_of(path.as_ref(), None)) else {
+            return;
+        };
+        logged_in(s, summary.uid, Some(INVENTORY));
+        s.warps.accounts = vec![summary.uid];
+        s.warps.summaries.insert(summary.uid, summary);
+        s.panel = Some(Panel::Warps);
+        if let Ok(pool) = std::env::var("WARPS_POOL") {
+            s.warps.pool = crate::warps::Pool::from_gacha_type(pool.parse().unwrap_or(11)).unwrap_or(crate::warps::Pool::Character);
+        }
+    }),
+    ("warps-pick", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, false);
+        s.panel = Some(Panel::Warps);
+        s.warps.choose = Some(crate::gui::state::ProfilePick {
+            path: "starrailstation-backup.dat".into(),
+            uid: UID,
+            profiles: vec![
+                crate::warps::service::ProfileChoice {
+                    key: "1".into(),
+                    name: "Default".into(),
+                    pulls: 521,
+                    latest: Some(1_685_664_600),
+                    fits: true,
+                },
+                crate::warps::service::ProfileChoice {
+                    key: "2".into(),
+                    name: "slate".into(),
+                    pulls: 7399,
+                    latest: Some(1_794_472_323),
+                    fits: true,
+                },
+            ],
+        });
+    }),
     ("saved", |s| {
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));
@@ -159,6 +275,12 @@ const INVENTORY: Inventory = Inventory {
     light_cones: 218,
     characters: 54,
     materials: 311,
+    funds: Funds {
+        stellar_jade: 6420,
+        passes: 12,
+        special_passes: 37,
+        undying_starlight: 592,
+    },
 };
 
 const LOG: &str = "\
@@ -189,8 +311,181 @@ fn gem(s: &mut Ui, accent: Accent) {
     s.settings.accent = accent;
 }
 
+/// What the made-up account owns
+fn roster(s: &mut Ui) {
+    let roster = super::state::Roster {
+        eidolons: [(1506, 0), (1308, 2), (1501, 1)].into_iter().collect(),
+        superimpositions: [(23048, 1)].into_iter().collect(),
+    };
+    s.warps.rosters.insert(UID, roster);
+}
+
 fn logged_in(s: &mut Ui, uid: u32, inventory: Option<Inventory>) {
     s.capture.connected = true;
     s.accounts.push(Account { uid, inventory });
     s.selected = Some(uid);
+}
+
+/// A made-up account's warps: a few hundred pulls on each pool, with 5 stars at believable pity,
+/// the last requests only seen live. `synced` gives it a fresh authkey and sync
+fn warps(s: &mut Ui, synced: bool) {
+    use crate::warps::stats::{Featured, RateUps, pool_stats};
+    use crate::warps::{Pool, Pull, source};
+
+    let now = chrono::Utc::now().timestamp();
+    // (pool, banner, featured 5 star, standard 5 star, pulls, 5 star pity in order)
+    let plans: [(Pool, u32, u32, u32, &[u32]); 3] = [
+        (Pool::Character, 2142, 1506, 1003, &[78, 64, 81, 23, 76, 90, 71, 58, 49]),
+        (Pool::LightCone, 3116, 23048, 23004, &[66, 71, 12, 64, 58]),
+        (Pool::Standard, 1001, 1209, 1107, &[85, 74, 79]),
+    ];
+    let fours = [1214, 1110, 1109, 21002, 21008, 1105];
+    let threes = [20000, 20001, 20002, 20005, 20010, 20011, 20015];
+
+    let mut pulls = Vec::new();
+    let mut rate_ups = RateUps::new();
+    let mut id = 1_700_000_000_000_000_086_i64;
+    for (pool, banner, featured, standard, pities) in plans {
+        rate_ups.insert(banner, Featured {
+            items: [featured, 1214, 1110, 1109].into_iter().collect(),
+            not: [standard].into_iter().collect(),
+        });
+        let mut n = 0u32;
+        let mut lost_next = false;
+        for (k, &pity) in pities.iter().enumerate() {
+            for p in 1..=pity {
+                n += 1;
+                let (item, rarity) = if p == pity {
+                    // Every third 50/50 is lost, the one after is guaranteed
+                    let lost = pool != Pool::Standard && !lost_next && k % 3 == 1;
+                    lost_next = lost;
+                    (if lost || pool == Pool::Standard { standard } else { featured }, 5)
+                } else if n % 9 == 0 {
+                    (fours[(n as usize / 9) % fours.len()], 4)
+                } else {
+                    (threes[(n as usize * 7) % threes.len()], 3)
+                };
+                id += 100;
+                pulls.push(Pull {
+                    id: Some(id),
+                    uid: UID,
+                    pool,
+                    gacha_id: banner,
+                    item_id: item,
+                    rarity,
+                    time: now - 400 * 86400 + i64::from(n) * 3000 + pool as i64,
+                    request_no: None,
+                    batch_index: 0,
+                    sources: source::API,
+                });
+            }
+        }
+        // A few more since the last 5 star, the latest two only seen live
+        for extra in 1..=12u32 {
+            n += 1;
+            let live = pool == Pool::Character && extra > 10;
+            let (item, rarity) = if extra == 7 {
+                (fours[extra as usize % fours.len()], 4)
+            } else {
+                (threes[(n as usize * 7) % threes.len()], 3)
+            };
+            id += 100;
+            pulls.push(Pull {
+                id: (!live).then_some(id),
+                uid: UID,
+                pool,
+                gacha_id: banner,
+                item_id: item,
+                rarity,
+                time: now - 2000 + i64::from(extra) * 60,
+                request_no: live.then_some(1570 + extra),
+                batch_index: 0,
+                sources: if live { source::LIVE } else { source::API },
+            });
+        }
+    }
+
+    let refs: Vec<&Pull> = pulls.iter().collect();
+    let pools: Vec<_> = [Pool::Character, Pool::LightCone, Pool::Standard]
+        .into_iter()
+        .map(|pool| pool_stats(pool, &refs, &rate_ups))
+        .collect();
+    let db = reliquary_archiver::export::database::get_database();
+    let names = pulls
+        .iter()
+        .map(|p| (p.item_id, db.warp_item_name(p.item_id).unwrap_or_else(|| format!("#{}", p.item_id))))
+        .collect();
+    let unconfirmed = pulls.iter().filter(|p| p.id.is_none()).count();
+    let summary = crate::warps::service::Summary {
+        uid: UID,
+        total: pulls.len(),
+        unconfirmed,
+        requests: pulls.len() - 2,
+        request_counter: Some(pulls.len() as u32 + 5),
+        key: Some(crate::warps::service::KeyState {
+            origin: "capture".into(),
+            obtained_at: if synced { now - 1800 } else { now - 3 * 86400 },
+            expired: !synced,
+        }),
+        last_sync: Some(now - 240),
+        last_error: None,
+        next_look: Some(now + 1500),
+        pools,
+        names,
+        banners: running_banners(now),
+    };
+    let mut summary = summary;
+    for banner in &summary.banners {
+        for &item in banner.fives.iter().chain(&banner.fours) {
+            summary
+                .names
+                .entry(item)
+                .or_insert_with(|| db.warp_item_name(item).unwrap_or_else(|| format!("#{item}")));
+        }
+    }
+    s.warps.accounts = vec![UID];
+    s.warps.summaries.insert(UID, summary);
+}
+
+/// An account that's never been synced and has nothing kept
+fn empty_summary() -> crate::warps::service::Summary {
+    use crate::warps::Pool;
+    use crate::warps::stats::{RateUps, pool_stats};
+    crate::warps::service::Summary {
+        uid: UID,
+        pools: [Pool::Character, Pool::LightCone, Pool::Standard]
+            .into_iter()
+            .map(|pool| pool_stats(pool, &[], &RateUps::new()))
+            .collect(),
+        total: 0,
+        unconfirmed: 0,
+        requests: 0,
+        request_counter: None,
+        key: None,
+        last_sync: None,
+        last_error: None,
+        next_look: None,
+        names: Default::default(),
+        banners: Vec::new(),
+    }
+}
+
+/// The banners of 4.7's first half, as the game describes them
+fn running_banners(now: i64) -> Vec<crate::warps::service::RunningBanner> {
+    use crate::warps::Pool;
+    use crate::warps::service::RunningBanner;
+    let banner = |gacha_id, pool, five, fours: &[u32]| RunningBanner {
+        gacha_id,
+        pool,
+        fives: vec![five],
+        fours: fours.to_vec(),
+        end: Some(now + 30 * 86400 + 23 * 3600),
+    };
+    vec![
+        banner(2142, Pool::Character, 1511, &[1009, 1110, 1207]),
+        banner(2143, Pool::Character, 1506, &[1009, 1110, 1207]),
+        banner(2144, Pool::Character, 1501, &[1009, 1110, 1207]),
+        banner(3142, Pool::LightCone, 23065, &[21016, 21020, 21047]),
+        banner(3143, Pool::LightCone, 23057, &[21016, 21020, 21047]),
+    ]
 }

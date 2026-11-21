@@ -12,7 +12,7 @@ use rune::{App, AppHandle, AppSpec, Cx, El, ScrollSpec, Tx, WindowSpec, col, row
 
 use super::scenes::SCENES;
 use super::settings::{Accent, Anchor, Settings, ThemeMode};
-use super::state::{Account, CaptureError, Inventory, LiveSync, Panel, Ui, Update};
+use super::state::{Account, CaptureError, Funds, Inventory, LiveSync, Panel, Ui, Update};
 use super::theme::{self, Theme};
 use super::view::parts::{Pill, kicker, pill_for};
 
@@ -23,6 +23,12 @@ const INVENTORY: Inventory = Inventory {
     light_cones: 218,
     characters: 54,
     materials: 311,
+    funds: Funds {
+        stellar_jade: 6420,
+        passes: 12,
+        special_passes: 37,
+        undying_starlight: 592,
+    },
 };
 
 /// Something the controller does to the app
@@ -131,6 +137,7 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
                     light_cones: inventory.light_cones + 1,
                     characters: inventory.characters + 1,
                     materials: inventory.materials + 1,
+                    funds: inventory.funds,
                 };
                 s.inventory_changed(uid, grown);
             }
@@ -285,86 +292,65 @@ fn view(_: &Controller, cx: &mut Cx<Controller>) -> El {
 /// The controls apart from the scenes, by what they change
 const SECTIONS: &[(&str, &[(&str, Act)])] = &[
     ("Reset", &[("Fresh window", Act::Reset)]),
-    (
-        "Account",
-        &[
-            ("Waiting", Act::Waiting),
-            ("Log in", Act::LogIn),
-            ("Ready", Act::Ready),
-            ("+ account", Act::AnotherAccount),
-            ("Grow counts", Act::Grow),
-        ],
-    ),
-    (
-        "Problems",
-        &[
-            ("Needs admin", Act::NeedsAdmin(true)),
-            ("Capture error", Act::CaptureError(true)),
-            ("Unsupported", Act::Unsupported(true)),
-            ("Interrupted", Act::Stalled(true)),
-            ("Reading file", Act::ReadingFile(true)),
-            ("Clear admin", Act::NeedsAdmin(false)),
-            ("Clear error", Act::CaptureError(false)),
-            ("Clear unsupported", Act::Unsupported(false)),
-            ("Clear interrupted", Act::Stalled(false)),
-            ("Done reading", Act::ReadingFile(false)),
-        ],
-    ),
-    (
-        "Live sync",
-        &[
-            ("Starting", Act::SyncStarting),
-            ("No optimizer", Act::SyncClients(0)),
-            ("1 linked", Act::SyncClients(1)),
-            ("3 linked", Act::SyncClients(3)),
-            ("Port in use", Act::SyncFailed),
-            ("Paused", Act::SyncPaused),
-        ],
-    ),
-    (
-        "Updates",
-        &[
-            ("None", Act::UpdateNone),
-            ("Checking", Act::UpdateChecking),
-            ("Available", Act::UpdateAvailable),
-            ("Installing", Act::UpdateInstalling),
-            ("Failed", Act::UpdateFailed),
-            ("Up to date", Act::UpdateCurrent),
-        ],
-    ),
-    (
-        "Notices",
-        &[
-            ("Saved", Act::NoticeSaved),
-            ("Error", Act::NoticeError),
-            ("Dismiss", Act::NoticeNone),
-        ],
-    ),
-    (
-        "Panels",
-        &[
-            ("Settings", Act::Open(Some(Panel::Settings))),
-            ("Logs", Act::Open(Some(Panel::Logs))),
-            ("Close", Act::Open(None)),
-        ],
-    ),
-    (
-        "Appearance",
-        &[
-            ("System", Act::Theme(ThemeMode::System)),
-            ("Dark", Act::Theme(ThemeMode::Dark)),
-            ("Light", Act::Theme(ThemeMode::Light)),
-            ("Gold", Act::Accent(Accent::Gold)),
-            ("Silver", Act::Accent(Accent::Silver)),
-            ("Ruby", Act::Accent(Accent::Ruby)),
-            ("Amethyst", Act::Accent(Accent::Amethyst)),
-            ("Emerald", Act::Accent(Accent::Emerald)),
-            ("Sapphire", Act::Accent(Accent::Sapphire)),
-            ("Next position", Act::NextAnchor),
-            ("Background on", Act::Background(true)),
-            ("Background off", Act::Background(false)),
-        ],
-    ),
+    ("Account", &[
+        ("Waiting", Act::Waiting),
+        ("Log in", Act::LogIn),
+        ("Ready", Act::Ready),
+        ("+ account", Act::AnotherAccount),
+        ("Grow counts", Act::Grow),
+    ]),
+    ("Problems", &[
+        ("Needs admin", Act::NeedsAdmin(true)),
+        ("Capture error", Act::CaptureError(true)),
+        ("Unsupported", Act::Unsupported(true)),
+        ("Interrupted", Act::Stalled(true)),
+        ("Reading file", Act::ReadingFile(true)),
+        ("Clear admin", Act::NeedsAdmin(false)),
+        ("Clear error", Act::CaptureError(false)),
+        ("Clear unsupported", Act::Unsupported(false)),
+        ("Clear interrupted", Act::Stalled(false)),
+        ("Done reading", Act::ReadingFile(false)),
+    ]),
+    ("Live sync", &[
+        ("Starting", Act::SyncStarting),
+        ("No optimizer", Act::SyncClients(0)),
+        ("1 linked", Act::SyncClients(1)),
+        ("3 linked", Act::SyncClients(3)),
+        ("Port in use", Act::SyncFailed),
+        ("Paused", Act::SyncPaused),
+    ]),
+    ("Updates", &[
+        ("None", Act::UpdateNone),
+        ("Checking", Act::UpdateChecking),
+        ("Available", Act::UpdateAvailable),
+        ("Installing", Act::UpdateInstalling),
+        ("Failed", Act::UpdateFailed),
+        ("Up to date", Act::UpdateCurrent),
+    ]),
+    ("Notices", &[
+        ("Saved", Act::NoticeSaved),
+        ("Error", Act::NoticeError),
+        ("Dismiss", Act::NoticeNone),
+    ]),
+    ("Panels", &[
+        ("Settings", Act::Open(Some(Panel::Settings))),
+        ("Logs", Act::Open(Some(Panel::Logs))),
+        ("Close", Act::Open(None)),
+    ]),
+    ("Appearance", &[
+        ("System", Act::Theme(ThemeMode::System)),
+        ("Dark", Act::Theme(ThemeMode::Dark)),
+        ("Light", Act::Theme(ThemeMode::Light)),
+        ("Gold", Act::Accent(Accent::Gold)),
+        ("Silver", Act::Accent(Accent::Silver)),
+        ("Ruby", Act::Accent(Accent::Ruby)),
+        ("Amethyst", Act::Accent(Accent::Amethyst)),
+        ("Emerald", Act::Accent(Accent::Emerald)),
+        ("Sapphire", Act::Accent(Accent::Sapphire)),
+        ("Next position", Act::NextAnchor),
+        ("Background on", Act::Background(true)),
+        ("Background off", Act::Background(false)),
+    ]),
 ];
 
 fn section(title: &str, acts: &[(String, Act)], t: &Theme) -> El {
@@ -394,15 +380,10 @@ mod tests {
 
     /// Runs `acts` against a fresh app, the way the controller would
     fn after(acts: &[Act]) -> Ui {
-        let mut rt = Runtime::new(
-            mock_ui(),
-            crate::gui::view::view,
-            (460.0, 700.0),
-            Env {
-                system_dark: true,
-                scale: 1.0,
-            },
-        );
+        let mut rt = Runtime::new(mock_ui(), crate::gui::view::view, (460.0, 700.0), Env {
+            system_dark: true,
+            scale: 1.0,
+        });
         rt.frame(0.0);
         for act in acts {
             let act = *act;
@@ -425,13 +406,10 @@ mod tests {
     #[test]
     fn the_account_controls_walk_through_the_stages() {
         assert_eq!(after(&[Act::LogIn]).stage(), Stage::Reading { uid: UIDS[0] });
-        assert_eq!(
-            after(&[Act::Ready]).stage(),
-            Stage::Ready {
-                uid: UIDS[0],
-                inventory: INVENTORY
-            }
-        );
+        assert_eq!(after(&[Act::Ready]).stage(), Stage::Ready {
+            uid: UIDS[0],
+            inventory: INVENTORY
+        });
         let two = after(&[Act::Ready, Act::AnotherAccount]);
         assert_eq!(two.accounts.len(), 2);
         assert_eq!(two.selected, Some(UIDS[1]));

@@ -28,8 +28,10 @@ use tracing::{info, warn};
 
 use crate::accounts::MultiAccountManager;
 use crate::capture::Tap;
+use crate::warps::service::{Command as WarpCommand, WarpService};
 use crate::websocket::{PortCommand, PortSource, start_websocket_server};
 
+mod art;
 mod background;
 mod controller;
 mod icons;
@@ -70,10 +72,17 @@ pub fn run(tap: Tap, options: Options) {
         scenes: scenes::SCENES,
         poll: Some(|s: &mut Ui, _, _| {
             let expired = s.expire(Instant::now());
-            s.background_ready() || expired
+            let art = s.art_ready();
+            s.background_ready() || expired || art
         }),
         setup: Some(|s: &mut Ui, waker| {
             s.images = Some(rune::ImageCache::new(waker.clone()));
+            // Snapshots draw a single frame, the art has to be there for it
+            s.art = Some(if rune::tooling::headless_run().is_some() {
+                art::ArtCache::blocking(waker.clone())
+            } else {
+                art::ArtCache::new(waker.clone())
+            });
             s.background_loader = Some(rune::Latest::new(waker));
             // Snapshots draw a single frame, the background has to be there for it
             if rune::tooling::headless_run().is_some() {
@@ -157,6 +166,12 @@ fn start(
 ) -> Services {
     let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
     let (selected_tx, selected_rx) = watch::channel(None);
+    let warps = {
+        let app = app.clone();
+        WarpService::start(crate::warps::store::default_path(), move |update| {
+            app.update(move |s, tx| s.warp_update(update, tx))
+        })
+    };
     let (port_tx, port_rx) = watch::channel(PortCommand::Open(settings.ws_port));
 
     rt.spawn(settings_file.writer());
@@ -164,7 +179,7 @@ fn start(
     if options.needs_admin {
         warn!("not capturing, administrator rights are needed");
     } else {
-        rt.spawn(forward_worker(app.clone(), manager.clone(), tap));
+        rt.spawn(forward_worker(app.clone(), manager.clone(), tap, warps.clone()));
     }
     rt.spawn(forward_logs(app.clone()));
 
@@ -177,11 +192,12 @@ fn start(
         settings_file,
         no_update: options.no_update || std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1"),
         _tray: tray,
+        warps,
     }
 }
 
 /// Hands what the capture finds to the window
-async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManager>>, tap: Tap) {
+async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManager>>, tap: Tap, warps: WarpService) {
     use crate::session::SessionEvent;
 
     let mut events = pin!(worker::archiver_worker(manager.clone(), tap));
@@ -200,6 +216,7 @@ async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManag
                 traffic = false;
                 app.update(move |s, tx| s.capture_failed(message, tx));
             }
+            WorkerEvent::Session(SessionEvent::Warp(event)) => warps.send(WarpCommand::Event(event)),
             WorkerEvent::Session(
                 SessionEvent::PacketsDecoded(0)
                 | SessionEvent::DecodeError
@@ -225,13 +242,28 @@ async fn refresh_inventory(app: &AppHandle<Ui>, manager: &Mutex<MultiAccountMana
     if !exporter.is_initialized() {
         return;
     }
+    let material = |id: u32| exporter.materials().get(&id).map_or(0, |m| m.count);
     let inventory = Inventory {
         relics: exporter.relics().len(),
         light_cones: exporter.light_cones().len(),
         characters: exporter.characters().len(),
         materials: exporter.materials().len(),
+        funds: state::Funds {
+            stellar_jade: exporter.gacha_funds().stellar_jade,
+            passes: material(101),
+            special_passes: material(102),
+            undying_starlight: material(252),
+        },
     };
-    app.update_if(move |s, _| s.inventory_changed(uid, inventory));
+    let mut roster = state::Roster::default();
+    for character in exporter.characters().values() {
+        roster.eidolons.insert(character.id, character.eidolon);
+    }
+    for cone in exporter.light_cones().values() {
+        let best = roster.superimpositions.entry(cone.id).or_insert(0);
+        *best = (*best).max(cone.superimposition);
+    }
+    app.update_if(move |s, _| s.inventory_changed(uid, inventory) | s.roster_changed(uid, roster));
 }
 
 /// Runs the WebSocket server and reports its port and clients to the window

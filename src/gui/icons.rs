@@ -105,3 +105,38 @@ pub static ZHONG: Icon = Icon {
     view: 24.0,
     body: r#"<g fill="none" stroke="currentColor" stroke-width="2.7" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="8" width="11" height="7.5" rx="1.6"/><line x1="12" y1="3.5" x2="12" y2="20.5"/></g>"#,
 };
+
+/// Syncing with the game's history: two arrows chasing each other round
+pub static SYNC: Icon = Icon {
+    name: "ra-sync",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 11a7 7 0 0 0-12.5-4.3L5 8.5"/><polyline points="5 4.5 5 8.5 9 8.5"/><path d="M5 13a7 7 0 0 0 12.5 4.3L19 15.5"/><polyline points="19 19.5 19 15.5 15 15.5"/></g>"#,
+};
+
+/// The authkey the history opens with
+pub static KEY: Icon = Icon {
+    name: "ra-key",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5 19 4"/><path d="M16 7l2.5 2.5"/><path d="M14 9l1.5 1.5"/></g>"#,
+};
+
+/// Importing a backup: an arrow into a tray
+pub static IMPORT: Icon = Icon {
+    name: "ra-import",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10"/><polyline points="8 10 12 14 16 10"/><path d="M4.5 15v3a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-3"/></g>"#,
+};
+
+/// Warps: a four-pointed star, like the game's warp glint
+pub static WARP: Icon = Icon {
+    name: "ra-warp",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3.5c.7 4.6 3.9 7.8 8.5 8.5-4.6.7-7.8 3.9-8.5 8.5-.7-4.6-3.9-7.8-8.5-8.5 4.6-.7 7.8-3.9 8.5-8.5z"/></g>"#,
+};
+
+/// A list of every pull
+pub static LIST: Icon = Icon {
+    name: "ra-list",
+    view: 24.0,
+    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><line x1="9" y1="7" x2="19" y2="7"/><line x1="9" y1="12" x2="19" y2="12"/><line x1="9" y1="17" x2="19" y2="17"/><circle cx="5" cy="7" r="1" fill="currentColor"/><circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="5" cy="17" r="1" fill="currentColor"/></g>"#,
+};

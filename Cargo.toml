@@ -21,8 +21,14 @@ serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = "2.12.1"
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v25.0.0", features = [
+# The warp history database
+rusqlite = { optional = true, version = "0.43", features = ["bundled"] }
+# Star Rail Station backups are lz-string compressed
+lz-str = { optional = true, version = "0.2.1" }
+# Path while DoGachaCsReq waits for a reliquary release (it joined the proto-rqa set)
+reliquary = { path = "../reliquary", features = [
     "proto-rqa",
+    "proto-auth",
 ] }
 ctrlc = "3.4.5"
 tokio = { version = "1.44.2", features = ["full"] }
@@ -54,8 +60,10 @@ windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v25.0.0", features = [
+# Path while DoGachaCsReq waits for a reliquary release (it joined the proto-rqa set)
+reliquary = { path = "../reliquary", features = [
     "proto-rqa",
+    "proto-auth",
 ] }
 
 [target.'cfg(windows)'.build-dependencies]
@@ -118,6 +126,8 @@ gui = [
     "dep:png",
     "dep:image",
     "dep:rfd",
+    "dep:rusqlite",
+    "dep:lz-str",
     "windows/Win32_Foundation",
     "windows/Win32_System_Console",
     "windows/Win32_System_LibraryLoader",

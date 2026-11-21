@@ -63,6 +63,41 @@ impl Database {
         serde_json::de::from_str(str).unwrap()
     }
 
+    /// The English name of a character or light cone that can be pulled from a warp
+    pub fn warp_item_name(&self, item_id: u32) -> Option<String> {
+        let name = match self.equipment_config.get(&item_id) {
+            Some(cfg) => cfg.EquipmentName.lookup(&self.text_map).map(|s| s.to_string()),
+            None => self.lookup_avatar_name(item_id),
+        }?;
+        // Names carry the game's markup, like "Silver Wolf LV.<unbreak>999</unbreak>"
+        let mut plain = String::with_capacity(name.len());
+        let mut in_tag = false;
+        for c in name.chars() {
+            match c {
+                '<' => in_tag = true,
+                '>' if in_tag => in_tag = false,
+                c if !in_tag => plain.push(c),
+                _ => {}
+            }
+        }
+        Some(plain)
+    }
+
+    /// The star rating of a character or light cone that can be pulled from a warp
+    pub fn warp_item_rarity(&self, item_id: u32) -> Option<u8> {
+        let rarity = match self.equipment_config.get(&item_id) {
+            Some(cfg) => cfg.Rarity.as_str(),
+            None => self.avatar_config.get(&item_id)?.Rarity.as_str(),
+        };
+        // "CombatPowerLightconeRarity5", "CombatPowerAvatarRarityType4" and so on
+        rarity.chars().last()?.to_digit(10).map(|r| r as u8)
+    }
+
+    /// Whether the item is a light cone rather than a character
+    pub fn is_light_cone(&self, item_id: u32) -> bool {
+        self.equipment_config.get(&item_id).is_some()
+    }
+
     pub(crate) fn lookup_avatar_name(&self, avatar_id: u32) -> Option<String> {
         if avatar_id == 0 {
             return None;

@@ -12,15 +12,10 @@ fn runtime(scene: &str) -> Runtime<Ui> {
     let mut ui = Ui::new(Settings::default());
     let (_, apply) = SCENES.iter().find(|(name, _)| *name == scene).expect("no such scene");
     apply(&mut ui);
-    let mut rt = Runtime::new(
-        ui,
-        view,
-        (460.0, 700.0),
-        Env {
-            system_dark: true,
-            scale: 1.0,
-        },
-    );
+    let mut rt = Runtime::new(ui, view, (460.0, 700.0), Env {
+        system_dark: true,
+        scale: 1.0,
+    });
     rt.frame(0.0);
     rt
 }

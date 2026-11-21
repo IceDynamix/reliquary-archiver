@@ -5,6 +5,7 @@
 //! capture or the server) goes through [`Services`], which is `None` in headless snapshots and
 //! tests, so every transition can run without a window or a network.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -16,6 +17,8 @@ use super::background;
 use super::services::{self, Services};
 use super::settings::{ImageFit, Settings};
 use crate::session::SessionEvent;
+use crate::warps::Pool;
+use crate::warps::service::{Command as WarpCommand, ProfileChoice, Summary, Update as WarpUpdate};
 
 /// A capture error that isn't repeated for this long has resolved itself
 pub const CAPTURE_ERROR_TTL: Duration = Duration::from_secs(15);
@@ -27,6 +30,10 @@ pub const LOG_TAIL: usize = 400;
 const BACKGROUND_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"];
 
 pub struct Ui {
+    /// The main window or the warp screen, which takes it over
+    pub screen: Screen,
+    /// Character and light cone art, set up with the window
+    pub art: Option<super::art::ArtCache>,
     pub capture: Capture,
     /// Accounts in the order they first logged in
     pub accounts: Vec<Account>,
@@ -69,6 +76,72 @@ pub struct Ui {
     pub background_loading: Option<String>,
     /// Why the background couldn't be read
     pub background_error: Option<String>,
+    pub warps: Warps,
+}
+
+/// The warp tracker: what the warp database reports, and the sheet's own state
+pub struct Warps {
+    /// Why the database couldn't be opened
+    pub unavailable: Option<String>,
+    /// Accounts with warps kept, the latest first
+    pub accounts: Vec<u32>,
+    pub summaries: HashMap<u32, Summary>,
+    /// What the database is busy with, e.g. a sync
+    pub busy: Option<String>,
+    /// The pool the sheet shows
+    pub pool: Pool,
+    /// A link to the warp history, pasted in
+    pub link_edit: TextEdit,
+    /// A backup with several profiles waiting for the user to pick one
+    pub choose: Option<ProfilePick>,
+    /// The featured 5 star picked on each pool's running banners
+    pub featured: HashMap<Pool, u32>,
+    /// What each account owns, from its login this run
+    pub rosters: HashMap<u32, Roster>,
+    /// When this run started, in Unix seconds: pulls seen live since make up the session
+    pub session_start: i64,
+}
+
+/// The characters and light cones an account owns
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Roster {
+    /// Character id to eidolon
+    pub eidolons: HashMap<u32, u32>,
+    /// Light cone id to its highest superimposition
+    pub superimpositions: HashMap<u32, u32>,
+}
+
+impl Roster {
+    /// Copies owned: a character at E2 is 3, a light cone at S1 is 1
+    pub fn copies(&self, item: u32) -> u32 {
+        if let Some(e) = self.eidolons.get(&item) {
+            return e + 1;
+        }
+        self.superimpositions.get(&item).copied().unwrap_or(0)
+    }
+}
+
+pub struct ProfilePick {
+    pub path: PathBuf,
+    pub uid: u32,
+    pub profiles: Vec<ProfileChoice>,
+}
+
+impl Default for Warps {
+    fn default() -> Self {
+        Self {
+            unavailable: None,
+            accounts: Vec::new(),
+            summaries: HashMap::new(),
+            busy: None,
+            pool: Pool::Character,
+            featured: HashMap::new(),
+            rosters: HashMap::new(),
+            session_start: chrono::Utc::now().timestamp(),
+            link_edit: TextEdit::new(""),
+            choose: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -95,6 +168,27 @@ pub struct Inventory {
     pub light_cones: usize,
     pub characters: usize,
     pub materials: usize,
+    pub funds: Funds,
+}
+
+/// What the account has to warp with
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Funds {
+    pub stellar_jade: u32,
+    /// Star Rail Passes, for the standard warp
+    pub passes: u32,
+    /// Star Rail Special Passes, for event warps
+    pub special_passes: u32,
+    pub undying_starlight: u32,
+}
+
+/// What the window shows
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Screen {
+    #[default]
+    Main,
+    /// The warp screen, over the whole window
+    Warps,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,6 +231,7 @@ pub enum Update {
 pub enum Panel {
     Settings,
     Logs,
+    Warps,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,6 +260,8 @@ pub enum Stage {
 impl Ui {
     pub fn new(settings: Settings) -> Self {
         Self {
+            screen: Screen::Main,
+            art: None,
             capture: Capture::default(),
             accounts: Vec::new(),
             selected: None,
@@ -190,6 +287,7 @@ impl Ui {
             background_loader: None,
             background_loading: None,
             background_error: None,
+            warps: Warps::default(),
         }
     }
 
@@ -285,7 +383,8 @@ impl Ui {
             SessionEvent::PacketsDecoded(_)
             | SessionEvent::AccountSeen { .. }
             | SessionEvent::LoginFinished
-            | SessionEvent::DecodeError => {}
+            | SessionEvent::DecodeError
+            | SessionEvent::Warp(_) => {}
         }
         before != (capture.connected, capture.stalled, capture.unsupported)
     }
@@ -316,6 +415,152 @@ impl Ui {
         self.selected = Some(uid);
         if let Some(services) = &self.services {
             services.select_account(uid);
+        }
+        self.warp_command(WarpCommand::Show(uid));
+    }
+
+    // Warps
+
+    /// The account the warp tracker shows: the selected one, or the one with the latest warps
+    pub fn warps_uid(&self) -> Option<u32> {
+        self.selected.or_else(|| self.warps.accounts.first().copied())
+    }
+
+    pub fn warps_summary(&self) -> Option<&Summary> {
+        self.warps.summaries.get(&self.warps_uid()?)
+    }
+
+    /// What the account the warp tracker shows has to warp with, when it logged in this run
+    pub fn warp_funds(&self) -> Option<Funds> {
+        let uid = self.warps_uid()?;
+        let account = self.accounts.iter().find(|a| a.uid == uid)?;
+        Some(account.inventory?.funds)
+    }
+
+    pub fn open_warps(&mut self) {
+        self.screen = Screen::Warps;
+        self.panel = None;
+        // Opens on the pool pulled on last
+        if let Some(summary) = self.warps_summary()
+            && let Some(latest) = summary
+                .pools
+                .iter()
+                .filter_map(|p| p.recent.first().map(|(pull, _, _)| (pull.sort_key(), p.pool)))
+                .max()
+        {
+            self.warps.pool = latest.1;
+        }
+    }
+
+    /// What the account the warp screen shows owns, when it logged in this run
+    pub fn warp_roster(&self) -> Option<&Roster> {
+        self.warps.rosters.get(&self.warps_uid()?)
+    }
+
+    pub fn roster_changed(&mut self, uid: u32, roster: Roster) -> bool {
+        if self.warps.rosters.get(&uid) == Some(&roster) {
+            return false;
+        }
+        self.warps.rosters.insert(uid, roster);
+        true
+    }
+
+    pub fn close_warps(&mut self) {
+        self.screen = Screen::Main;
+        if self.panel == Some(Panel::Warps) {
+            self.panel = None;
+        }
+    }
+
+    /// Hands art that arrived to Rune. True when there was any
+    pub fn art_ready(&mut self) -> bool {
+        self.art.as_ref().is_some_and(|art| art.take_done())
+    }
+
+    fn warp_command(&self, command: WarpCommand) {
+        if let Some(services) = &self.services {
+            services.warps.send(command);
+        }
+    }
+
+    /// Takes what the warp database reports
+    pub fn warp_update(&mut self, update: WarpUpdate, tx: &mut Tx) {
+        match update {
+            WarpUpdate::Unavailable(error) => self.warps.unavailable = Some(error),
+            WarpUpdate::Accounts(accounts) => {
+                self.warps.accounts = accounts;
+                if let Some(uid) = self.warps_uid()
+                    && !self.warps.summaries.contains_key(&uid)
+                {
+                    self.warp_command(WarpCommand::Show(uid));
+                }
+            }
+            WarpUpdate::Summary(summary) => {
+                // A pool the account never pulled on drops out of the tabs
+                if summary.uid == self.warps_uid().unwrap_or(summary.uid) && summary.pool(self.warps.pool).is_none() {
+                    self.warps.pool = Pool::Character;
+                }
+                self.warps.summaries.insert(summary.uid, *summary);
+            }
+            WarpUpdate::Busy(busy) => self.warps.busy = busy,
+            WarpUpdate::Notice { title, detail, error } => self.notify(title, detail, error, None, tx),
+            WarpUpdate::ChooseProfile { path, uid, profiles } => {
+                self.warps.choose = Some(ProfilePick { path, uid, profiles });
+                self.panel = Some(Panel::Warps);
+            }
+        }
+    }
+
+    pub fn sync_warps(&mut self) {
+        if let Some(uid) = self.warps_uid() {
+            self.warps.busy = Some("Syncing…".into());
+            self.warp_command(WarpCommand::Sync(uid));
+        }
+    }
+
+    pub fn find_cached_key(&mut self) {
+        self.warps.busy = Some("Looking in the game's cache…".into());
+        self.warp_command(WarpCommand::FindCachedKey);
+    }
+
+    pub fn use_history_link(&mut self) {
+        let link = self.warps.link_edit.text.trim().to_string();
+        if link.is_empty() {
+            return;
+        }
+        self.warps.link_edit.replace_text("");
+        self.warps.busy = Some("Checking the link…".into());
+        self.warp_command(WarpCommand::UseLink(link));
+    }
+
+    /// Asks for a Star Rail Station backup, then imports it into the account the tracker shows
+    pub fn import_srs(&mut self, tx: &mut Tx) {
+        let Some(uid) = self.warps_uid() else {
+            return;
+        };
+        let options = FileDialogOptions {
+            title: "Import a Star Rail Station backup".into(),
+            ..Default::default()
+        }
+        .filter("Star Rail Station backups", &["dat"]);
+        tx.open_file(options, move |s: &mut Ui, result, tx| {
+            if let Some(path) = s.dialog_path(result, tx) {
+                s.warps.choose = None;
+                s.warp_command(WarpCommand::ImportSrs { path, uid, profile: None });
+            }
+        });
+    }
+
+    pub fn choose_profile(&mut self, key: Option<String>) {
+        let Some(pick) = self.warps.choose.take() else {
+            return;
+        };
+        if let Some(key) = key {
+            self.warp_command(WarpCommand::ImportSrs {
+                path: pick.path,
+                uid: pick.uid,
+                profile: Some(key),
+            });
         }
     }
 
@@ -668,13 +913,10 @@ mod tests {
     fn the_latest_login_is_selected_and_its_data_starts_over() {
         let mut ui = ui();
         ui.account_logged_in(1);
-        ui.inventory_changed(
-            1,
-            Inventory {
-                relics: 3,
-                ..Default::default()
-            },
-        );
+        ui.inventory_changed(1, Inventory {
+            relics: 3,
+            ..Default::default()
+        });
         ui.account_logged_in(2);
         assert_eq!(ui.stage(), Stage::Reading { uid: 2 });
 
@@ -693,6 +935,7 @@ mod tests {
             light_cones: 2,
             characters: 3,
             materials: 4,
+            funds: Funds::default(),
         };
         assert!(ui.inventory_changed(7, inventory));
         assert!(!ui.inventory_changed(7, inventory));

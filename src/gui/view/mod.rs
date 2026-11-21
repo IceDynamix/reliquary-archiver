@@ -2,13 +2,13 @@
 //! anchored where the user put them, and capture files and help along the bottom. Settings and
 //! logs open over it as sheets.
 
+use parts::{Pill, pill, plate, ring_button};
 use rune::{Cx, El, SurfaceFit, Tx, col, el, icon, row, text};
 
 use super::icons;
 use super::settings::{ImageFit, ThemeMode};
-use super::state::{LiveSync, Notice, Panel, Ui, Update};
+use super::state::{LiveSync, Notice, Panel, Screen, Ui, Update};
 use super::theme::{self, Theme};
-use parts::{Pill, pill, plate, ring_button};
 
 mod delivery;
 mod logs;
@@ -16,6 +16,8 @@ pub mod parts;
 mod settings;
 mod sky;
 mod status;
+mod warp_screen;
+mod warps;
 
 const GITHUB_URL: &str = "https://github.com/IceDynamix/reliquary-archiver";
 const RELEASES_URL: &str = "https://github.com/IceDynamix/reliquary-archiver/releases/latest";
@@ -41,7 +43,8 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
         .gap(22.0)
         .children(update_banner(s, cx, &t))
         .child(status::view(s, cx, &t))
-        .child(delivery::view(s, cx, &t));
+        .child(delivery::view(s, cx, &t))
+        .child(warps::plate_view(s, cx, &t));
 
     // The space between header and footer, with the plates placed in it as the settings say
     let (column, row) = s.settings.card_anchor.cell();
@@ -68,11 +71,12 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
         .child(footer(s, cx, &t));
 
     // A warm light from the top right, like a nebula over the dark
-    let mut page = el().key("page").w_full().h_full().fill(t.bg).radial_gradient(
-        [1.0, 0.0],
-        [620.0, 520.0],
-        [(0.0, t.accent.alpha(0.1)), (1.0, t.accent.alpha(0.0))],
-    );
+    let mut page = el()
+        .key("page")
+        .w_full()
+        .h_full()
+        .fill(t.bg)
+        .radial_gradient([1.0, 0.0], [620.0, 520.0], [(0.0, t.accent.alpha(0.1)), (1.0, t.accent.alpha(0.0))]);
     page = match background(s, cx, &t) {
         Some(background) => page.child(background),
         None => {
@@ -80,10 +84,16 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
             page.child(sky::sky(w, h, &t))
         }
     };
-    let page = page.child(content);
+    // The warp screen takes the window over, inside the page so it can read the window's size
+    let page = if s.screen == Screen::Warps {
+        page.child(warp_screen::screen(s, cx, &t).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
+    } else {
+        page.child(content)
+    };
 
     settings::dialog(s, cx, &t, &mut layer);
     logs::dialog(s, cx, &t, &mut layer);
+    warps::dialog(s, cx, &t, &mut layer);
     if let Some(notice) = &s.notice {
         layer.push(notice_band(notice, cx, &t));
     }
@@ -201,21 +211,17 @@ fn sync_counter(s: &Ui, t: &Theme) -> El {
 
 fn update_banner(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
     let (title, actions) = match &s.update {
-        Update::Available { version } if !s.update_dismissed => (
-            format!("Version {version} is ready to install"),
-            vec![
-                pill("update-later", "Later", None, Pill::Quiet, true, t, |s, _| {
-                    s.update_dismissed = true
-                }),
-                pill("update-now", "Update", Some(&icons::ARROW_UP), Pill::Primary, true, t, |s, _| {
-                    s.install_update()
-                }),
-            ],
-        ),
-        Update::Installing => (
-            "Installing, the archiver restarts by itself".to_string(),
-            vec![rune_kit::Spinner::new().size(16.0).color(t.accent).build(&t.kit)],
-        ),
+        Update::Available { version } if !s.update_dismissed => (format!("Version {version} is ready to install"), vec![
+            pill("update-later", "Later", None, Pill::Quiet, true, t, |s, _| {
+                s.update_dismissed = true
+            }),
+            pill("update-now", "Update", Some(&icons::ARROW_UP), Pill::Primary, true, t, |s, _| {
+                s.install_update()
+            }),
+        ]),
+        Update::Installing => ("Installing, the archiver restarts by itself".to_string(), vec![
+            rune_kit::Spinner::new().size(16.0).color(t.accent).build(&t.kit),
+        ]),
         _ => return None,
     };
 

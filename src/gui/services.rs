@@ -32,6 +32,8 @@ pub struct Services {
     pub no_update: bool,
     /// Kept for as long as the app runs, dropping it removes the icon
     pub _tray: Option<rune::Tray>,
+    /// The warp database
+    pub warps: crate::warps::service::WarpService,
 }
 
 /// The Save dialog for an export
