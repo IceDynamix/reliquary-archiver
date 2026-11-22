@@ -6,7 +6,7 @@
 use rune::{Color, Cx, El, Icon, ScrollSpec, Tx, col, el, icon, row, text};
 use rune_kit::{SegmentedControl, TextInput};
 
-use super::parts::{Pill, Sheet, TileLook, kicker, pill, plate, ring_button, rule, sheet, tab, tile};
+use super::parts::{Pill, Sheet, TileLook, kicker, pill, ring_button, rule, sheet, stub_perforation, tab, ticket, tile};
 use crate::gui::icons;
 use crate::gui::state::{Panel, Ui};
 use crate::gui::theme::{self, Theme};
@@ -31,22 +31,24 @@ pub fn plate_view(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
 
     let open = ring_button("open-warps", &icons::CHEVRON, "Open the warp screen", false, t, |s| s.open_warps());
 
-    plate("warps", cx, t)
+    // A warp ticket: the pity on its face, the way in on its stub
+    const STUB: f32 = 72.0;
+    ticket("warps", &["warps-perforation"], cx, t)
         .w_full()
         .child(tab("warps-tab", "Warps", t.secondary, cx, t))
         .child(
             row()
                 .w_full()
-                .pl(22.0)
-                .pr(14.0)
-                .pt(8.0)
-                .gap(10.0)
-                .center_y()
-                .children(counters)
-                .child(el().w(1.0).h(40.0).fill(t.line))
-                .child(open),
+                .child(
+                    col()
+                        .grow(1.0)
+                        .min_w(0.0)
+                        .child(row().w_full().pl(22.0).pr(12.0).pt(8.0).gap(10.0).center_y().children(counters))
+                        .child(status_line(s, t).pl(22.0).pr(12.0).pt(8.0).pb(14.0)),
+                )
+                .child(col().w(STUB).self_stretch().center().child(open)),
         )
-        .child(status_line(s, t).px(22.0).pt(8.0).pb(14.0))
+        .child(stub_perforation("warps-perforation", STUB, cx, t))
 }
 
 /// The plate's pity numbers, smaller than the status plate's figures
@@ -78,7 +80,7 @@ fn counter(pool: Pool, label: &str, stats: Option<&PoolStats>, t: &Theme) -> El 
         .grow(1.0)
         .min_w(0.0)
         .gap(1.0)
-        .child(kicker(label, t.secondary))
+        .child(kicker(label, t.muted))
         .child(number)
         .child(foot)
 }

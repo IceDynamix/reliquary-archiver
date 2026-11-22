@@ -485,6 +485,11 @@ impl Ui {
 
     /// Takes what the warp database reports
     pub fn warp_update(&mut self, update: WarpUpdate, tx: &mut Tx) {
+        // What the warp database reports changes what's shown: let it come in on its transitions,
+        // which Rune skips for changes no input caused
+        if matches!(update, WarpUpdate::Summary(_) | WarpUpdate::Accounts(_)) {
+            tx.animated();
+        }
         match update {
             WarpUpdate::Unavailable(error) => self.warps.unavailable = Some(error),
             WarpUpdate::Accounts(accounts) => {

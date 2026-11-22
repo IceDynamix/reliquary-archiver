@@ -36,8 +36,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
     let t = Theme::new(dark, s.settings.accent, s.background_image().is_some());
     let mut layer = Vec::new();
 
-    let cards = col()
-        .key("cards")
+    let cards = parts::plate_stack("cards", cx, &t)
         .w_full()
         .max_w(CARD_WIDTH)
         .gap(22.0)
@@ -68,7 +67,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
         .gap(14.0)
         .child(header(s, &t))
         .child(stage.child(cards))
-        .child(footer(s, cx, &t));
+        .child(footer(s, &t));
 
     // A warm light from the top right, like a nebula over the dark
     let mut page = el()
@@ -244,28 +243,15 @@ fn update_banner(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
     )
 }
 
-fn footer(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
+fn footer(s: &Ui, t: &Theme) -> El {
     // A small plate like the game's side entrances: icon, label, chevron
     let label = if s.reading_file {
         "Reading capture file…"
     } else {
         "Open capture file"
     };
-    let mut open_file = plate("open-capture-file", cx, t)
-        .role("button")
-        .label(label)
-        .help("Read a recording made with Wireshark or pktmon instead of capturing live")
-        .child(
-            row()
-                .h(38.0)
-                .pl(14.0)
-                .pr(12.0)
-                .gap(10.0)
-                .center_y()
-                .child(icon(&icons::FOLDER, 16.0).color(t.accent))
-                .child(text(label).font(theme::LABEL).color(t.text))
-                .child(icon(&icons::CHEVRON, 14.0).color(t.accent)),
-        );
+    let mut open_file = parts::entry("open-capture-file", &icons::FOLDER, label, t)
+        .help("Read a recording made with Wireshark or pktmon instead of capturing live");
     if s.reading_file {
         open_file = open_file.disabled(true).opacity(0.5);
     } else {

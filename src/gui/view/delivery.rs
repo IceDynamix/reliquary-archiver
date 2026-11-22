@@ -4,17 +4,17 @@
 
 use rune::{Cx, El, Icon, Tx, col, el, icon, row, text};
 
-use super::parts::{Pill, pill, plate, rule, tab};
+use super::parts::{Pill, perforation, pill, tab, ticket};
 use crate::gui::icons;
 use crate::gui::state::{LiveSync, Panel, Stage, Ui};
 use crate::gui::theme::{self, Theme};
 
 pub fn view(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
-    plate("delivery", cx, t)
+    ticket("delivery", &["delivery-perforation"], cx, t)
         .w_full()
         .child(tab("delivery-tab", "Send to the optimizer", t.secondary, cx, t))
         .child(live_sync(s, t))
-        .child(el().w_full().px(22.0).child(rule(t)))
+        .child(perforation("delivery-perforation", cx, t))
         .child(export_file(s, t))
 }
 
@@ -119,7 +119,7 @@ fn option_row(key: &'static str, glyph: &'static Icon, title: &'static str, deta
                 .grow(1.0)
                 .min_w(0.0)
                 .gap(3.0)
-                .child(text(title).font(theme::TITLE).color(t.accent))
+                .child(text(title).font(theme::TITLE).color(t.text))
                 .child(detail),
         );
     if let Some(action) = action {

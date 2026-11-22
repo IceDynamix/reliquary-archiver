@@ -70,10 +70,16 @@ pub fn run(tap: Tap, options: Options) {
     let spec = AppSpec {
         min_size: Some((420.0, 620.0)),
         scenes: scenes::SCENES,
-        poll: Some(|s: &mut Ui, _, _| {
+        poll: Some(|s: &mut Ui, _, tx| {
             let expired = s.expire(Instant::now());
             let art = s.art_ready();
-            s.background_ready() || expired || art
+            let background = s.background_ready();
+            // Art and backgrounds arriving come in on their transitions. Rune lands a change no
+            // input caused at once unless it's told otherwise
+            if art || background {
+                tx.animated();
+            }
+            background || expired || art
         }),
         setup: Some(|s: &mut Ui, waker| {
             s.images = Some(rune::ImageCache::new(waker.clone()));

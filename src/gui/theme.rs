@@ -55,9 +55,8 @@ pub struct Theme {
     /// A tile's bone face, and its lower edge where the light falls off
     pub bone: Color,
     pub bone_shade: Color,
-    /// The back of this tile set, the deep version of the accent, and its lower edge
+    /// The back of this tile set, the deep version of the accent
     pub tile_back: Color,
-    pub tile_back_edge: Color,
 }
 
 /// How an accent is made, in OKLCH
@@ -180,7 +179,6 @@ impl Theme {
                 bone: oklch(0.93, 0.012, 88.0),
                 bone_shade: oklch(0.87, 0.016, 85.0),
                 tile_back: tile_back(accent, true).0,
-                tile_back_edge: tile_back(accent, true).1,
             }
         } else {
             let panel = tint(0.99, 0.006);
@@ -208,7 +206,6 @@ impl Theme {
                 bone: oklch(0.985, 0.008, 88.0),
                 bone_shade: oklch(0.93, 0.014, 85.0),
                 tile_back: tile_back(accent, false).0,
-                tile_back_edge: tile_back(accent, false).1,
             }
         };
         theme.with_kit()
