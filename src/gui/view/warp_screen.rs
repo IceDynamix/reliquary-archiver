@@ -62,6 +62,8 @@ const SELECTED_LEFT: f32 = 1.0;
 const SELECTED_BELOW: f32 = 17.0;
 /// Room above the rail for the tallest head
 const HEADROOM: f32 = 46.0;
+/// Where the art's room starts from the top, under the header
+const ART_TOP: f32 = 64.0;
 /// The banner's motif behind the warp card, at this share of its size on the game's reference
 /// screen: smaller than there, as texture rather than picture
 const MOTIF_SCALE: f32 = 1.0;
@@ -95,8 +97,8 @@ impl Fit {
     /// The card's width in a window `width` wide, side by side
     fn card(self, width: f32) -> f32 {
         match self {
-            Fit::Wide => (width * 0.36).clamp(380.0, 480.0),
-            _ => (width * 0.44).clamp(360.0, 440.0),
+            Fit::Wide => (width * 0.3).clamp(360.0, 420.0),
+            _ => (width * 0.4).clamp(340.0, 400.0),
         }
     }
 
@@ -104,8 +106,18 @@ impl Fit {
     fn art_from(self, width: f32) -> f32 {
         match self {
             Fit::Narrow => 0.0,
-            _ => PAD + self.ticket()[0] + GAP + self.card(width) + GAP,
+            _ => self.card_from() + self.card(width) + GAP,
         }
+    }
+
+    /// Where the card starts, from the window's left: past the rail
+    fn card_from(self) -> f32 {
+        PAD + self.ticket()[0] + GAP
+    }
+
+    /// Where the room the art is sized and centred in starts: past the card
+    fn stage_from(self, width: f32) -> f32 {
+        self.card_from() + self.card(width)
     }
 }
 
@@ -347,7 +359,7 @@ fn backdrop(s: &Ui, view: &View, t: &Theme) -> El {
         full()
             .key("backdrop-dim")
             .transition(Transition::none())
-            .fill(t.bg.alpha(if t.dark { 0.45 } else { 0.3 })),
+            .fill(t.bg.alpha(if t.dark { 0.15 } else { 0.1 })),
     )
 }
 
@@ -362,9 +374,10 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
         && let Some(main) = art.layer(Layer::Main)
         && let Some(main_on_screen) = main.on_screen
     {
-        // Side by side: the game's screen scaled to cover the window, as it is in game, moved so
-        // the character stands in the middle of the room the rail and card leave it. Narrow: the
-        // character fitted into the band under the tickets
+        // Side by side: the game's screen at the scale that covers the window, as in game, unless
+        // the character would then overflow the room right of the card; then smaller, so the whole
+        // of them fits. They stand in the middle of that room. Narrow: the character fitted into
+        // the band under the tickets
         let scale = main_on_screen[2] / main.canvas[0];
         let shown = [
             main_on_screen[0] + main.rect[0] * scale,
@@ -373,10 +386,12 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
             main.rect[3] * scale,
         ];
         let (k, ox, oy) = if wide {
-            let k = (width / REFERENCE[0]).max(height / REFERENCE[1]);
-            let room = fit.art_from(width);
-            let centre = (room + width) / 2.0;
-            (k, centre - (shown[0] + shown[2] / 2.0) * k, (height - REFERENCE[1] * k) / 2.0)
+            let room = fit.stage_from(width);
+            let (room_w, room_h) = ((width - room - PAD).max(1.0), (height - ART_TOP - PAD).max(1.0));
+            let cover = (width / REFERENCE[0]).max(height / REFERENCE[1]);
+            let k = cover.min(room_w / shown[2]).min(room_h / shown[3]);
+            let centre = [(room + width - PAD) / 2.0, ART_TOP + room_h / 2.0];
+            (k, centre[0] - (shown[0] + shown[2] / 2.0) * k, centre[1] - (shown[1] + shown[3] / 2.0) * k)
         } else {
             let band = narrow_band(height);
             let top = 14.0 + 40.0 + 18.0 + COMPACT_TICKET[1] + 18.0;
@@ -437,10 +452,11 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
                 .springs(art_springs()),
         );
     if wide {
-        let room = fit.art_from(width);
-        let side = (height * 1.05).min((width - room) * 1.2).max(240.0);
-        let x = ((room + width) / 2.0 - side / 2.0).min(width - side * 0.8);
-        stage.child(picture.pin(Some(x), Some((height - side) / 2.0), None, None).size(side, side))
+        let room = fit.stage_from(width);
+        let side = (height - ART_TOP - PAD).min(width - room - PAD).max(240.0);
+        let x = (room + width - PAD) / 2.0 - side / 2.0;
+        let y = ART_TOP + (height - ART_TOP - PAD - side) / 2.0;
+        stage.child(picture.pin(Some(x), Some(y), None, None).size(side, side))
     } else {
         let side = narrow_band(height) * 1.25;
         let top = 14.0 + 40.0 + 18.0 + COMPACT_TICKET[1];
