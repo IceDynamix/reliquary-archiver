@@ -82,6 +82,8 @@ pub enum Layer {
     /// The character or light cone
     Main,
     Front,
+    /// A second front, over the first: some collab banners have two
+    Front2,
     /// The banner's ticket on the warp screen's tabs, and as it shows selected: whole pictures,
     /// not pieces of the canvas
     Tab,
@@ -95,6 +97,7 @@ impl Layer {
             "bg" => Layer::Back,
             "avatar" | "light_cone" => Layer::Main,
             "front" => Layer::Front,
+            "front2" => Layer::Front2,
             "tab" => Layer::Tab,
             "tab_selected" => Layer::TabSelected,
             _ => return None,

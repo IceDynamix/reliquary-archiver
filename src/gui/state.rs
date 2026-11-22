@@ -537,7 +537,7 @@ impl Ui {
             }
             match art.banner(item).filter(|banner| banner.placed()) {
                 Some(banner) => {
-                    for layer in [Layer::Backdrop, Layer::Back, Layer::Main, Layer::Front] {
+                    for layer in [Layer::Backdrop, Layer::Back, Layer::Main, Layer::Front, Layer::Front2] {
                         if banner.layer(layer).is_some() {
                             let _ = art.get(Art::Layer(item, layer));
                         }

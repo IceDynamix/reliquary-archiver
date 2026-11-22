@@ -457,7 +457,7 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
             let oy = top - shown[1] * k;
             (k, ox, oy)
         };
-        let order = [Layer::Back, Layer::Main, Layer::Front];
+        let order = [Layer::Back, Layer::Main, Layer::Front, Layer::Front2];
         for (i, layer) in order.into_iter().enumerate() {
             let Some(placed) = art.layer(layer) else { continue };
             let Some(on_screen) = placed.on_screen else { continue };
@@ -469,7 +469,7 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
                 ox + (on_screen[0] + placed.rect[0] * on_screen[2] / placed.canvas[0]) * k,
                 oy + (on_screen[1] + placed.rect[1] * on_screen[3] / placed.canvas[1]) * k,
             );
-            let travel = LAYER_TRAVEL[i] * k * 1.6;
+            let travel = LAYER_TRAVEL[i.min(LAYER_TRAVEL.len() - 1)] * k * 1.6;
             stage = stage.child(
                 el().key(format!("layer-{item}-{layer:?}"))
                     .pin(Some(x), Some(y), None, None)
@@ -1378,7 +1378,7 @@ fn history_strip(view: &View, width: f32, t: &Theme) -> El {
         el().key(format!("five-{}-{}", five.time, five.item_id))
             .w(bar_w)
             .h(4.0 + (tall - 4.0) * (five.pity as f32 / hard).min(1.0))
-            .corners([bar_w / 2.0, bar_w / 2.0, 0.0, 0.0])
+            // .corners([bar_w / 2.0, bar_w / 2.0, 0.0, 0.0])
             .fill(outcome_color(five.outcome, t).alpha(if five.confirmed { 0.78 } else { 0.4 }))
             .help(format!(
                 "{}  ·  pity {}{outcome}  ·  {when}",
