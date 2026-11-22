@@ -210,15 +210,12 @@ async fn run(args: Args) {
             }
         };
 
-        gui::run(
-            tap,
-            gui::Options {
-                needs_admin,
-                no_update: args.no_update,
-                ui_args: args.ui.clone().unwrap_or_default(),
-                test_controller: args.test_controller,
-            },
-        );
+        gui::run(tap, gui::Options {
+            needs_admin,
+            no_update: args.no_update,
+            ui_args: args.ui.clone().unwrap_or_default(),
+            test_controller: args.test_controller,
+        });
 
         // Check if we need to spawn the updated version after GUI exits
         #[cfg(windows)]

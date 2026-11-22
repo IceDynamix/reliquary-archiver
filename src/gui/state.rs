@@ -517,14 +517,22 @@ impl Ui {
             .pools
             .iter()
             .filter_map(|stats| Ticket::of(summary, stats.pool, None))
-            .chain(summary.banners.iter().flat_map(|b| b.fives.iter().map(|&item| Ticket::Banner(item))));
+            .chain(
+                summary
+                    .banners
+                    .iter()
+                    .flat_map(|b| b.fives.iter().map(|&item| Ticket::Banner(item))),
+            );
         for ticket in tickets {
             for selected in [false, true] {
                 let _ = art.get(Art::Ticket(ticket, selected));
             }
         }
         let shown = |item: u32| {
-            if art.banner(item).is_some_and(|banner| banner.surface.as_ref().is_some_and(|s| s.pattern.is_some())) {
+            if art
+                .banner(item)
+                .is_some_and(|banner| banner.surface.as_ref().is_some_and(|s| s.pattern.is_some()))
+            {
                 let _ = art.get(Art::Pattern(item));
             }
             match art.banner(item).filter(|banner| banner.placed()) {

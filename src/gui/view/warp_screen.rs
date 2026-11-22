@@ -72,6 +72,13 @@ const MOTIF_SCALE: f32 = 1.0;
 /// without one the core of their opacity
 const FIGURE_AREA: f32 = 0.3;
 const CORE_AREA: f32 = 0.34;
+/// The share of the room their head takes, as the person's box takes `FIGURE_AREA` for the
+/// typical character
+const HEAD_AREA: f32 = 0.0104;
+/// How much the head decides a character's size against their person's box, which a sprawled
+/// pose widens. Only ever to draw them larger: a big head is a close crop, which the box already
+/// sizes well
+const HEAD_SHARE: f32 = 1.0;
 /// How far past the game's own scale a character with a small core may be drawn
 const MAX_ZOOM: f32 = 1.5;
 
@@ -400,8 +407,9 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
             match main.weight {
                 // Placed on the character themselves: their person's box (or without one, the core
                 // of their opacity, the body without the props and effects reaching out from it)
-                // takes the same share of the room for everyone, or fills it when it's much longer
-                // one way, and whatever reaches out past the room falls off it. They stand in the
+                // takes the same share of the room for everyone, drawn larger by their head's size when
+                // a sprawled pose widens the box, or fills it when it's
+                // much longer one way, and whatever reaches out past the room falls off it. They stand in the
                 // room's middle: the person's box centred, or the centre of their opacity across and
                 // the core's middle up and down
                 Some(weight) => {
@@ -422,8 +430,14 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
                         None => at(weight.centre[0], weight.centre[1])[0],
                     };
                     let (figure_w, figure_h) = (x1 - x0, y1 - y0);
-                    let k = (area * room_w * room_h / (figure_w * figure_h))
-                        .sqrt()
+                    let by_figure = (area * room_w * room_h / (figure_w * figure_h)).sqrt();
+                    let by_head = weight.person.and(weight.head).map(|head| {
+                        let (head_w, head_h) = (head[2] * scale, head[3] * main_on_screen[3] / main.canvas[1]);
+                        (HEAD_AREA * room_w * room_h / (head_w * head_h)).sqrt()
+                    });
+                    let k = by_head
+                        .map_or(by_figure, |by_head| by_figure.powf(1.0 - HEAD_SHARE) * by_head.powf(HEAD_SHARE))
+                        .max(by_figure)
                         .min(room_w / figure_w)
                         .min(room_h / figure_h)
                         .min(cover * MAX_ZOOM);

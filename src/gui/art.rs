@@ -196,6 +196,8 @@ pub struct Weight {
     /// The character themselves, as an anime person detector found them: without the scenery and
     /// effects drawn in the same layer, which opacity can't tell from them
     pub person: Option<[f32; 4]>,
+    /// Their head, which stays much the same size however they're posed
+    pub head: Option<[f32; 4]>,
 }
 
 impl BannerArt {
@@ -255,6 +257,9 @@ impl Manifest {
                                     centre: [c[0], c[1]],
                                     core: [k[0], k[1], k[2], k[3]],
                                     person: floats(&l["weight"]["person"])
+                                        .filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0)
+                                        .map(|v| [v[0], v[1], v[2], v[3]]),
+                                    head: floats(&l["weight"]["head"])
                                         .filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0)
                                         .map(|v| [v[0], v[1], v[2], v[3]]),
                                 }),
