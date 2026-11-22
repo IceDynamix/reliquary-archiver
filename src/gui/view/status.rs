@@ -210,13 +210,24 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
 }
 
 fn ready(s: &Ui, t: &Theme, uid: u32, inventory: Inventory) -> El {
-    // An interrupted capture still has the data from before, but the user has to relog to catch up
+    // An interrupted capture still has the data from before, but the user has to relog to catch up.
+    // So does one picked up from the last run, which missed what changed while it was closed
+    let picked_up = s.accounts.iter().any(|a| a.uid == uid && a.picked_up);
     let (kicker_text, kicker_tint, title, note, note_color): (_, Color, _, _, Color) = if s.capture.stalled {
         (
             "Capture interrupted",
             t.warn,
             "Missing recent changes",
             "Changes since the interruption aren't here. Log out to the title screen and log back in to catch up.",
+            t.text,
+        )
+    } else if picked_up {
+        (
+            "Picked up from last run",
+            t.warn,
+            "May be missing changes",
+            "The archiver restarted while you were logged in, so anything that changed while it was closed isn't here \
+             and the export may be out of date. Log out to the title screen and log back in to catch up.",
             t.text,
         )
     } else {

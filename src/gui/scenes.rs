@@ -53,6 +53,11 @@ pub const SCENES: &[Scene] = &[
         logged_in(s, UID, Some(INVENTORY));
         s.capture.stalled = true;
     }),
+    ("picked-up", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        s.accounts[0].picked_up = true;
+    }),
     ("unsupported", |s| {
         running(s, 0);
         s.updates_supported = true;
@@ -340,7 +345,11 @@ fn roster(s: &mut Ui) {
 
 fn logged_in(s: &mut Ui, uid: u32, inventory: Option<Inventory>) {
     s.capture.connected = true;
-    s.accounts.push(Account { uid, inventory });
+    s.accounts.push(Account {
+        uid,
+        inventory,
+        picked_up: false,
+    });
     s.selected = Some(uid);
 }
 

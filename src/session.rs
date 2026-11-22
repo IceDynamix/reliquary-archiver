@@ -67,6 +67,13 @@ pub enum SessionEvent {
     },
     /// The game finished sending its login data
     LoginFinished,
+    /// An account's connection was picked up from the last run (see
+    /// [`CaptureSession::resume_from`]), right after its [`SessionEvent::AccountSeen`]. Its data
+    /// is what was kept then: whatever changed while the archiver was closed is missing until
+    /// it logs in again, which brings a plain [`SessionEvent::AccountSeen`].
+    PickedUp {
+        uid: u32,
+    },
     /// The traffic can't be decrypted, which means the game version is not supported
     DecryptionKeyMissing,
     /// A packet or command could not be decoded, capturing can continue
@@ -195,6 +202,7 @@ impl CaptureSession {
         self.manager.lock().await.register_uid(conv_id, saved.uid);
         self.latest_uid = Some(saved.uid);
         events.push(SessionEvent::AccountSeen { uid: saved.uid });
+        events.push(SessionEvent::PickedUp { uid: saved.uid });
         if exporter.lock().await.is_initialized() {
             events.push(SessionEvent::LoginFinished);
         }
@@ -718,6 +726,7 @@ mod tests {
         }
 
         assert!(second_events.contains(&SessionEvent::AccountSeen { uid }));
+        assert!(second_events.contains(&SessionEvent::PickedUp { uid }));
         assert!(second.is_initialized().await);
         assert!(!pulls(&second_events).is_empty(), "the warps after the restart are seen");
         assert!(pulls(&whole_events).ends_with(&pulls(&second_events)));
