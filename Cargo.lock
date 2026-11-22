@@ -2371,8 +2371,6 @@ dependencies = [
 [[package]]
 name = "kcp"
 version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e387a924f42063d380be14857714a2f0c177e44dbeab8895244e5370d8a8e68"
 dependencies = [
  "bytes",
  "log",

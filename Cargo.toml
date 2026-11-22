@@ -25,7 +25,7 @@ ureq = "2.12.1"
 rusqlite = { optional = true, version = "0.43", features = ["bundled"] }
 # Star Rail Station backups are lz-string compressed
 lz-str = { optional = true, version = "0.2.1" }
-# Path while DoGachaCsReq waits for a reliquary release (it joined the proto-rqa set)
+# Path while reliquary's session-resume branch waits for a release (see AGENTS.md)
 reliquary = { path = "../reliquary", features = [
     "proto-rqa",
     "proto-auth",
@@ -64,7 +64,7 @@ windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-# Path while DoGachaCsReq waits for a reliquary release (it joined the proto-rqa set)
+# Path while reliquary's session-resume branch waits for a release (see AGENTS.md)
 reliquary = { path = "../reliquary", features = [
     "proto-rqa",
     "proto-auth",

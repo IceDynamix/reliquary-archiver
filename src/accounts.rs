@@ -93,6 +93,11 @@ impl MultiAccountManager {
         self.event_tx.send(event).ok();
     }
 
+    /// The exporter of a conversation, if it has one
+    pub fn get_conv_exporter(&self, conv_id: u32) -> Option<Arc<Mutex<OptimizerExporter>>> {
+        self.exporters.get(&conv_id).cloned()
+    }
+
     /// Get the exporter for a specific UID
     pub fn get_account_exporter(&self, uid: u32) -> Option<Arc<Mutex<OptimizerExporter>>> {
         self.uid_to_conv.get(&uid).and_then(|conv_id| self.exporters.get(conv_id)).cloned()
