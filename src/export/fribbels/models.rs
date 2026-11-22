@@ -29,14 +29,14 @@ pub struct GachaFunds {
     pub oneric_shards: u32,
 }
 
-#[derive(Serialize, Debug, Clone, Copy)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
 pub enum BannerType {
     Character,
     LightCone,
     Standard,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BannerInfo {
     pub rate_up_item_list: Vec<u32>,
     pub banner_type: BannerType,
@@ -132,13 +132,18 @@ pub struct Material {
     pub expire_time: Option<u64>,
 }
 
+/// A relic slot as the export names it. An alias because serde takes a field written `&str` to
+/// borrow from what it reads, which would keep relics from being read back from kept state
+pub type SlotName = &'static str;
+
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Relic {
     #[serde_as(as = "DisplayFromStr")]
     pub set_id: u32,
     pub name: String,
-    pub slot: &'static str,
+    #[serde(deserialize_with = "super::utils::deserialize_slot")]
+    pub slot: SlotName,
     pub rarity: u32,
     pub level: u32,
     pub mainstat: String,
@@ -222,7 +227,7 @@ pub struct Traces {
     pub stat_9: bool,
     pub stat_10: bool,
     pub special: bool,
-    #[serde(skip_serializing_if = "<&bool>::not")]
+    #[serde(default, skip_serializing_if = "<&bool>::not")]
     pub elation_debt: bool,
 }
 
@@ -236,4 +241,35 @@ impl Memosprite {
     pub fn if_present(self) -> Option<Memosprite> {
         if self.skill == 0 && self.talent == 0 { None } else { Some(self) }
     }
+}
+
+/// What an exporter has captured, in its own terms rather than the game's: kept between runs, a
+/// new game version changes the commands but not this. Change [`ExporterState::VERSION`] along
+/// with anything here that older states wouldn't read right.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ExporterState {
+    pub version: u32,
+    pub initialized: bool,
+    pub uid: Option<u32>,
+    pub trailblazer: Option<String>,
+    pub banners: std::collections::HashMap<u32, BannerInfo>,
+    pub gacha: GachaFunds,
+    pub materials: Vec<Material>,
+    pub light_cones: Vec<LightCone>,
+    pub relics: Vec<Relic>,
+    pub recon_relics: Vec<u32>,
+    pub characters: Vec<Character>,
+    pub base_avatars: std::collections::HashMap<u32, BaseAvatar>,
+    pub unresolved_multipath_characters: Vec<u32>,
+}
+
+impl ExporterState {
+    pub const VERSION: u32 = 1;
+}
+
+/// What multipath characters take from their base avatar
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BaseAvatar {
+    pub level: u32,
+    pub ascension: u32,
 }

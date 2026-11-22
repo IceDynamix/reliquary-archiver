@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::{GameCommand, command_id};
 #[cfg(feature = "stream")]
 use tokio::sync::broadcast;
@@ -26,7 +25,8 @@ pub struct OptimizerExporter {
     pub(super) recon_relics: Vec<u32>,
     /// All known characters. Level and ascension are only filled in once the base avatar is known
     pub(super) characters: BTreeMap<u32, Character>,
-    pub(super) multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    /// The level and ascension of each base avatar, which multipath characters take theirs from
+    pub(super) multipath_base_avatars: HashMap<u32, BaseAvatar>,
     /// Characters in `characters` that are still waiting for their base avatar
     pub(super) unresolved_multipath_characters: HashSet<u32>,
 
@@ -62,6 +62,77 @@ impl OptimizerExporter {
             #[cfg(feature = "stream")]
             event_channel: broadcast::channel(16).0,
         }
+    }
+
+    /// Everything captured, to keep between runs and [`restore`](Self::restore) later
+    pub fn state(&self) -> ExporterState {
+        ExporterState {
+            version: ExporterState::VERSION,
+            initialized: self.initialized,
+            uid: self.uid,
+            trailblazer: self.trailblazer.map(str::to_owned),
+            banners: self.banners.clone(),
+            gacha: self.gacha,
+            materials: self.materials.values().cloned().collect(),
+            light_cones: self.light_cones.values().cloned().collect(),
+            relics: self.relics.values().cloned().collect(),
+            recon_relics: self.recon_relics.clone(),
+            characters: self.characters.values().cloned().collect(),
+            base_avatars: self.multipath_base_avatars.clone(),
+            unresolved_multipath_characters: self.unresolved_multipath_characters.iter().copied().collect(),
+        }
+    }
+
+    /// Picks up from a [`state`](Self::state) kept earlier, as if its commands had been read
+    /// again. Returns false, leaving the exporter as it was, for a state of another version.
+    pub fn restore(&mut self, state: ExporterState) -> bool {
+        if state.version != ExporterState::VERSION {
+            warn!(
+                version = state.version,
+                "kept exporter state is of another version, not restoring it"
+            );
+            return false;
+        }
+        self.initialized = state.initialized;
+        self.uid = state.uid;
+        self.trailblazer = state
+            .trailblazer
+            .as_deref()
+            .and_then(|name| ["Stelle", "Caelus"].into_iter().find(|known| *known == name));
+        self.banners = state.banners;
+        self.gacha = state.gacha;
+        self.materials = state.materials.into_iter().map(|m| (m.id, m)).collect();
+        self.light_cones = state.light_cones.into_iter().map(|lc| (lc._uid, lc)).collect();
+        self.relics = state.relics.into_iter().map(|r| (r._uid, r)).collect();
+        self.recon_relics = state.recon_relics;
+        self.characters = state.characters.into_iter().map(|c| (c.id, c)).collect();
+        self.multipath_base_avatars = state.base_avatars;
+        self.unresolved_multipath_characters = state.unresolved_multipath_characters.into_iter().collect();
+
+        #[cfg(feature = "stream")]
+        if self.initialized {
+            self.emit_initial_scan();
+        }
+        true
+    }
+
+    /// Whether [`read_command`](Exporter::read_command) does anything with commands of this id,
+    /// so whether its [`state`](Self::state) may have changed. Keep in step with it.
+    pub fn reads(command_id: u16) -> bool {
+        matches!(
+            command_id,
+            command_id::PlayerGetTokenScRsp
+                | command_id::PlayerLoginScRsp
+                | command_id::GetBagScRsp
+                | command_id::GetAvatarDataScRsp
+                | command_id::SetAvatarEnhancedIdScRsp
+                | command_id::GetGachaInfoScRsp
+                | command_id::DoGachaScRsp
+                | command_id::PlayerSyncScNotify
+                | command_id::GetRelicBoxDataScRsp
+                | command_id::OpenRelicBoxScRsp
+                | command_id::ConfirmRelicBoxScRsp
+        )
     }
 
     /// The uid of the account, once it is known

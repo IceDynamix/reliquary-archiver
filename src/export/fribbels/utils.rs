@@ -21,6 +21,15 @@ pub fn slot_type_to_export(s: &str) -> Option<&'static str> {
     })
 }
 
+/// Reads a relic slot as [`slot_type_to_export`] writes it, for kept exporter state
+pub fn deserialize_slot<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<&'static str, D::Error> {
+    let slot = <std::borrow::Cow<str> as serde::Deserialize>::deserialize(deserializer)?;
+    ["Head", "Hands", "Body", "Feet", "Planar Sphere", "Link Rope"]
+        .into_iter()
+        .find(|known| *known == slot)
+        .ok_or_else(|| serde::de::Error::custom(format!("unknown relic slot {slot}")))
+}
+
 /// Converts main stat property from game format to export format
 pub fn main_stat_to_export(s: &str) -> Option<&'static str> {
     Some(match s {

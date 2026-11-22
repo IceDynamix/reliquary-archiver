@@ -258,3 +258,37 @@ fn banner_without_prizes_does_not_panic() {
     });
     assert!(matches!(exporter.banners[&CHARACTER_BANNER].banner_type, BannerType::Character));
 }
+
+#[test]
+fn kept_state_restores_the_same_export_and_carries_on() {
+    let mut exporter = exporter_with_banner(HIMEKO);
+    exporter.handle_player_sync(PlayerSyncScNotify {
+        relic_list: vec![relic(7, 1), relic(8, 1)],
+        ..Default::default()
+    });
+    exporter.ingest_character(&base_avatar(MARCH_7TH, 60, 5));
+    exporter.ingest_multipath_character(&path_data(MARCH_7TH));
+    // Waits for a base avatar the restored exporter has to remember it's waiting for
+    exporter.ingest_multipath_character(&path_data(HIMEKO));
+
+    let json = serde_json::to_string(&exporter.state()).unwrap();
+    let mut restored = OptimizerExporter::new();
+    assert!(restored.restore(serde_json::from_str(&json).unwrap()));
+
+    let export = |e: &OptimizerExporter| serde_json::to_value(e.export().unwrap()).unwrap();
+    assert_eq!(export(&restored), export(&exporter));
+
+    restored.ingest_character(&base_avatar(HIMEKO, 80, 6));
+    assert_eq!(restored.characters()[&HIMEKO].level, 80);
+    assert!(restored.handle_gacha(pull(&[HIMEKO])).is_some(), "the banner is still known");
+}
+
+#[test]
+fn kept_state_of_another_version_is_left_alone() {
+    let mut state = OptimizerExporter::new().state();
+    state.version += 1;
+    state.uid = Some(1);
+    let mut exporter = OptimizerExporter::new();
+    assert!(!exporter.restore(state));
+    assert_eq!(exporter.uid(), None);
+}

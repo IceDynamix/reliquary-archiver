@@ -67,8 +67,10 @@ impl OptimizerExporter {
     }
 
     pub(super) fn ingest_character(&mut self, proto_character: &ProtoCharacter) {
-        self.multipath_base_avatars
-            .insert(proto_character.base_avatar_id, proto_character.clone());
+        self.multipath_base_avatars.insert(proto_character.base_avatar_id, BaseAvatar {
+            level: proto_character.level,
+            ascension: proto_character.promotion,
+        });
 
         // Try to resolve any multipath characters that have this as their base avatar.
         for unresolved_avatar_id in self.unresolved_multipath_characters.clone().iter() {
@@ -133,7 +135,7 @@ impl OptimizerExporter {
 
         let base_avatar = self.multipath_base_avatars.get(&base_avatar_id)?;
         character.level = base_avatar.level;
-        character.ascension = base_avatar.promotion;
+        character.ascension = base_avatar.ascension;
 
         self.unresolved_multipath_characters.remove(&character_id);
 
