@@ -186,6 +186,24 @@ pub const SCENES: &[Scene] = &[
         s.screen = Screen::Warps;
         s.warps.featured.insert(crate::warps::Pool::Character, 1506);
     }),
+    // A character's banner art on its own: the one `WARP_HERO` names, as a running banner, picked
+    ("warp-screen-hero", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, true);
+        roster(s);
+        s.screen = Screen::Warps;
+        let Some(hero) = std::env::var("WARP_HERO").ok().and_then(|id| id.parse::<u32>().ok()) else {
+            return;
+        };
+        if let Some(summary) = s.warps.summaries.get_mut(&UID) {
+            let mut banner = summary.banners[0].clone();
+            banner.gacha_id = 9999;
+            banner.fives = vec![hero];
+            summary.banners.push(banner);
+        }
+        s.warps.featured.insert(crate::warps::Pool::Character, hero);
+    }),
     // Not logged in this run: no funds or roster, so no budget
     ("warp-screen-offline", |s| {
         running(s, 1);
@@ -334,10 +352,12 @@ fn warps(s: &mut Ui, synced: bool) {
 
     let now = chrono::Utc::now().timestamp();
     // (pool, banner, featured 5 star, standard 5 star, pulls, 5 star pity in order)
-    let plans: [(Pool, u32, u32, u32, &[u32]); 3] = [
+    let plans: [(Pool, u32, u32, u32, &[u32]); 5] = [
         (Pool::Character, 2142, 1506, 1003, &[78, 64, 81, 23, 76, 90, 71, 58, 49]),
         (Pool::LightCone, 3116, 23048, 23004, &[66, 71, 12, 64, 58]),
         (Pool::Standard, 1001, 1209, 1107, &[85, 74, 79]),
+        (Pool::CollabCharacter, 4142, 1014, 1003, &[71]),
+        (Pool::CollabLightCone, 5142, 23045, 23004, &[]),
     ];
     let fours = [1214, 1110, 1109, 21002, 21008, 1105];
     let threes = [20000, 20001, 20002, 20005, 20010, 20011, 20015];
@@ -406,8 +426,9 @@ fn warps(s: &mut Ui, synced: bool) {
     }
 
     let refs: Vec<&Pull> = pulls.iter().collect();
-    let pools: Vec<_> = [Pool::Character, Pool::LightCone, Pool::Standard]
-        .into_iter()
+    let pools: Vec<_> = plans
+        .iter()
+        .map(|plan| plan.0)
         .map(|pool| pool_stats(pool, &refs, &rate_ups))
         .collect();
     let db = reliquary_archiver::export::database::get_database();
@@ -487,5 +508,8 @@ fn running_banners(now: i64) -> Vec<crate::warps::service::RunningBanner> {
         banner(2144, Pool::Character, 1501, &[1009, 1110, 1207]),
         banner(3142, Pool::LightCone, 23065, &[21016, 21020, 21047]),
         banner(3143, Pool::LightCone, 23057, &[21016, 21020, 21047]),
+        banner(4142, Pool::CollabCharacter, 1014, &[]),
+        banner(4143, Pool::CollabCharacter, 1015, &[]),
+        banner(5142, Pool::CollabLightCone, 23045, &[]),
     ]
 }

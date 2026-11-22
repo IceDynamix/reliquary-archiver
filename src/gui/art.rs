@@ -57,13 +57,18 @@ pub enum Ticket {
 }
 
 impl Ticket {
-    /// The ticket a warp shows: its banner's (the newest running), or the standing warp's own
-    pub fn of(summary: &crate::warps::service::Summary, pool: crate::warps::Pool) -> Option<Ticket> {
+    /// The ticket a warp shows: the banner of the 5 star `picked` for it when that's running,
+    /// else its newest running banner's, or the standing warp's own
+    pub fn of(summary: &crate::warps::service::Summary, pool: crate::warps::Pool, picked: Option<u32>) -> Option<Ticket> {
         use crate::warps::Pool;
         match pool {
             Pool::Standard => Some(Ticket::Standard),
             Pool::Departure => Some(Ticket::Departure),
-            _ => summary.running(pool).next()?.fives.first().copied().map(Ticket::Banner),
+            _ => summary
+                .running(pool)
+                .find_map(|b| picked.filter(|item| b.fives.contains(item)))
+                .or_else(|| summary.running(pool).next()?.fives.first().copied())
+                .map(Ticket::Banner),
         }
     }
 }
@@ -177,6 +182,20 @@ pub struct LayerArt {
     pub rect: [f32; 4],
     /// Where the game draws the canvas on its 1920x1080 reference screen
     pub on_screen: Option<[f32; 4]>,
+    /// Where the layer's visual weight sits, on its canvas like `rect`
+    pub weight: Option<Weight>,
+}
+
+/// Where a character's visual weight sits, measured by hsr-warp-art from its opacity
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Weight {
+    /// The centre of its opacity
+    pub centre: [f32; 2],
+    /// The box holding most of it, without the props and effects that reach out from the figure
+    pub core: [f32; 4],
+    /// The character themselves, as an anime person detector found them: without the scenery and
+    /// effects drawn in the same layer, which opacity can't tell from them
+    pub person: Option<[f32; 4]>,
 }
 
 impl BannerArt {
@@ -205,7 +224,7 @@ impl Manifest {
         let build = json["game"]["build"].as_str().unwrap_or("0").to_string();
         let floats = |v: &serde_json::Value| -> Option<Vec<f32>> { v.as_array()?.iter().map(|x| x.as_f64().map(|x| x as f32)).collect() };
         let mut banners = HashMap::new();
-        for kind in ["character", "light_cone"] {
+        for kind in ["character", "light_cone", "collaboration_character", "collaboration_light_cone"] {
             let Some(entries) = json["banners"][kind].as_object() else {
                 continue;
             };
@@ -229,6 +248,16 @@ impl Manifest {
                             canvas: [canvas[0], canvas[1]],
                             rect: [rect[0], rect[1], rect[2], rect[3]],
                             on_screen: on_screen.map(|v| [v[0], v[1], v[2], v[3]]),
+                            weight: floats(&l["weight"]["centre"])
+                                .filter(|v| v.len() == 2)
+                                .zip(floats(&l["weight"]["core"]).filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0))
+                                .map(|(c, k)| Weight {
+                                    centre: [c[0], c[1]],
+                                    core: [k[0], k[1], k[2], k[3]],
+                                    person: floats(&l["weight"]["person"])
+                                        .filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0)
+                                        .map(|v| [v[0], v[1], v[2], v[3]]),
+                                }),
                         })
                     })
                     .collect();
@@ -263,15 +292,26 @@ impl Surface {
             (c.len() == 4).then(|| srgb([c[0], c[1], c[2]], c[3]))
         };
         let pattern = |v: &serde_json::Value| -> Option<Pattern> {
-            let tile: Vec<f32> = v["tile"].as_array()?.iter().map(|x| x.as_f64().map(|x| x as f32)).collect::<Option<_>>()?;
+            let tile: Vec<f32> = v["tile"]
+                .as_array()?
+                .iter()
+                .map(|x| x.as_f64().map(|x| x as f32))
+                .collect::<Option<_>>()?;
             (tile.len() == 2 && tile[0] > 0.0 && tile[1] > 0.0).then_some(())?;
-            Some(Pattern { file: v["pattern"].as_str()?.to_string(), color: color(&v["color"])?, tile: [tile[0], tile[1]] })
+            Some(Pattern {
+                file: v["pattern"].as_str()?.to_string(),
+                color: color(&v["color"])?,
+                tile: [tile[0], tile[1]],
+            })
         };
         // A gradient's colours take the place of the layer's own
         let paint = |v: &serde_json::Value| -> Option<Paint> {
             let stops = v["gradient"]["colors"].as_array();
             match stops.map(|s| s.iter().map(color).collect::<Option<Vec<_>>>()) {
-                Some(Some(stops)) if stops.len() == 2 => Some(Paint { start: stops[0], end: stops[1] }),
+                Some(Some(stops)) if stops.len() == 2 => Some(Paint {
+                    start: stops[0],
+                    end: stops[1],
+                }),
                 _ => color(&v["color"]).map(|c| Paint { start: c, end: c }),
             }
         };
@@ -283,7 +323,11 @@ impl Surface {
                 pattern: pattern(&panel["pattern"]).or_else(|| pattern(&entry["frame_pattern"])),
             }
         } else {
-            Surface { fill: None, fade: None, pattern: pattern(&entry["frame_pattern"]) }
+            Surface {
+                fill: None,
+                fade: None,
+                pattern: pattern(&entry["frame_pattern"]),
+            }
         };
         (surface.fill.is_some() || surface.pattern.is_some()).then_some(surface)
     }

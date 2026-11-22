@@ -67,6 +67,13 @@ const ART_TOP: f32 = 64.0;
 /// The banner's motif behind the warp card, at this share of its size on the game's reference
 /// screen: smaller than there, as texture rather than picture
 const MOTIF_SCALE: f32 = 1.0;
+/// The share of the art's room a character takes, the same for every character so each carries
+/// the same weight however much art reaches out from them: their person's box, as detected, or
+/// without one the core of their opacity
+const FIGURE_AREA: f32 = 0.3;
+const CORE_AREA: f32 = 0.34;
+/// How far past the game's own scale a character with a small core may be drawn
+const MAX_ZOOM: f32 = 1.5;
 
 /// How the screen lays out for the window's shape
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -389,9 +396,48 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
             let room = fit.stage_from(width);
             let (room_w, room_h) = ((width - room - PAD).max(1.0), (height - ART_TOP - PAD).max(1.0));
             let cover = (width / REFERENCE[0]).max(height / REFERENCE[1]);
-            let k = cover.min(room_w / shown[2]).min(room_h / shown[3]);
             let centre = [(room + width - PAD) / 2.0, ART_TOP + room_h / 2.0];
-            (k, centre[0] - (shown[0] + shown[2] / 2.0) * k, centre[1] - (shown[1] + shown[3] / 2.0) * k)
+            match main.weight {
+                // Placed on the character themselves: their person's box (or without one, the core
+                // of their opacity, the body without the props and effects reaching out from it)
+                // takes the same share of the room for everyone, or fills it when it's much longer
+                // one way, and whatever reaches out past the room falls off it. They stand in the
+                // room's middle: the person's box centred, or the centre of their opacity across and
+                // the core's middle up and down
+                Some(weight) => {
+                    let at = |x: f32, y: f32| {
+                        [
+                            main_on_screen[0] + x * scale,
+                            main_on_screen[1] + y * main_on_screen[3] / main.canvas[1],
+                        ]
+                    };
+                    let (figure, area) = match weight.person {
+                        Some(person) => (person, FIGURE_AREA),
+                        None => (weight.core, CORE_AREA),
+                    };
+                    let [x0, y0] = at(figure[0], figure[1]);
+                    let [x1, y1] = at(figure[0] + figure[2], figure[1] + figure[3]);
+                    let cx = match weight.person {
+                        Some(_) => (x0 + x1) / 2.0,
+                        None => at(weight.centre[0], weight.centre[1])[0],
+                    };
+                    let (figure_w, figure_h) = (x1 - x0, y1 - y0);
+                    let k = (area * room_w * room_h / (figure_w * figure_h))
+                        .sqrt()
+                        .min(room_w / figure_w)
+                        .min(room_h / figure_h)
+                        .min(cover * MAX_ZOOM);
+                    (k, centre[0] - cx * k, centre[1] - (y0 + y1) / 2.0 * k)
+                }
+                None => {
+                    let k = cover.min(room_w / shown[2]).min(room_h / shown[3]);
+                    (
+                        k,
+                        centre[0] - (shown[0] + shown[2] / 2.0) * k,
+                        centre[1] - (shown[1] + shown[3] / 2.0) * k,
+                    )
+                }
+            }
         } else {
             let band = narrow_band(height);
             let top = 14.0 + 40.0 + 18.0 + COMPACT_TICKET[1] + 18.0;
@@ -553,8 +599,12 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
     let tickets = summary.pools.iter().map(|stats| {
         let pool = stats.pool;
         let chosen = pool == selected;
-        let featured = summary.running(pool).next().and_then(|b| b.fives.first().copied());
-        let ticket = Ticket::of(summary, pool);
+        // The picked 5 star's banner when several run, so the ticket follows the pick
+        let ticket = Ticket::of(summary, pool, s.warps.featured.get(&pool).copied());
+        let featured = match ticket {
+            Some(Ticket::Banner(item)) => Some(item),
+            _ => None,
+        };
         // Both of a ticket's pictures (preloaded when the warps come in, see `Ui::preload_warp_art`)
         let picture = |selected: bool| ticket.and_then(|ticket| s.art.as_ref()?.get(Art::Ticket(ticket, selected)));
         let (plain, framed) = (picture(false), picture(true));
@@ -565,6 +615,13 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
         let ticket_w = plain_size[0] * k;
         let sprite = if chosen { framed.clone() } else { plain.clone() };
         let key = format!("ticket-{}", pool.gacha_type());
+        // Each ticket's pictures are keyed by whose ticket it is: a pick that changes the ticket
+        // swaps it for another, the old fading out and the new in, rather than morphing one into
+        // the other's size
+        let picture_key = match ticket {
+            Some(Ticket::Banner(item)) => format!("{key}-{item}"),
+            other => format!("{key}-{other:?}"),
+        };
 
         let face = match sprite {
             // The game's ticket. The selected one is drawn at the same scale, placed so its ticket
@@ -575,13 +632,13 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
                     let [sw, sh] = size(&image).unwrap_or([SPRITE[0] + 14.0, SPRITE[1] + SELECTED_BELOW]);
                     let above = sh - SELECTED_BELOW - plain_size[1];
                     picture
-                        .key(format!("{key}-selected"))
+                        .key(format!("{picture_key}-selected"))
                         .pin(Some(SELECTED_LEFT * k), Some(-above * k), None, None)
                         .size(sw * k, sh * k)
                         .transition(Transition::opacity().springs(SpringPair::new(Spring::smooth(0.35, 0.0), Spring::smooth(0.18, 0.0))))
                 } else {
                     picture
-                        .key(format!("{key}-plain"))
+                        .key(format!("{picture_key}-plain"))
                         .pin(Some(0.0), Some(0.0), None, None)
                         .size(ticket_w, h)
                         .opacity(0.8)
@@ -876,15 +933,21 @@ fn card_surface(s: &Ui, item: u32, t: &Theme) -> Option<El> {
         let bottom = match surface.fade {
             Some(fade) => {
                 let (over, under, k) = (fade.end, fill.end, fade.end.a);
-                Color { r: under.r + (over.r - under.r) * k, g: under.g + (over.g - under.g) * k, b: under.b + (over.b - under.b) * k, a: 1.0 }
+                Color {
+                    r: under.r + (over.r - under.r) * k,
+                    g: under.g + (over.g - under.g) * k,
+                    b: under.b + (over.b - under.b) * k,
+                    a: 1.0,
+                }
             }
             None => fill.end,
         };
         let strength = if t.dark { 0.24 } else { 0.2 };
-        layer = layer.linear_gradient(
-            std::f32::consts::PI,
-            [(0.0, fill.start.alpha(0.0)), (0.45, fill.end.alpha(strength * 0.35)), (1.0, bottom.alpha(strength))],
-        );
+        layer = layer.linear_gradient(std::f32::consts::PI, [
+            (0.0, fill.start.alpha(0.0)),
+            (0.45, fill.end.alpha(strength * 0.35)),
+            (1.0, bottom.alpha(strength)),
+        ]);
     }
     if let Some(pattern) = &surface.pattern
         && let Some(image) = art.get(Art::Pattern(item))

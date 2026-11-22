@@ -512,11 +512,15 @@ impl Ui {
         let (Some(art), Some(summary)) = (self.art.as_ref(), self.warps_summary()) else {
             return;
         };
-        for stats in &summary.pools {
-            if let Some(ticket) = Ticket::of(summary, stats.pool) {
-                for selected in [false, true] {
-                    let _ = art.get(Art::Ticket(ticket, selected));
-                }
+        // Every warp's ticket, and every running banner's, which the pick switches between
+        let tickets = summary
+            .pools
+            .iter()
+            .filter_map(|stats| Ticket::of(summary, stats.pool, None))
+            .chain(summary.banners.iter().flat_map(|b| b.fives.iter().map(|&item| Ticket::Banner(item))));
+        for ticket in tickets {
+            for selected in [false, true] {
+                let _ = art.get(Art::Ticket(ticket, selected));
             }
         }
         let shown = |item: u32| {
