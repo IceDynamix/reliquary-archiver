@@ -60,6 +60,12 @@ pub fn plate_stack(key: &str, cx: &Cx<Ui>, t: &Theme) -> El {
 /// The plate's face is a layer under its content, and the holes are punched in that layer, not
 /// through the content
 pub fn ticket(key: &str, tears: &[&str], cx: &Cx<Ui>, t: &Theme) -> El {
+    ticket_on(key, tears, None, cx, t)
+}
+
+/// A ticket with `surface` over its glass and under what it holds, cut to its corners and
+/// notches: a banner's colours and motif behind the warp card
+pub fn ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t: &Theme) -> El {
     let rect = cx.layout(key);
     let mut holes = Vec::new();
     if let Some([x, y, w, h]) = rect {
@@ -80,6 +86,16 @@ pub fn ticket(key: &str, tears: &[&str], cx: &Cx<Ui>, t: &Theme) -> El {
         .fill(glass(t))
         .linear_gradient(std::f32::consts::PI, [(0.0, sheen(t)), (0.35, sheen(t).alpha(0.0))])
         .border(1.0, Color::WHITE.alpha(if t.dark { 0.05 } else { 0.35 }));
+    let surface = surface.map(|surface| {
+        let mut layer = el()
+            .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+            .clip_corners(CORNERS)
+            .child(surface.w_full().h_full());
+        for &hole in &holes {
+            layer = layer.cutout_circle(hole, NOTCH - 0.5, NOTCH);
+        }
+        layer.inert()
+    });
     for hole in holes {
         tint = tint.cutout_circle(hole, NOTCH - 0.5, NOTCH);
     }
@@ -89,6 +105,7 @@ pub fn ticket(key: &str, tears: &[&str], cx: &Cx<Ui>, t: &Theme) -> El {
         .corners(CORNERS)
         .shadow(10.0, 30.0, Color::BLACK.alpha(if t.dark { 0.35 } else { 0.12 }))
         .child(tint.inert())
+        .children(surface)
 }
 
 /// A line offset outside a stack of plates, down its left side and round the last one's big

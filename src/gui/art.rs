@@ -41,6 +41,31 @@ pub enum Art {
     Item(u32),
     /// A layer of a warp banner's art, by the banner's featured item
     Layer(u32, Layer),
+    /// A warp's ticket, as the game's warp screen tabs it; selected or not
+    Ticket(Ticket, bool),
+    /// The motif a banner's panel tiles (`BannerArt::surface`), by the banner's featured item
+    Pattern(u32),
+}
+
+/// Whose ticket
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Ticket {
+    /// A limited banner's, by its featured item
+    Banner(u32),
+    Standard,
+    Departure,
+}
+
+impl Ticket {
+    /// The ticket a warp shows: its banner's (the newest running), or the standing warp's own
+    pub fn of(summary: &crate::warps::service::Summary, pool: crate::warps::Pool) -> Option<Ticket> {
+        use crate::warps::Pool;
+        match pool {
+            Pool::Standard => Some(Ticket::Standard),
+            Pool::Departure => Some(Ticket::Departure),
+            _ => summary.running(pool).next()?.fives.first().copied().map(Ticket::Banner),
+        }
+    }
 }
 
 /// The layers of a warp banner's art, back to front
@@ -52,6 +77,10 @@ pub enum Layer {
     /// The character or light cone
     Main,
     Front,
+    /// The banner's ticket on the warp screen's tabs, and as it shows selected: whole pictures,
+    /// not pieces of the canvas
+    Tab,
+    TabSelected,
 }
 
 impl Layer {
@@ -61,6 +90,8 @@ impl Layer {
             "bg" => Layer::Back,
             "avatar" | "light_cone" => Layer::Main,
             "front" => Layer::Front,
+            "tab" => Layer::Tab,
+            "tab_selected" => Layer::TabSelected,
             _ => return None,
         })
     }
@@ -76,6 +107,10 @@ impl Art {
             Art::Preview(id) => ("image/character_preview", id),
             Art::Item(id) => ("icon/item", id),
             Art::Layer(id, layer) => return format!("layer/{id}/{layer:?}.png"),
+            Art::Ticket(ticket, selected) => {
+                return format!("ticket/{ticket:?}{}.png", if selected { "-selected" } else { "" });
+            }
+            Art::Pattern(id) => return format!("pattern/{id}.png"),
         };
         format!("{kind}/{id}.png")
     }
@@ -86,6 +121,7 @@ impl Art {
         match self {
             Art::Portrait(_) => path.replace(".png", &format!("-{PORTRAIT_HEIGHT}.qoi")),
             Art::Layer(..) => format!("warp-{build}-{}", path.replace(".png", "-full.qoi")),
+            Art::Ticket(..) | Art::Pattern(_) => format!("warp-{build}-{}", path.replace(['(', ')'], "")),
             _ => path,
         }
     }
@@ -100,6 +136,35 @@ impl Art {
 #[derive(Clone, Debug, PartialEq)]
 pub struct BannerArt {
     pub layers: Vec<LayerArt>,
+    /// What the game puts behind the art, when it's more than the art's own back layer
+    pub surface: Option<Surface>,
+}
+
+/// The panel behind a banner's art in the game: a colour, a second one fading in towards the
+/// bottom, and a small motif tiled over both (`Art::Pattern`). A light cone's banner has only
+/// the motif, from the frame beside its art
+#[derive(Clone, Debug, PartialEq)]
+pub struct Surface {
+    pub fill: Option<Paint>,
+    pub fade: Option<Paint>,
+    pub pattern: Option<Pattern>,
+}
+
+/// A panel layer's colour: one, or a gradient's two (the game's runs between them at an angle,
+/// most often top to bottom)
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Paint {
+    pub start: Color,
+    pub end: Color,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Pattern {
+    file: String,
+    /// What the game draws it in, alpha included
+    pub color: Color,
+    /// One copy's size on the game's 1920x1080 reference screen
+    pub tile: [f32; 2],
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -118,6 +183,11 @@ impl BannerArt {
     pub fn layer(&self, layer: Layer) -> Option<&LayerArt> {
         self.layers.iter().find(|l| l.layer == layer)
     }
+
+    /// Whether the banner's art can be drawn in layers, as the game places them
+    pub fn placed(&self) -> bool {
+        self.layer(Layer::Main).is_some_and(|l| l.on_screen.is_some())
+    }
 }
 
 /// What the warp banner art has, by featured item
@@ -125,6 +195,8 @@ impl BannerArt {
 struct Manifest {
     build: String,
     banners: HashMap<u32, BannerArt>,
+    /// The standard and departure warps' tickets, plain and selected
+    tickets: HashMap<Ticket, [Option<String>; 2]>,
 }
 
 impl Manifest {
@@ -139,7 +211,7 @@ impl Manifest {
             };
             for (id, entry) in entries {
                 let Ok(id) = id.parse::<u32>() else { continue };
-                let layers: Vec<LayerArt> = entry["layers"]
+                let mut layers: Vec<LayerArt> = entry["layers"]
                     .as_array()
                     .into_iter()
                     .flatten()
@@ -160,14 +232,67 @@ impl Manifest {
                         })
                     })
                     .collect();
-                // Without its main layer placed, a banner isn't worth drawing in layers
-                if layers.iter().any(|l| l.layer == Layer::Main && l.on_screen.is_some()) {
-                    banners.insert(id, BannerArt { layers });
+                // Without its main layer placed, a banner's art isn't worth drawing in layers, but
+                // its tickets still are
+                if !layers.iter().any(|l| l.layer == Layer::Main && l.on_screen.is_some()) {
+                    layers.retain(|l| matches!(l.layer, Layer::Tab | Layer::TabSelected));
+                }
+                let surface = Surface::parse(entry);
+                if !layers.is_empty() || surface.is_some() {
+                    banners.insert(id, BannerArt { layers, surface });
                 }
             }
         }
-        Some(Manifest { build, banners })
+        let mut tickets = HashMap::new();
+        for (name, ticket) in [("standard", Ticket::Standard), ("departure", Ticket::Departure)] {
+            let tabs = &json["tabs"][name];
+            let file = |layer: &str| tabs[layer].as_str().map(str::to_string);
+            if tabs.is_object() {
+                tickets.insert(ticket, [file("tab"), file("tab_selected")]);
+            }
+        }
+        Some(Manifest { build, banners, tickets })
     }
+}
+
+impl Surface {
+    /// The banner's panel, or for a light cone the frame's motif alone
+    fn parse(entry: &serde_json::Value) -> Option<Surface> {
+        let color = |v: &serde_json::Value| -> Option<Color> {
+            let c: Vec<f32> = v.as_array()?.iter().map(|x| x.as_f64().map(|x| x as f32)).collect::<Option<_>>()?;
+            (c.len() == 4).then(|| srgb([c[0], c[1], c[2]], c[3]))
+        };
+        let pattern = |v: &serde_json::Value| -> Option<Pattern> {
+            let tile: Vec<f32> = v["tile"].as_array()?.iter().map(|x| x.as_f64().map(|x| x as f32)).collect::<Option<_>>()?;
+            (tile.len() == 2 && tile[0] > 0.0 && tile[1] > 0.0).then_some(())?;
+            Some(Pattern { file: v["pattern"].as_str()?.to_string(), color: color(&v["color"])?, tile: [tile[0], tile[1]] })
+        };
+        // A gradient's colours take the place of the layer's own
+        let paint = |v: &serde_json::Value| -> Option<Paint> {
+            let stops = v["gradient"]["colors"].as_array();
+            match stops.map(|s| s.iter().map(color).collect::<Option<Vec<_>>>()) {
+                Some(Some(stops)) if stops.len() == 2 => Some(Paint { start: stops[0], end: stops[1] }),
+                _ => color(&v["color"]).map(|c| Paint { start: c, end: c }),
+            }
+        };
+        let panel = &entry["panel"];
+        let surface = if panel.is_object() {
+            Surface {
+                fill: paint(&panel["fill"]),
+                fade: paint(&panel["fade"]),
+                pattern: pattern(&panel["pattern"]).or_else(|| pattern(&entry["frame_pattern"])),
+            }
+        } else {
+            Surface { fill: None, fade: None, pattern: pattern(&entry["frame_pattern"]) }
+        };
+        (surface.fill.is_some() || surface.pattern.is_some()).then_some(surface)
+    }
+}
+
+/// A colour as the game's UI gives it, in sRGB
+fn srgb(rgb: [f32; 3], alpha: f32) -> Color {
+    let [r, g, b] = rgb.map(|c| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) });
+    Color { r, g, b, a: alpha }
 }
 
 enum Slot {
@@ -302,11 +427,20 @@ impl ArtCache {
                 None => {}
             }
         }
-        // Layers come from where the manifest says, under the banner art's base
+        // Layers and tickets come from where the manifest says, under the banner art's base
         let source = match art {
-            Art::Layer(item, layer) => {
+            Art::Layer(..) | Art::Ticket(..) | Art::Pattern(_) => {
                 let manifest = self.manifest()?;
-                let file = &manifest.banners.get(&item)?.layer(layer)?.file;
+                let file = match art {
+                    Art::Layer(item, layer) => manifest.banners.get(&item)?.layer(layer)?.file.clone(),
+                    Art::Ticket(Ticket::Banner(item), selected) => {
+                        let layer = if selected { Layer::TabSelected } else { Layer::Tab };
+                        manifest.banners.get(&item)?.layer(layer)?.file.clone()
+                    }
+                    Art::Ticket(ticket, selected) => manifest.tickets.get(&ticket)?[usize::from(selected)].clone()?,
+                    Art::Pattern(item) => manifest.banners.get(&item)?.surface.as_ref()?.pattern.as_ref()?.file.clone(),
+                    _ => return None,
+                };
                 format!("{}\n{}\n{file}", manifest.build, warp_art_base()?)
             }
             _ => String::new(),
@@ -380,9 +514,8 @@ impl ArtCache {
 
 /// An accent from a picture's colour: its hue, at a lightness and strength that read as an accent
 /// on dark and light alike. A grey picture gives a soft gold
-fn color(srgb: [f32; 3]) -> Color {
-    let [r, g, b] = srgb.map(|c| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) });
-    let [_, a, bb, _] = Color { r, g, b, a: 1.0 }.to_oklab();
+fn color(rgb: [f32; 3]) -> Color {
+    let [_, a, bb, _] = srgb(rgb, 1.0).to_oklab();
     let chroma = (a * a + bb * bb).sqrt();
     if chroma < 0.02 {
         return rune::oklch(0.72, 0.1, 80.0);
@@ -459,7 +592,7 @@ fn fetch(agent: &ureq::Agent, art: Art, source: &str) -> (Option<Fetched>, Optio
     }
 
     let bytes = match art {
-        Art::Layer(..) => {
+        Art::Layer(..) | Art::Ticket(..) | Art::Pattern(_) => {
             let (Some(base), Some(file)) = (lines.next(), lines.next()) else {
                 return (None, None);
             };
@@ -571,16 +704,53 @@ mod tests {
     }
 
     #[test]
+    fn tickets_are_kept_as_they_come() {
+        assert_eq!(
+            Art::Ticket(Ticket::Banner(1511), true).file_name("b"),
+            "warp-b-ticket-Banner1511-selected.png"
+        );
+        assert_eq!(Art::Ticket(Ticket::Standard, false).file_name("b"), "warp-b-ticket-Standard.png");
+    }
+
+    #[test]
     fn the_banner_art_manifest_reads() {
         let json = br#"{"game":{"build":"b"},"banners":{"character":{"1511":{"layers":[
             {"layer":"backdrop","file":"characters/1511/backdrop.png"},
             {"layer":"avatar","file":"characters/1511/avatar.png","canvas":[2048,2048],"rect":[2,191,1958,1715],"canvas_on_screen":[585.8,-161.2,1382.4,1382.4]}
-        ]}},"light_cone":{"23048":{"layers":[{"layer":"bg","file":"light_cones/23048/bg.png"}]}}}}"#;
+        ],"panel":{"fill":{"color":[0.16,0.11,0.41,1],"gradient":{"colors":[[0.75,0.01,0,1],[0.2,0,0,1]],"angle":-110}},
+            "fade":{"color":[0.06,0.94,1,1]},
+            "pattern":{"color":[0.06,0.04,0.16,0.05],"pattern":"patterns/decopatternpixeleater.png","tile":[69.33,61.33]}},
+          "frame_pattern":{"color":[0,0,0,0.035],"pattern":"patterns/decopatternpixeleatersingle.png","tile":[26.67,55.76]}}},
+        "light_cone":{"23048":{"layers":[{"layer":"bg","file":"light_cones/23048/bg.png"},
+            {"layer":"tab","file":"light_cones/23048/tab.png"}],
+          "frame_pattern":{"color":[0,0,0,0.035],"pattern":"patterns/decopatterncross.png","tile":[20,20]}},
+          "23049":{"layers":[{"layer":"bg","file":"light_cones/23049/bg.png"}]}}},
+        "tabs":{"standard":{"tab":"tabs/standard_tab.png","tab_selected":"tabs/standard_tab_selected.png"}}}"#;
         let manifest = Manifest::parse(json).unwrap();
         let banner = &manifest.banners[&1511];
         assert_eq!(banner.layer(Layer::Main).unwrap().rect, [2.0, 191.0, 1958.0, 1715.0]);
         assert!(banner.layer(Layer::Backdrop).unwrap().on_screen.is_none());
-        // Without its main layer placed, a banner isn't worth drawing in layers
-        assert!(!manifest.banners.contains_key(&23048));
+        // Without its main layer placed, only a banner's tickets are kept
+        let cone = &manifest.banners[&23048];
+        assert!(!cone.placed());
+        assert!(cone.layer(Layer::Back).is_none() && cone.layer(Layer::Tab).is_some());
+        // A character's panel: its colours in linear light, a gradient's in place of the layer's
+        // own, and the panel's own motif
+        let panel = banner.surface.as_ref().unwrap();
+        let fill = panel.fill.unwrap();
+        assert!((fill.start.r - 0.522).abs() < 0.01 && (fill.end.r - 0.033).abs() < 0.01, "{fill:?}");
+        let fade = panel.fade.unwrap();
+        assert_eq!(fade.start, fade.end);
+        assert_eq!(panel.pattern.as_ref().unwrap().file, "patterns/decopatternpixeleater.png");
+        assert_eq!(panel.pattern.as_ref().unwrap().tile, [69.33, 61.33]);
+        // A light cone's has only the frame's motif; a banner with neither has none, and with
+        // nothing else of use isn't kept
+        let cone_panel = cone.surface.as_ref().unwrap();
+        assert!(cone_panel.fill.is_none() && cone_panel.pattern.as_ref().unwrap().tile == [20.0, 20.0]);
+        assert!(!manifest.banners.contains_key(&23049));
+        assert_eq!(
+            manifest.tickets[&Ticket::Standard][1].as_deref(),
+            Some("tabs/standard_tab_selected.png")
+        );
     }
 }

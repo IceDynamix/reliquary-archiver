@@ -100,6 +100,20 @@ pub struct Warps {
     pub rosters: HashMap<u32, Roster>,
     /// When this run started, in Unix seconds: pulls seen live since make up the session
     pub session_start: i64,
+    /// The ticket last picked on the warp screen's rail, and when: its shine plays for a moment
+    /// after, and not again when the layout changes
+    pub picked: Option<(Pool, Instant)>,
+}
+
+/// How long a ticket picked on the warp screen's rail shines: the shine's delay and sweep, and a
+/// little over
+pub const SHINE_FOR: Duration = Duration::from_millis(600);
+
+/// Picks a warp on the warp screen's rail: it shows, and its ticket shines for a moment
+pub fn pick_warp(s: &mut Ui, pool: Pool, tx: &mut Tx) {
+    s.warps.pool = pool;
+    s.warps.picked = Some((pool, Instant::now()));
+    tx.wake_after(SHINE_FOR);
 }
 
 /// The characters and light cones an account owns
@@ -138,6 +152,7 @@ impl Default for Warps {
             featured: HashMap::new(),
             rosters: HashMap::new(),
             session_start: chrono::Utc::now().timestamp(),
+            picked: None,
             link_edit: TextEdit::new(""),
             choose: None,
         }
@@ -337,6 +352,11 @@ impl Ui {
             self.notice = None;
             changed = true;
         }
+        // A picked ticket's shine has swept: it goes, so nothing of it lingers at rest
+        if self.warps.picked.is_some_and(|(_, at)| now.duration_since(at) >= SHINE_FOR) {
+            self.warps.picked = None;
+            changed = true;
+        }
         if self
             .capture
             .error
@@ -474,7 +494,68 @@ impl Ui {
 
     /// Hands art that arrived to Rune. True when there was any
     pub fn art_ready(&mut self) -> bool {
-        self.art.as_ref().is_some_and(|art| art.take_done())
+        let arrived = self.art.as_ref().is_some_and(|art| art.take_done());
+        if arrived {
+            // The banner art's manifest may be what arrived, which says where the tickets are
+            self.preload_warp_art();
+        }
+        arrived
+    }
+
+    /// Asks for everything the warp screen shows, as soon as the warps and the banner art's manifest
+    /// are in, so the screen opens with it ready. In the order it's seen: every warp's tickets, plain
+    /// and selected; each warp's own art (its banner's layers, or a portrait) and preview; then the
+    /// other banners that can be picked, and the pass icons. Asking for art that's here or on its
+    /// way is free, so this runs again whenever something arrives
+    pub fn preload_warp_art(&self) {
+        use super::art::{Art, Layer, Ticket};
+        let (Some(art), Some(summary)) = (self.art.as_ref(), self.warps_summary()) else {
+            return;
+        };
+        for stats in &summary.pools {
+            if let Some(ticket) = Ticket::of(summary, stats.pool) {
+                for selected in [false, true] {
+                    let _ = art.get(Art::Ticket(ticket, selected));
+                }
+            }
+        }
+        let shown = |item: u32| {
+            if art.banner(item).is_some_and(|banner| banner.surface.as_ref().is_some_and(|s| s.pattern.is_some())) {
+                let _ = art.get(Art::Pattern(item));
+            }
+            match art.banner(item).filter(|banner| banner.placed()) {
+                Some(banner) => {
+                    for layer in [Layer::Backdrop, Layer::Back, Layer::Main, Layer::Front] {
+                        if banner.layer(layer).is_some() {
+                            let _ = art.get(Art::Layer(item, layer));
+                        }
+                    }
+                }
+                None => {
+                    let _ = art.get(Art::Portrait(item));
+                }
+            }
+            let _ = art.get(Art::Preview(item));
+        };
+        // Each warp's own: what its newest banner features, or its last 5 star
+        for stats in &summary.pools {
+            let own = summary
+                .running(stats.pool)
+                .next()
+                .and_then(|banner| banner.fives.first().copied())
+                .or_else(|| stats.fives.first().map(|five| five.item_id));
+            if let Some(item) = own {
+                shown(item);
+            }
+        }
+        for banner in &summary.banners {
+            for &item in &banner.fives {
+                shown(item);
+            }
+        }
+        for pass in [101, 102] {
+            let _ = art.get(Art::Item(pass));
+        }
     }
 
     fn warp_command(&self, command: WarpCommand) {
@@ -506,6 +587,7 @@ impl Ui {
                     self.warps.pool = Pool::Character;
                 }
                 self.warps.summaries.insert(summary.uid, *summary);
+                self.preload_warp_art();
             }
             WarpUpdate::Busy(busy) => self.warps.busy = busy,
             WarpUpdate::Notice { title, detail, error } => self.notify(title, detail, error, None, tx),
