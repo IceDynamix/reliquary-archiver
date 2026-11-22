@@ -22,7 +22,7 @@ use rune::{
     row, text,
 };
 
-use super::parts::{self, Pill, kicker, perforation, pill, plate, ring_button, rule, tab, ticket_on};
+use super::parts::{self, Pill, kicker, perforation, pill, ring_button, rule, tab, ticket_on};
 use crate::gui::art::{Art, BannerArt, Layer, Ticket};
 use crate::gui::icons;
 use crate::gui::state::{Funds, Panel, Roster, Ui};
@@ -34,9 +34,8 @@ use crate::warps::{Pool, source};
 
 /// Narrower than this, the screen stacks
 const NARROW: f32 = 760.0;
-/// At least this wide, and at least this much wider than tall, the rail shows the warps in full
+/// At least this wide, the rail shows the warps in full
 const WIDE: f32 = 1180.0;
-const WIDE_ASPECT: f32 = 1.45;
 const PAD: f32 = 30.0;
 const GAP: f32 = 26.0;
 /// The game lays its warp screen out on this
@@ -82,22 +81,22 @@ const HEAD_SHARE: f32 = 1.0;
 /// How far past the game's own scale a character with a small core may be drawn
 const MAX_ZOOM: f32 = 1.5;
 
-/// How the screen lays out for the window's shape
+/// How the screen lays out for the window's width
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Fit {
     /// Rail, card and art side by side, the rail's tickets in full
     Wide,
-    /// The same with a compact rail, for windows nearer square
+    /// The same with a compact rail, for narrower windows
     Medium,
     /// Stacked: the tickets in a row, the art in a band, the card under it
     Narrow,
 }
 
 impl Fit {
-    fn of(width: f32, height: f32) -> Fit {
+    fn of(width: f32) -> Fit {
         if width < NARROW {
             Fit::Narrow
-        } else if width >= WIDE && width / height.max(1.0) >= WIDE_ASPECT {
+        } else if width >= WIDE {
             Fit::Wide
         } else {
             Fit::Medium
@@ -232,7 +231,7 @@ impl Budget {
 /// The whole window, as the warp screen
 pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
     let [width, height] = cx.layout_size("page").unwrap_or([460.0, 700.0]);
-    let fit = Fit::of(width, height);
+    let fit = Fit::of(width);
 
     let Some(summary) = s.warps_summary() else {
         return el().key("warp-screen").w_full().h_full().fill(t.bg).padding(22.0).child(
@@ -286,7 +285,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             .gap(GAP)
             .items_start()
             .child(rail(s, summary, pool, fit, t))
-            .child(banner_card(s, &view, &running, cx, t).w(fit.card(width)))
+            .child(banner_card(s, &view, &running, fit.card(width), cx, t).w(fit.card(width)))
             .child(el().grow(1.0))
             .children(hero.map(|item| col().h_full().justify_end().child(name_tags(&view, item, t))));
         col()
@@ -298,7 +297,6 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             .gap(24.0)
             .child(header(s, Some(pool), accent, t))
             .child(middle)
-            .child(history_card(&view, width - PAD * 2.0, cx, t))
             .children(session_row(s, &view, t))
     } else {
         let band = narrow_band(height);
@@ -325,8 +323,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
                     .w_full()
                     .px(16.0)
                     .gap(22.0)
-                    .child(banner_card(s, &view, &running, cx, t).w_full())
-                    .child(history_card(&view, width - 32.0, cx, t))
+                    .child(banner_card(s, &view, &running, width - 32.0, cx, t).w_full())
                     .children(session_row(s, &view, t)),
             );
         col()
@@ -552,23 +549,15 @@ fn scrims(width: f32, height: f32, fit: Fit, t: &Theme) -> El {
             );
     } else {
         let top = 14.0 + 40.0 + 18.0 + COMPACT_TICKET[1];
-        let band = narrow_band(height);
-        layer = layer
-            .child(
-                el().pin(Some(0.0), Some(0.0), Some(0.0), None)
-                    .h(top + 40.0)
-                    .linear_gradient(std::f32::consts::PI, [
-                        (0.0, ground.alpha(0.9)),
-                        (0.75, ground.alpha(0.7)),
-                        (1.0, ground.alpha(0.0)),
-                    ]),
-            )
-            .child(
-                el().pin(Some(0.0), Some(top + band * 0.55), Some(0.0), None)
-                    .h(band * 0.5)
-                    .gradient(ground.alpha(0.0), ground),
-            )
-            .child(el().pin(Some(0.0), Some(top + band * 1.05), Some(0.0), Some(0.0)).fill(ground));
+        layer = layer.child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), None)
+                .h(top + 40.0)
+                .linear_gradient(std::f32::consts::PI, [
+                    (0.0, ground.alpha(0.9)),
+                    (0.75, ground.alpha(0.7)),
+                    (1.0, ground.alpha(0.0)),
+                ]),
+        );
     }
     layer
 }
@@ -898,7 +887,7 @@ fn short_status(message: &str) -> String {
 
 /// The banner's ticket: what's featured and the pick between the running banners, the pity on its
 /// track, and past the tear what the warps in hand buy and how far towards copies
-fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], cx: &Cx<Ui>, t: &Theme) -> El {
+fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], width: f32, cx: &Cx<Ui>, t: &Theme) -> El {
     let title = match view.pool {
         Pool::Character => "Character event warp",
         Pool::LightCone => "Light cone event warp",
@@ -908,7 +897,7 @@ fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], cx: &Cx<Ui>, t: 
         Pool::Departure => "Departure warp",
     };
     let surface = view.featured.and_then(|(item, _)| card_surface(s, item, t));
-    let card = ticket_on("warp-card", &["warp-card-tear"], surface, cx, t)
+    let card = ticket_on("warp-card", &["warp-card-tear", "warp-card-tear-history"], surface, cx, t)
         .child(tab("warp-card-tab", title, view.accent, cx, t))
         .child(
             col()
@@ -931,7 +920,9 @@ fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], cx: &Cx<Ui>, t: 
                 .gap(18.0)
                 .child(odds_row(view, t))
                 .children(targets(view, t)),
-        );
+        )
+        .child(perforation("warp-card-tear-history", cx, t))
+        .child(history_strip(view, width - 44.0, t).px(22.0).pt(12.0).pb(16.0));
     rise(card, 0.05)
 }
 
@@ -1366,19 +1357,13 @@ fn name_tags(view: &View, item: u32, t: &Theme) -> El {
     )
 }
 
-/// Every 5 star of the pool as a bar of its pity, oldest on the left, coloured by its 50/50, on a
-/// plate of its own
-fn history_card(view: &View, width: f32, cx: &Cx<Ui>, t: &Theme) -> El {
-    plate("history-card", cx, t)
-        .w_full()
-        .child(tab("history-card-tab", "5-star history", parts::progress(t), cx, t))
-        .child(history_strip(view, width - 44.0, t).px(22.0).pt(12.0).pb(18.0))
-}
-
+/// Every 5 star of the pool as a bar of its pity, oldest on the left, coloured by its 50/50: the
+/// warp card's last section, in its palette, the bars soft enough not to outshout the art
 fn history_strip(view: &View, width: f32, t: &Theme) -> El {
     let stats = view.stats;
-    let hard = Rates::of(view.pool).hard as f32;
-    let (bar_w, gap) = (9.0, 4.0);
+    let rates = Rates::of(view.pool);
+    let hard = rates.hard as f32;
+    let (bar_w, gap, tall) = (6.0, 3.0, 44.0);
     let fit = ((width + gap) / (bar_w + gap)).floor().max(1.0) as usize;
     let shown: Vec<&Highlight> = stats.fives.iter().take(fit).collect();
     let n = shown.len();
@@ -1392,9 +1377,9 @@ fn history_strip(view: &View, width: f32, t: &Theme) -> El {
         };
         el().key(format!("five-{}-{}", five.time, five.item_id))
             .w(bar_w)
-            .h(6.0 + 58.0 * (five.pity as f32 / hard).min(1.0))
-            .fill(outcome_color(five.outcome, t))
-            .opacity(if five.confirmed { 1.0 } else { 0.6 })
+            .h(4.0 + (tall - 4.0) * (five.pity as f32 / hard).min(1.0))
+            .corners([bar_w / 2.0, bar_w / 2.0, 0.0, 0.0])
+            .fill(outcome_color(five.outcome, t).alpha(if five.confirmed { 0.78 } else { 0.4 }))
             .help(format!(
                 "{}  ·  pity {}{outcome}  ·  {when}",
                 view.summary.name(five.item_id),
@@ -1416,41 +1401,55 @@ fn history_strip(view: &View, width: f32, t: &Theme) -> El {
         summary_words.push(format!("won {} of {}", stats.won5, stats.played5));
     }
     summary_words.push(format!("{} warps", grouped(stats.total)));
+    let summary_words: Vec<String> = std::iter::once(format!("{} 5-stars", stats.count5)).chain(summary_words).collect();
 
     let legend = |color: Color, words: &'static str| {
         row()
             .gap(5.0)
             .center_y()
-            .child(el().size(8.0, 8.0).fill(color))
+            .child(el().size(6.0, 6.0).radius(3.0).fill(color.alpha(0.78)))
             .child(text(words).font(theme::SMALL).color(t.faint))
     };
-    let mut head = row()
-        .w_full()
-        .gap(14.0)
-        .center_y()
-        .child(text(format!("{} 5-stars", stats.count5)).font(theme::LABEL).color(t.text))
-        .child(text(summary_words.join("  ·  ")).font(theme::SMALL).color(t.muted));
-    if view.pool.has_rate_up() {
-        head = head
-            .child(el().grow(1.0))
-            .child(legend(outcome_color(Outcome::Won, t), "won"))
-            .child(legend(outcome_color(Outcome::Lost, t), "lost"))
-            .child(legend(outcome_color(Outcome::Guaranteed, t), "guaranteed"));
-    }
+    let head = row().w_full().gap(8.0).child(kicker("5-star history", t.muted)).child(
+        text(summary_words.join("  ·  "))
+            .font(theme::SMALL)
+            .color(t.faint)
+            .truncate()
+            .min_w(0.0),
+    );
+    // Soft pity, faint across the bars as on the track above
+    let soft = (rates.soft_from as f32 / hard).min(1.0);
+    let guide = el()
+        .pin(Some(0.0), None, Some(0.0), Some(4.0 + (tall - 4.0) * soft))
+        .h(1.0)
+        .inert()
+        .fill(parts::progress(t).alpha(0.22));
     let body = if n == 0 {
         row()
-            .h(64.0)
+            .h(tall)
             .center_y()
             .child(text("No 5-stars here yet").font(theme::SMALL).color(t.faint))
     } else {
         row()
             .key(format!("strip-{}", view.pool.gacha_type()))
-            .h(64.0)
+            .w_full()
+            .h(tall)
             .gap(gap)
             .items_end()
+            .child(guide)
             .children(bars)
     };
-    col().key("history-strip").w_full().gap(10.0).child(head).child(body)
+    let mut col_ = col().key("history-strip").w_full().gap(8.0).child(head).child(body);
+    if view.pool.has_rate_up() && n > 0 {
+        col_ = col_.child(
+            row()
+                .gap(12.0)
+                .child(legend(outcome_color(Outcome::Won, t), "won"))
+                .child(legend(outcome_color(Outcome::Lost, t), "lost"))
+                .child(legend(outcome_color(Outcome::Guaranteed, t), "guaranteed")),
+        );
+    }
+    col_
 }
 
 /// What was pulled while the archiver watched, this run
