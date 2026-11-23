@@ -14,6 +14,7 @@
 //! Every screen can be rendered without a window or a capture: `--ui --snap out.png --scene ready`
 //! (see [`scenes`]).
 
+use std::cell::RefCell;
 use std::pin::pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -53,6 +54,12 @@ use state::{Inventory, Panel, Ui};
 use worker::WorkerEvent;
 
 const TITLE: &str = "Reliquary Archiver";
+
+thread_local! {
+    /// The app's window, to save where it is when it closes. Rune runs every window hook on the UI
+    /// thread, the thread this lives on
+    static WINDOW: RefCell<Option<rune::WindowHandle>> = const { RefCell::new(None) };
+}
 
 pub struct Options {
     /// Capturing needs administrator rights the app doesn't have, so it won't start
@@ -115,14 +122,36 @@ pub fn run(tap: Tap, options: Options) {
     let (settings, settings_file) = settings::load();
     let rt = tokio::runtime::Handle::current();
 
+    // Open where the window was last time. Rune's tooling (snapshots, scripts) draws at its own
+    // size, the same on every machine
+    let frame = settings.window.filter(|_| options.ui_args.is_empty());
+    if let Some(frame) = frame {
+        app = app
+            .window_options(rune::WindowOptions {
+                position: Some(frame.position),
+                physical_size: Some(frame.size),
+                ..Default::default()
+            })
+            .maximized(frame.maximized);
+    }
+
     // Starting minimized hides the window in the tray if there is one to bring it back from,
     // otherwise it opens minimized
     let start_in_tray = settings.start_minimized && settings.close_to_tray;
+    let minimize = settings.start_minimized && !start_in_tray;
     if start_in_tray {
         app = app.windowless();
-    } else if settings.start_minimized {
+    }
+    if frame.is_some() || minimize {
         let handle = handle.clone();
-        app = app.on_ready(move |_| handle.minimize());
+        app = app.on_ready(move |window| {
+            if frame.is_some() {
+                keep_on_screen(window, &handle);
+            }
+            if minimize {
+                handle.minimize();
+            }
+        });
     }
 
     app.init(move || {
@@ -146,18 +175,49 @@ pub fn run(tap: Tap, options: Options) {
         ui
     })
     .on_close(|s: &mut Ui, tx: &mut Tx| {
+        remember_frame(s);
         if !(s.settings.close_to_tray && s.has_tray) {
             tx.quit();
         }
     })
     .on_quit(|s: &mut Ui, _| {
+        remember_frame(s);
         if let Some(services) = &s.services {
             services.save_settings(&s.settings);
             services.settings_file.flush();
         }
     })
-    .on_window(set_window_icon)
+    .on_window(|window| {
+        set_window_icon(window);
+        WINDOW.set(Some(window.clone()));
+    })
     .run();
+}
+
+/// Keeps where the window is in the settings, to open it there next time. Does nothing once it
+/// has closed (to the tray), when where it was is already kept
+fn remember_frame(s: &mut Ui) {
+    let Some(placement) = WINDOW.with_borrow(|window| window.as_ref().and_then(|window| window.placement())) else {
+        return;
+    };
+    if let Some(frame) = settings::WindowFrame::of(&placement, s.settings.window) {
+        s.settings_mut(|settings| settings.window = Some(frame));
+    }
+}
+
+/// Brings a window opened where it was last time back onto a display, for when that display is
+/// gone or moved: centred on the display nearest to it if too little of its top edge, where it's
+/// dragged from, shows
+fn keep_on_screen(window: &rune::WindowHandle, handle: &AppHandle<Ui>) {
+    let Some(placement) = window.placement() else { return };
+    let Some(((dx, dy), (dw, dh))) = placement.display else { return };
+    let (x, y) = placement.position;
+    let width = placement.content_size.0 as i32;
+    let shown = (x + width).min(dx + dw as i32) - x.max(dx);
+    let top_inside = y >= dy && y < dy + dh as i32 - 40;
+    if shown < 120 || !top_inside {
+        handle.update(|_, tx| tx.center_window());
+    }
 }
 
 /// Starts capturing, the WebSocket server and everything that feeds the window

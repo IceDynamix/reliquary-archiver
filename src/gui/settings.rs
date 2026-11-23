@@ -148,6 +148,8 @@ pub struct Settings {
     pub start_minimized: bool,
     /// Port for the WebSocket server (0 = auto-assign)
     pub ws_port: u16,
+    /// Where the window was when it last closed, to open it there again
+    pub window: Option<WindowFrame>,
 }
 
 impl Default for Settings {
@@ -164,7 +166,49 @@ impl Default for Settings {
             run_on_start: false,
             start_minimized: false,
             ws_port: 23313,
+            window: None,
         }
+    }
+}
+
+/// Where the window sits on the desktop, in physical pixels
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct WindowFrame {
+    /// The frame's top-left
+    pub position: (i32, i32),
+    /// The content's size
+    pub size: (u32, u32),
+    /// Opens maximized, and goes back to `position` and `size` when restored
+    pub maximized: bool,
+}
+
+impl WindowFrame {
+    /// The frame to open at next time for a window at `placement`. While it's maximized or
+    /// minimized that's the frame restoring it returns to, which only Windows keeps a record of;
+    /// elsewhere the `last` frame stands in for it. Full screen keeps the last frame.
+    pub fn of(placement: &rune::WindowPlacement, last: Option<WindowFrame>) -> Option<WindowFrame> {
+        if placement.full_screen {
+            return last;
+        }
+        let (position, size) = if placement.maximized || placement.minimized {
+            match (placement.restore, last) {
+                (Some(restore), _) => restore,
+                (None, Some(last)) => (last.position, last.size),
+                (None, None) => return None,
+            }
+        } else {
+            (placement.position, placement.content_size)
+        };
+        Some(WindowFrame {
+            position,
+            size,
+            // A minimized window opens as it was before it was minimized, as far as that's known
+            maximized: if placement.minimized {
+                last.is_some_and(|last| last.maximized)
+            } else {
+                placement.maximized
+            },
+        })
     }
 }
 
@@ -358,4 +402,79 @@ pub fn load() -> (Settings, SettingsFile) {
 
     tracing::info!("Loaded settings from {}", path.display());
     (settings, file)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn placement() -> rune::WindowPlacement {
+        rune::WindowPlacement {
+            position: (100, 50),
+            content_size: (920, 1400),
+            scale: 2.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_window_reopens_where_it_was() {
+        let frame = WindowFrame::of(&placement(), None).unwrap();
+        assert_eq!((frame.position, frame.size, frame.maximized), ((100, 50), (920, 1400), false));
+    }
+
+    #[test]
+    fn a_maximized_window_keeps_the_frame_it_restores_to() {
+        let maximized = rune::WindowPlacement {
+            position: (-8, -8),
+            content_size: (2560, 1400),
+            maximized: true,
+            restore: Some(((300, 200), (900, 1300))),
+            ..placement()
+        };
+        let frame = WindowFrame::of(&maximized, None).unwrap();
+        assert_eq!((frame.position, frame.size, frame.maximized), ((300, 200), (900, 1300), true));
+
+        // Without a record of it, the last frame stands in
+        let last = WindowFrame {
+            position: (1, 2),
+            size: (3, 4),
+            maximized: false,
+        };
+        let frame = WindowFrame::of(
+            &rune::WindowPlacement {
+                restore: None,
+                ..maximized
+            },
+            Some(last),
+        )
+        .unwrap();
+        assert_eq!((frame.position, frame.size, frame.maximized), ((1, 2), (3, 4), true));
+        assert_eq!(
+            WindowFrame::of(
+                &rune::WindowPlacement {
+                    restore: None,
+                    ..maximized
+                },
+                None
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_minimized_window_reopens_as_it_was_before() {
+        let last = WindowFrame {
+            position: (1, 2),
+            size: (3, 4),
+            maximized: true,
+        };
+        let minimized = rune::WindowPlacement {
+            minimized: true,
+            restore: Some(((300, 200), (900, 1300))),
+            ..placement()
+        };
+        let frame = WindowFrame::of(&minimized, Some(last)).unwrap();
+        assert_eq!((frame.position, frame.size, frame.maximized), ((300, 200), (900, 1300), true));
+    }
 }
