@@ -118,6 +118,7 @@ pub(super) fn wallpaper_for<'a>(s: &Ui, image: &'a rune::Image, window: [f32; 2]
         window,
         fill: settings.background_fill,
         edges: s.background_edges,
+        color: s.background_color(rune::Color::BLACK).color(),
         scale: 1.0,
         reach: 1.0,
     })

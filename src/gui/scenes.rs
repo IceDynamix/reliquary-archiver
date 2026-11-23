@@ -120,7 +120,7 @@ pub const SCENES: &[Scene] = &[
         background(s, 0.3);
         s.panel = Some(Panel::Settings);
     }),
-    // The background contained, with a fill around it: the one `SCENE_FILL` numbers (0 to 6, as
+    // The background contained, with a fill around it: the one `SCENE_FILL` numbers (0 to 7, as
     // `BackgroundFill::ALL`), Blur without
     ("background-fill", |s| {
         running(s, 1);
@@ -128,7 +128,7 @@ pub const SCENES: &[Scene] = &[
         background(s, 0.9);
         s.settings.image_fit = super::settings::ImageFit::Contain;
         let fill = std::env::var("SCENE_FILL").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1);
-        s.settings.background_fill = super::settings::BackgroundFill::ALL[fill.min(6)];
+        s.settings.background_fill = super::settings::BackgroundFill::ALL[fill.min(7)];
         s.settings.background_anchor = [0.5, 0.5];
         s.settings.background_target = Some([0.3, 0.5]);
     }),
@@ -141,6 +141,17 @@ pub const SCENES: &[Scene] = &[
         s.settings.background_fill = super::settings::BackgroundFill::MirrorBlur;
         s.settings.background_anchor = [0.3, 0.6];
         s.settings.background_target = Some([0.5, 0.2]);
+        s.panel = Some(Panel::Settings);
+    }),
+    // The colour around the background picked in the settings
+    ("background-color", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        background(s, 0.6);
+        s.settings.image_fit = super::settings::ImageFit::Contain;
+        s.settings.background_fill = super::settings::BackgroundFill::Color;
+        s.settings.background_color = Some("#2a1f4d".into());
+        s.background_hex.replace_text("#2a1f4d");
         s.panel = Some(Panel::Settings);
     }),
     ("anchored", |s| {

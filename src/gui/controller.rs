@@ -232,6 +232,7 @@ fn reset(s: &mut Ui) {
         background_anchor: s.settings.background_anchor,
         background_target: s.settings.background_target,
         background_fill: s.settings.background_fill,
+        background_color: s.settings.background_color.clone(),
         ..Settings::default()
     };
     let images = s.images.take();

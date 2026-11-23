@@ -28,6 +28,8 @@ pub struct Wallpaper<'a> {
     pub fill: BackgroundFill,
     /// The image's edge colours, top, right, bottom, left
     pub edges: Option<[Color; 4]>,
+    /// What [`BackgroundFill::Color`] fills with
+    pub color: Color,
     /// Drawn this much smaller than the window it stands for, which blurs scale with
     pub scale: f32,
     /// What the blurred mirror's bands reach scales with: `scale`, but less in a preview too
@@ -64,6 +66,7 @@ impl Wallpaper<'_> {
                         .blur(BLUR * k),
                 )
             }
+            BackgroundFill::Color => layer.child(el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).fill(self.color)),
             BackgroundFill::EdgeColor => {
                 let Some([top, right, bottom, left]) = self.edges else {
                     return layer;

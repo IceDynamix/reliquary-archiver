@@ -46,6 +46,10 @@ pub struct Ui {
     pub settings: Settings,
     /// The port field in the settings panel
     pub port_edit: TextEdit,
+    /// The background colour as it's being picked: its hue kept through greys, which have none
+    pub background_hsv: Option<rune_kit::Hsv>,
+    /// The background colour's hex code, typed or kept in step with the picker
+    pub background_hex: TextEdit,
     /// A port that was asked for and hasn't been opened yet
     pub pending_port: Option<u16>,
     /// Why the port in the settings panel couldn't be used
@@ -387,6 +391,8 @@ impl Ui {
             update: Update::Idle,
             update_dismissed: false,
             port_edit: TextEdit::new(settings.ws_port.to_string()),
+            background_hsv: None,
+            background_hex: TextEdit::new(settings.background_color.clone().unwrap_or_default()),
             settings,
             pending_port: None,
             port_error: None,
@@ -1112,6 +1118,30 @@ impl Ui {
 
     pub fn set_background_fill(&mut self, fill: BackgroundFill) {
         self.settings_mut(|s| s.background_fill = fill);
+    }
+
+    /// The colour [`BackgroundFill::Color`] fills with: the one picked, else the image's darkest
+    /// edge colour, else the window's own
+    pub fn background_color(&self, fallback: rune::Color) -> rune_kit::Hsv {
+        self.background_hsv
+            .or_else(|| self.settings.background_color.as_deref().and_then(rune_kit::Hsv::from_hex))
+            .or_else(|| {
+                let edges = self.background_edges?;
+                edges
+                    .into_iter()
+                    .min_by(|a, b| a.luminance().total_cmp(&b.luminance()))
+                    .map(rune_kit::Hsv::of)
+            })
+            .unwrap_or_else(|| rune_kit::Hsv::of(fallback))
+    }
+
+    /// Picks the colour [`BackgroundFill::Color`] fills with
+    pub fn set_background_color(&mut self, hsv: rune_kit::Hsv) {
+        self.background_hsv = Some(hsv);
+        let hex = hsv.hex();
+        if self.settings.background_color.as_deref() != Some(hex.as_str()) {
+            self.settings_mut(|s| s.background_color = Some(hex));
+        }
     }
 
     pub fn set_background_opacity(&mut self, opacity: f32) {

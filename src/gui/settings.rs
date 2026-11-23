@@ -37,6 +37,8 @@ pub enum BackgroundFill {
     Blur,
     /// The average colour along each of the image's edges
     EdgeColor,
+    /// One colour, picked (`Settings::background_color`)
+    Color,
     /// The image's outermost pixels drawn out to the window's edges
     Extend,
     /// The image reflected at its edges, and again past those
@@ -48,10 +50,11 @@ pub enum BackgroundFill {
 }
 
 impl BackgroundFill {
-    pub const ALL: [BackgroundFill; 7] = [
+    pub const ALL: [BackgroundFill; 8] = [
         BackgroundFill::None,
         BackgroundFill::Blur,
         BackgroundFill::EdgeColor,
+        BackgroundFill::Color,
         BackgroundFill::Extend,
         BackgroundFill::Mirror,
         BackgroundFill::MirrorBlur,
@@ -63,6 +66,7 @@ impl BackgroundFill {
             BackgroundFill::None => "None",
             BackgroundFill::Blur => "Blur",
             BackgroundFill::EdgeColor => "Edge colour",
+            BackgroundFill::Color => "Colour",
             BackgroundFill::Extend => "Extend",
             BackgroundFill::Mirror => "Mirror",
             BackgroundFill::MirrorBlur => "Mirror, blurred",
@@ -186,6 +190,9 @@ pub struct Settings {
     pub background_target: Option<[f32; 2]>,
     /// What fills the window where the image doesn't reach
     pub background_fill: BackgroundFill,
+    /// The colour [`BackgroundFill::Color`] fills with, as `#rrggbb`. None until one is picked:
+    /// the image's darkest edge colour until then
+    pub background_color: Option<String>,
     /// Where the cards sit when the window is bigger than they are
     pub card_anchor: Anchor,
     pub theme: ThemeMode,
@@ -214,6 +221,7 @@ impl Default for Settings {
             background_anchor: [0.5, 0.5],
             background_target: Some([0.5, 0.5]),
             background_fill: BackgroundFill::default(),
+            background_color: None,
             card_anchor: Anchor::default(),
             theme: ThemeMode::default(),
             accent: Accent::default(),
