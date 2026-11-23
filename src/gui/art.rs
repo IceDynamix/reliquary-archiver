@@ -39,6 +39,8 @@ pub enum Art {
     Preview(u32),
     /// An item's icon, like a pass or Stellar Jade
     Item(u32),
+    /// A character's round head, or a light cone's small card
+    Icon(u32),
     /// A layer of a warp banner's art, by the banner's featured item
     Layer(u32, Layer),
     /// A warp's ticket, as the game's warp screen tabs it; selected or not
@@ -114,6 +116,8 @@ impl Art {
             Art::Preview(id) if db.is_light_cone(id) => ("image/light_cone_preview", id),
             Art::Preview(id) => ("image/character_preview", id),
             Art::Item(id) => ("icon/item", id),
+            Art::Icon(id) if db.is_light_cone(id) => ("icon/light_cone", id),
+            Art::Icon(id) => ("icon/avatar", id),
             Art::Layer(id, layer) => return format!("layer/{id}/{layer:?}.png"),
             Art::Ticket(ticket, selected) => {
                 return format!("ticket/{ticket:?}{}.png", if selected { "-selected" } else { "" });
@@ -748,6 +752,8 @@ mod tests {
         assert_eq!(Art::Portrait(1506).path(), "image/character_portrait/1506.png");
         assert_eq!(Art::Preview(23048).path(), "image/light_cone_preview/23048.png");
         assert_eq!(Art::Item(102).path(), "icon/item/102.png");
+        assert_eq!(Art::Icon(1001).path(), "icon/avatar/1001.png");
+        assert_eq!(Art::Icon(23048).path(), "icon/light_cone/23048.png");
         assert_eq!(Art::Portrait(1506).file_name("1"), "image-character_portrait-1506-2048.qoi");
         assert_eq!(
             Art::Layer(1511, Layer::Main).file_name("20261029-0524"),

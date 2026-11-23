@@ -79,7 +79,7 @@ pub struct Ui {
     pub warps: Warps,
 }
 
-/// The warp tracker: what the warp database reports, and the sheet's own state
+/// The warp tracker: what the warp database reports, and the warp screen's own state
 pub struct Warps {
     /// Why the database couldn't be opened
     pub unavailable: Option<String>,
@@ -88,8 +88,14 @@ pub struct Warps {
     pub summaries: HashMap<u32, Summary>,
     /// What the database is busy with, e.g. a sync
     pub busy: Option<String>,
-    /// The pool the sheet shows
+    /// The pool the warp screen shows
     pub pool: Pool,
+    /// The warp screen's view of it: its banner, or scrolled down to its history
+    pub page: WarpPage,
+    /// Wheel and trackpad scrolls on their way to turning the warp screen's page
+    pub snap: Snap,
+    /// Where each page's own scroll is, by [`WarpPage`]: its offset and the most it scrolls
+    pub page_scroll: [rune::Live<[f32; 2]>; 2],
     /// A link to the warp history, pasted in
     pub link_edit: TextEdit,
     /// A backup with several profiles waiting for the user to pick one
@@ -103,6 +109,95 @@ pub struct Warps {
     /// The ticket last picked on the warp screen's rail, and when: its shine plays for a moment
     /// after, and not again when the layout changes
     pub picked: Option<(Pool, Instant)>,
+}
+
+/// The warp screen's two views of a warp, one over the other: what its banner is and what the
+/// warps in hand buy, and below it the whole history
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WarpPage {
+    #[default]
+    Banner,
+    History,
+}
+
+/// How far a scroll pulls past a page's end before the page turns, in points
+const SNAP_PULL: f32 = 60.0;
+/// A pause this long between scrolls starts the pull over, in seconds
+const SNAP_PAUSE: f64 = 0.22;
+/// After a turn, scrolls are held this long, so the rest of the gesture doesn't run on into the
+/// new page or turn it back, in seconds
+const SNAP_SETTLE: f64 = 0.55;
+
+/// Turns the warp screen's page with the wheel, as a page that snaps rather than scrolls: a scroll
+/// that pulls far enough past the end of a page goes to the next
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Snap {
+    /// How far the scrolls under way pull, down negative
+    pull: f32,
+    /// When the last scroll came and the page last turned, on Rune's clock ([`Tx::clock`])
+    last: Option<f64>,
+    turned: Option<f64>,
+}
+
+/// Where a page's own scroll stands, for whether a scroll past it turns the page
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PageScroll {
+    pub at_top: bool,
+    pub at_bottom: bool,
+}
+
+impl PageScroll {
+    /// From the offset and the most it scrolls, as the page reports them
+    pub fn of([offset, max]: [f32; 2]) -> PageScroll {
+        PageScroll {
+            at_top: offset <= 1.0,
+            at_bottom: offset >= max - 1.0,
+        }
+    }
+}
+
+/// A wheel or trackpad scroll `dy` points over the page (down negative, as Rune gives it). True
+/// takes it: it turned the page, or pulls towards turning it, or comes too soon after a turn.
+/// False lets the page scroll itself. `now` is Rune's clock, in seconds
+pub fn snap_wheel(s: &mut Ui, dy: f32, notch: bool, momentum: bool, scroll: PageScroll, now: f64) -> bool {
+    let snap = &mut s.warps.snap;
+    if snap.turned.is_some_and(|at| now - at < SNAP_SETTLE) {
+        return true;
+    }
+    if dy == 0.0 {
+        return false;
+    }
+    let (down, page) = (dy < 0.0, s.warps.page);
+    let past_end = match page {
+        WarpPage::Banner => down && scroll.at_bottom,
+        WarpPage::History => !down && scroll.at_top,
+    };
+    if !past_end || momentum {
+        snap.pull = 0.0;
+        return false;
+    }
+    if snap.last.is_none_or(|at| now - at > SNAP_PAUSE) || snap.pull.signum() != dy.signum() {
+        snap.pull = 0.0;
+    }
+    snap.pull += dy;
+    snap.last = Some(now);
+    // A notch of a mouse wheel is a step, it turns the page at once
+    if notch || snap.pull.abs() >= SNAP_PULL {
+        *snap = Snap {
+            turned: Some(now),
+            ..Snap::default()
+        };
+        turn_page(s);
+    }
+    true
+}
+
+/// Shows the warp screen's other page
+pub fn turn_page(s: &mut Ui) {
+    s.warps.page = match s.warps.page {
+        WarpPage::Banner => WarpPage::History,
+        WarpPage::History => WarpPage::Banner,
+    };
 }
 
 /// How long a ticket picked on the warp screen's rail shines: the shine's delay and sweep, and a
@@ -149,6 +244,9 @@ impl Default for Warps {
             summaries: HashMap::new(),
             busy: None,
             pool: Pool::Character,
+            page: WarpPage::Banner,
+            snap: Snap::default(),
+            page_scroll: [rune::Live::new([0.0; 2]), rune::Live::new([0.0; 2])],
             featured: HashMap::new(),
             rosters: HashMap::new(),
             session_start: chrono::Utc::now().timestamp(),
@@ -249,7 +347,6 @@ pub enum Update {
 pub enum Panel {
     Settings,
     Logs,
-    Warps,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -487,6 +584,7 @@ impl Ui {
     pub fn open_warps(&mut self) {
         self.screen = Screen::Warps;
         self.panel = None;
+        self.warps.page = WarpPage::Banner;
         // Opens on the pool pulled on last
         if let Some(summary) = self.warps_summary()
             && let Some(latest) = summary
@@ -514,9 +612,6 @@ impl Ui {
 
     pub fn close_warps(&mut self) {
         self.screen = Screen::Main;
-        if self.panel == Some(Panel::Warps) {
-            self.panel = None;
-        }
     }
 
     /// Hands art that arrived to Rune. True when there was any
@@ -632,7 +727,9 @@ impl Ui {
             WarpUpdate::Notice { title, detail, error } => self.notify(title, detail, error, None, tx),
             WarpUpdate::ChooseProfile { path, uid, profiles } => {
                 self.warps.choose = Some(ProfilePick { path, uid, profiles });
-                self.panel = Some(Panel::Warps);
+                // The pick is on the warp screen's history page, under where backups are imported
+                self.screen = Screen::Warps;
+                self.warps.page = WarpPage::History;
             }
         }
     }
@@ -1030,6 +1127,72 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const AT_TOP: PageScroll = PageScroll {
+        at_top: true,
+        at_bottom: false,
+    };
+    const AT_BOTTOM: PageScroll = PageScroll {
+        at_top: false,
+        at_bottom: true,
+    };
+    const BOTH: PageScroll = PageScroll {
+        at_top: true,
+        at_bottom: true,
+    };
+
+    #[test]
+    fn a_wheel_notch_past_the_banner_turns_to_the_history_and_back() {
+        let mut s = ui();
+        assert!(snap_wheel(&mut s, -100.0, true, false, BOTH, 1.0));
+        assert_eq!(s.warps.page, WarpPage::History);
+        // The rest of the gesture is held, it doesn't turn the page straight back
+        assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 1.2));
+        assert_eq!(s.warps.page, WarpPage::History);
+        assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 2.0));
+        assert_eq!(s.warps.page, WarpPage::Banner);
+    }
+
+    #[test]
+    fn a_page_scrolls_itself_until_its_end() {
+        let mut s = ui();
+        // The banner taller than its room, partway down: it scrolls
+        let partway = PageScroll {
+            at_top: false,
+            at_bottom: false,
+        };
+        assert!(!snap_wheel(&mut s, -100.0, true, false, partway, 1.0));
+        assert_eq!(s.warps.page, WarpPage::Banner);
+        // Scrolling up at the banner's top goes nowhere either
+        assert!(!snap_wheel(&mut s, 100.0, true, false, AT_TOP, 2.0));
+
+        s.warps.page = WarpPage::History;
+        assert!(!snap_wheel(&mut s, -100.0, true, false, AT_TOP, 3.0), "the history scrolls down");
+        assert!(!snap_wheel(&mut s, 100.0, true, false, AT_BOTTOM, 4.0), "and back up");
+        assert_eq!(s.warps.page, WarpPage::History);
+    }
+
+    #[test]
+    fn a_trackpad_turns_the_page_once_it_pulls_far_enough() {
+        let mut s = ui();
+        for i in 0..5 {
+            assert!(snap_wheel(&mut s, -10.0, false, false, AT_BOTTOM, 1.0 + i as f64 * 0.016));
+        }
+        assert_eq!(s.warps.page, WarpPage::Banner, "50 points isn't enough");
+        // A pause starts the pull over
+        assert!(snap_wheel(&mut s, -10.0, false, false, AT_BOTTOM, 2.0));
+        assert_eq!(s.warps.page, WarpPage::Banner);
+        for i in 1..6 {
+            snap_wheel(&mut s, -10.0, false, false, AT_BOTTOM, 2.0 + i as f64 * 0.016);
+        }
+        assert_eq!(s.warps.page, WarpPage::History);
+        // Coasting after the fingers lift never turns it
+        let mut s = ui();
+        for i in 0..20 {
+            snap_wheel(&mut s, -30.0, false, true, AT_BOTTOM, 1.0 + i as f64 * 0.016);
+        }
+        assert_eq!(s.warps.page, WarpPage::Banner);
+    }
 
     fn ui() -> Ui {
         Ui::new(Settings::default())

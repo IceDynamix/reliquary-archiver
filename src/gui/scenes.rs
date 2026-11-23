@@ -150,24 +150,31 @@ pub const SCENES: &[Scene] = &[
         logged_in(s, UID, Some(INVENTORY));
         warps(s, true);
     }),
-    ("warps-sheet", |s| {
+    // The warp screen turned to its history page
+    ("warp-history", |s| {
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));
         warps(s, true);
-        s.panel = Some(Panel::Warps);
+        roster(s);
+        s.screen = Screen::Warps;
+        s.warps.page = crate::gui::state::WarpPage::History;
     }),
-    ("warps-sheet-history", |s| {
+    ("warp-history-lc", |s| {
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));
         warps(s, true);
-        s.panel = Some(Panel::Warps);
+        roster(s);
+        s.screen = Screen::Warps;
+        s.warps.page = crate::gui::state::WarpPage::History;
         s.warps.pool = crate::warps::Pool::LightCone;
     }),
+    // An account with no warps kept yet
     ("warps-new", |s| {
         running(s, 0);
         logged_in(s, UID, Some(INVENTORY));
+        s.warps.accounts = vec![UID];
         s.warps.summaries.insert(UID, crate::gui::scenes::empty_summary());
-        s.panel = Some(Panel::Warps);
+        s.screen = Screen::Warps;
     }),
     ("warps-syncing", |s| {
         running(s, 1);
@@ -238,8 +245,8 @@ pub const SCENES: &[Scene] = &[
             s.warps.pool = crate::warps::Pool::from_gacha_type(pool.parse().unwrap_or(11)).unwrap_or(crate::warps::Pool::Character);
         }
     }),
-    // The warps of a real database, the one `WARPS_DB` names
-    ("warps-db", |s| {
+    // The history page of a real database, the one `WARPS_DB` names
+    ("warp-history-db", |s| {
         running(s, 1);
         let Some(summary) = std::env::var_os("WARPS_DB").and_then(|path| crate::warps::service::summary_of(path.as_ref(), None)) else {
             return;
@@ -247,7 +254,8 @@ pub const SCENES: &[Scene] = &[
         logged_in(s, summary.uid, Some(INVENTORY));
         s.warps.accounts = vec![summary.uid];
         s.warps.summaries.insert(summary.uid, summary);
-        s.panel = Some(Panel::Warps);
+        s.screen = Screen::Warps;
+        s.warps.page = crate::gui::state::WarpPage::History;
         if let Ok(pool) = std::env::var("WARPS_POOL") {
             s.warps.pool = crate::warps::Pool::from_gacha_type(pool.parse().unwrap_or(11)).unwrap_or(crate::warps::Pool::Character);
         }
@@ -256,7 +264,8 @@ pub const SCENES: &[Scene] = &[
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));
         warps(s, false);
-        s.panel = Some(Panel::Warps);
+        s.screen = Screen::Warps;
+        s.warps.page = crate::gui::state::WarpPage::History;
         s.warps.choose = Some(crate::gui::state::ProfilePick {
             path: "starrailstation-backup.dat".into(),
             uid: UID,

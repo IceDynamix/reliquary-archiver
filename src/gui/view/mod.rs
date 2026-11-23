@@ -92,7 +92,6 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
 
     settings::dialog(s, cx, &t, &mut layer);
     logs::dialog(s, cx, &t, &mut layer);
-    warps::dialog(s, cx, &t, &mut layer);
     if let Some(notice) = &s.notice {
         layer.push(notice_band(notice, cx, &t));
     }

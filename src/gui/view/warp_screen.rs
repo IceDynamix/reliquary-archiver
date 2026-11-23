@@ -11,8 +11,9 @@
 //! 4. Every 5 star as a bar of its pity, coloured by its 50/50.
 //! 5. What was pulled this session, while the game's history catches up.
 //!
-//! The warps are tickets down a rail on the left: their art, and their pity on the stub. The rest
-//! (sync, authkeys, imports, the full list) is in the history sheet behind "History".
+//! The warps are tickets down a rail on the left: their art, and their pity on the stub. Under each
+//! warp's banner is its history, a second page (see [`history`]): scrolling down past the banner
+//! turns to it, and back up past its top turns back, while the rail stays.
 //!
 //! The art comes in as the game's does: the banner's layers slide in from the left at their own
 //! speeds and settle, the number and the rest follow a beat behind.
@@ -25,7 +26,7 @@ use rune::{
 use super::parts::{self, Pill, kicker, perforation, pill, ring_button, rule, tab, ticket_on};
 use crate::gui::art::{Art, BannerArt, Layer, Ticket};
 use crate::gui::icons;
-use crate::gui::state::{Funds, Panel, Roster, Ui};
+use crate::gui::state::{Funds, PageScroll, Roster, Ui, WarpPage, snap_wheel, turn_page};
 use crate::gui::theme::{self, Theme};
 use crate::warps::odds::{self, Rates};
 use crate::warps::service::{RunningBanner, Summary};
@@ -36,6 +37,8 @@ use crate::warps::{Pool, source};
 const NARROW: f32 = 760.0;
 /// At least this wide, the rail shows the warps in full
 const WIDE: f32 = 1180.0;
+mod history;
+
 const PAD: f32 = 30.0;
 const GAP: f32 = 26.0;
 /// The game lays its warp screen out on this
@@ -234,12 +237,17 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
     let fit = Fit::of(width);
 
     let Some(summary) = s.warps_summary() else {
+        let message = match (&s.warps.unavailable, s.warps_uid()) {
+            (Some(error), _) => format!("The warp database couldn't be opened: {error}"),
+            (None, None) => "Log in to the game once, and the warps of the account are kept from then on.".to_string(),
+            (None, Some(_)) => "Reading your warps…".to_string(),
+        };
         return el().key("warp-screen").w_full().h_full().fill(t.bg).padding(22.0).child(
             col()
                 .w_full()
                 .gap(18.0)
                 .child(header(s, None, Color::WHITE, t))
-                .child(text("Reading your warps…").font(theme::BODY).color(t.muted)),
+                .child(text(message).font(theme::BODY).color(t.muted).wrap()),
         );
     };
     let pools: Vec<Pool> = summary.pools.iter().map(|p| p.pool).collect();
@@ -249,7 +257,21 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
         Pool::Character
     };
     let Some(stats) = summary.pool(pool) else {
-        return el().key("warp-screen").w_full().h_full().fill(t.bg);
+        // Nothing pulled yet: how the history fills in, and where from
+        return el().key("warp-screen").w_full().h_full().fill(t.bg).child(
+            col()
+                .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .px(PAD)
+                .pt(20.0)
+                .pb(24.0)
+                .gap(24.0)
+                .child(header(s, None, Color::WHITE, t))
+                .child(
+                    history::empty(s, summary, cx, t)
+                        .max_w(640.0)
+                        .scroll(rune::ScrollSpec { stick_bottom: false }),
+                ),
+        );
     };
 
     let running: Vec<&RunningBanner> = summary.running(pool).collect();
@@ -272,12 +294,46 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
         art,
     };
 
+    // The history page sits under the banner's: turning to it moves the banner, its art and its
+    // name up and out, and the history up into its place. The rail stays
+    let turned = s.warps.page == WarpPage::History;
+    let pager_height = cx.layout_size("warp-pager").map_or((height - 140.0).max(1.0), |[_, h]| h);
+    let shift = if turned { -pager_height } else { 0.0 };
+
     let mut page = el().key("warp-screen").w_full().h_full().fill(t.bg).clip_rounded(0.0);
     page = page.child(backdrop(s, &view, t));
-    page = page.child(stage(s, &view, width, height, fit, t));
+    page = page.child(
+        stage(s, &view, width, height, fit, t)
+            .offset(0.0, shift)
+            .offset_motion(page_spring()),
+    );
     page = page.child(scrims(width, height, fit, t));
+    // Deeper shade under the history, which is all words
+    page = page.child(
+        el().key("history-shade")
+            .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+            .inert()
+            .fill(t.bg.alpha(if t.dark { 0.6 } else { 0.7 }))
+            .opacity(if turned { 1.0 } else { 0.0 }),
+    );
 
     let content = if fit != Fit::Narrow {
+        let pages_width = (width - fit.card_from() - PAD).max(1.0);
+        let banner = col()
+            .w_full()
+            .min_h(pager_height - PAGE_HEADROOM)
+            .gap(24.0)
+            .child(
+                row()
+                    .w_full()
+                    .grow(1.0)
+                    .gap(GAP)
+                    .items_start()
+                    .child(banner_card(s, &view, &running, fit.card(width), cx, t).w(fit.card(width)))
+                    .child(el().grow(1.0))
+                    .children(hero.map(|item| col().self_stretch().justify_end().child(name_tags(&view, item, t)))),
+            )
+            .children(session_row(s, &view, t));
         let middle = row()
             .w_full()
             .grow(1.0)
@@ -285,9 +341,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             .gap(GAP)
             .items_start()
             .child(rail(s, summary, pool, fit, t))
-            .child(banner_card(s, &view, &running, fit.card(width), cx, t).w(fit.card(width)))
-            .child(el().grow(1.0))
-            .children(hero.map(|item| col().h_full().justify_end().child(name_tags(&view, item, t))));
+            .child(pager(s, banner, history::page(s, &view, pages_width, cx, t), pager_height, shift));
         col()
             .key("warp-content")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
@@ -297,17 +351,12 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             .gap(24.0)
             .child(header(s, Some(pool), accent, t))
             .child(middle)
-            .children(session_row(s, &view, t))
     } else {
         let band = narrow_band(height);
-        let column = col()
-            .key("warp-content-narrow")
+        let banner = col()
             .w_full()
-            .pt(14.0)
             .pb(20.0)
             .gap(18.0)
-            .child(header(s, Some(pool), accent, t).px(16.0))
-            .child(rail(s, summary, pool, fit, t))
             // Room for the art, its name over its foot
             .child(
                 col()
@@ -326,11 +375,73 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
                     .child(banner_card(s, &view, &running, width - 32.0, cx, t).w_full())
                     .children(session_row(s, &view, t)),
             );
+        let history = history::page(s, &view, width - 32.0, cx, t).px(16.0).pt(4.0);
         col()
+            .key("warp-content-narrow")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-            .child(column.scroll(rune::ScrollSpec { stick_bottom: false }))
+            .pt(14.0)
+            .gap(18.0)
+            .child(header(s, Some(pool), accent, t).px(16.0))
+            .child(rail(s, summary, pool, fit, t))
+            .child(pager(s, banner, history, pager_height, shift))
     };
     page.child(content)
+}
+
+/// Room at the top of each page for what rises over its top edge, which the page would clip
+const PAGE_HEADROOM: f32 = 24.0;
+
+/// The spring the pages turn on, and the art and its name go with them
+fn page_spring() -> Spring {
+    Spring::smooth(0.5, 0.0)
+}
+
+/// The banner's page over the history's, showing the one turned to. Each scrolls itself when it's
+/// taller than the room, and a scroll that runs on past its end turns the page (see
+/// [`snap_wheel`])
+fn pager(s: &Ui, banner: El, history: El, height: f32, shift: f32) -> El {
+    let page = |which: WarpPage, content: El| {
+        let scroll = s.warps.page_scroll[which as usize].clone();
+        let reported = scroll.clone();
+        col()
+            .key(match which {
+                WarpPage::Banner => "warp-page-banner",
+                WarpPage::History => "warp-page-history",
+            })
+            .w_full()
+            .h(height)
+            .pt(PAGE_HEADROOM)
+            .child(content)
+            .scroll(rune::ScrollSpec { stick_bottom: false })
+            .scroll_edge_fade(16.0)
+            .on_scroll_offset(move |at: rune::ScrollPos| {
+                reported.set([at.offset[1], at.max[1]]);
+            })
+            .on_wheel(move |s: &mut Ui, wheel: rune::WheelEvent, tx: &mut Tx| {
+                // The page out of sight takes nothing, it shouldn't be under the pointer anyway
+                if s.warps.page != which {
+                    return true;
+                }
+                let scroll = PageScroll::of(scroll.get());
+                snap_wheel(s, wheel.dy, wheel.notch, wheel.momentum, scroll, tx.clock())
+            })
+    };
+    // Reaches up over the gap above it, so what rises over the top of a page (the card's tab) shows
+    el().key("warp-pager")
+        .grow(1.0)
+        .min_w(0.0)
+        .self_stretch()
+        .mt(-PAGE_HEADROOM)
+        .clip_rounded(0.0)
+        .child(
+            col()
+                .key("warp-pages")
+                .pin(Some(0.0), Some(0.0), Some(0.0), None)
+                .offset(0.0, shift)
+                .offset_motion(page_spring())
+                .child(page(WarpPage::Banner, banner))
+                .child(page(WarpPage::History, history)),
+        )
 }
 
 /// How tall the art's band is in a narrow window
@@ -580,15 +691,21 @@ fn header(s: &Ui, selected: Option<Pool>, accent: Color, t: &Theme) -> El {
         bar = bar.child(budget_chip(s, Budget::of(funds, pool), t));
     }
     bar.child(status_chip(s, t))
-        .child(pill(
-            "warp-history",
-            "History",
-            Some(&icons::LIST),
-            Pill::Secondary,
-            true,
-            t,
-            |s: &mut Ui, _: &mut Tx| s.panel = Some(Panel::Warps),
-        ))
+        .children(selected.map(|_| {
+            let (words, glyph) = match s.warps.page {
+                WarpPage::Banner => ("History", &icons::LIST),
+                WarpPage::History => ("Banner", &icons::WARP),
+            };
+            pill(
+                "warp-history",
+                words,
+                Some(glyph),
+                Pill::Secondary,
+                true,
+                t,
+                |s: &mut Ui, _: &mut Tx| turn_page(s),
+            )
+        }))
         .child(ring_button("close-warps", &icons::CLOSE, "Back", false, t, |s| s.close_warps()))
 }
 
@@ -922,7 +1039,15 @@ fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], width: f32, cx: 
                 .children(targets(view, t)),
         )
         .child(perforation("warp-card-tear-history", cx, t))
-        .child(history_strip(view, width - 44.0, t).px(22.0).pt(12.0).pb(16.0));
+        .child(
+            history_strip(view, width - 44.0, t)
+                .px(22.0)
+                .pt(12.0)
+                .pb(16.0)
+                .cursor(rune::Cursor::Pointer)
+                .help("The whole history")
+                .on_press(|s: &mut Ui| turn_page(s)),
+        );
     rise(card, 0.05)
 }
 

@@ -48,10 +48,6 @@ pub struct Theme {
     pub good: Color,
     pub warn: Color,
     pub bad: Color,
-    /// Marks on a tile's pale face: the accent dark enough to read on it
-    pub face_ink: Color,
-    /// Problems on a tile's pale face
-    pub face_bad: Color,
     /// A tile's bone face, and its lower edge where the light falls off
     pub bone: Color,
     pub bone_shade: Color,
@@ -174,8 +170,6 @@ impl Theme {
                 good: oklch(0.82, 0.11, 200.0),
                 warn: oklch(0.8, 0.13, 65.0),
                 bad: oklch(0.68, 0.17, gem.bad_hue),
-                face_ink: accent_color(accent, false),
-                face_bad: oklch(0.55, 0.19, gem.bad_hue),
                 bone: oklch(0.93, 0.012, 88.0),
                 bone_shade: oklch(0.87, 0.016, 85.0),
                 tile_back: tile_back(accent, true).0,
@@ -201,8 +195,6 @@ impl Theme {
                 good: oklch(0.55, 0.11, 210.0),
                 warn: oklch(0.58, 0.14, 60.0),
                 bad: oklch(0.55, 0.19, gem.bad_hue),
-                face_ink: accent_color(accent, false),
-                face_bad: oklch(0.55, 0.19, gem.bad_hue),
                 bone: oklch(0.985, 0.008, 88.0),
                 bone_shade: oklch(0.93, 0.014, 85.0),
                 tile_back: tile_back(accent, false).0,
