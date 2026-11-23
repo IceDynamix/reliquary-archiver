@@ -120,6 +120,29 @@ pub const SCENES: &[Scene] = &[
         background(s, 0.3);
         s.panel = Some(Panel::Settings);
     }),
+    // The background contained, with a fill around it: the one `SCENE_FILL` numbers (0 to 6, as
+    // `BackgroundFill::ALL`), Blur without
+    ("background-fill", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        background(s, 0.9);
+        s.settings.image_fit = super::settings::ImageFit::Contain;
+        let fill = std::env::var("SCENE_FILL").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1);
+        s.settings.background_fill = super::settings::BackgroundFill::ALL[fill.min(6)];
+        s.settings.background_anchor = [0.5, 0.5];
+        s.settings.background_target = Some([0.3, 0.5]);
+    }),
+    // The background's position and fill in the settings, over the background they set
+    ("background-position", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        background(s, 0.6);
+        s.settings.image_fit = super::settings::ImageFit::Contain;
+        s.settings.background_fill = super::settings::BackgroundFill::MirrorBlur;
+        s.settings.background_anchor = [0.3, 0.6];
+        s.settings.background_target = Some([0.5, 0.2]);
+        s.panel = Some(Panel::Settings);
+    }),
     ("anchored", |s| {
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));

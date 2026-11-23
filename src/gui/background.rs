@@ -12,6 +12,8 @@ use std::time::Instant;
 
 use image::{DynamicImage, ImageDecoder, ImageReader};
 
+use super::settings::ImageFit;
+
 /// Images are scaled down until they just cover this many pixels
 const COVER: (u32, u32) = (2560, 1600);
 /// Where the scaled copies are kept, inside the app's data folder
@@ -22,7 +24,12 @@ pub struct Prepared {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
+    /// The average colour along each edge: top, right, bottom, left
+    pub edges: [rune::Color; 4],
 }
+
+/// How deep a strip along each edge [`Prepared::edges`] averages, as a share of the image
+const EDGE_STRIP: f32 = 0.02;
 
 /// Whether the image at `path` goes through this module, rather than Rune drawing it at the size
 /// it's shown at, as it does for vector images
@@ -104,11 +111,88 @@ fn scaled(image: DynamicImage) -> DynamicImage {
 
 fn into_prepared(image: DynamicImage) -> Prepared {
     let rgba = image.into_rgba8();
+    let (width, height) = (rgba.width(), rgba.height());
+    let rgba = rgba.into_raw();
     Prepared {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: rgba.into_raw(),
+        width,
+        height,
+        edges: edge_colors(width, height, &rgba),
+        rgba,
     }
+}
+
+/// The average colour of a strip along each edge of straight-alpha sRGB rows (top, right, bottom,
+/// left), averaged in linear light, as the eye mixes them
+fn edge_colors(width: u32, height: u32, rgba: &[u8]) -> [rune::Color; 4] {
+    let (w, h) = (width as usize, height as usize);
+    let deep = |side: usize| ((side as f32 * EDGE_STRIP).ceil() as usize).clamp(1, side.max(1));
+    let (across, down) = (deep(w), deep(h));
+    let average = |xs: std::ops::Range<usize>, ys: std::ops::Range<usize>| {
+        let mut sum = [0.0f64; 4];
+        let mut n = 0.0f64;
+        for y in ys {
+            for x in xs.clone() {
+                let i = (y * w + x) * 4;
+                let Some(px) = rgba.get(i..i + 4) else { continue };
+                let a = f64::from(px[3]) / 255.0;
+                for c in 0..3 {
+                    sum[c] += srgb_to_linear(f64::from(px[c]) / 255.0) * a;
+                }
+                sum[3] += a;
+                n += 1.0;
+            }
+        }
+        if sum[3] <= 0.0 {
+            return rune::Color::TRANSPARENT;
+        }
+        rune::Color {
+            r: (sum[0] / sum[3]) as f32,
+            g: (sum[1] / sum[3]) as f32,
+            b: (sum[2] / sum[3]) as f32,
+            a: (sum[3] / n) as f32,
+        }
+    };
+    [
+        average(0..w, 0..down),
+        average(w.saturating_sub(across)..w, 0..h),
+        average(0..w, h.saturating_sub(down)..h),
+        average(0..across, 0..h),
+    ]
+}
+
+/// An sRGB-encoded channel in linear light
+fn srgb_to_linear(c: f64) -> f64 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
+
+/// Where the background image goes in a window `window` points large: `[x, y, w, h]` in points.
+/// `image` is its own size in points, which `fit` scales. Then in each direction the image's
+/// `anchor` point (0 to 1 across and down it) goes to the window's `target` point, as near as the
+/// image allows: one larger than the window never pulls away from its edges, one smaller never
+/// slides out of it. Without a target, the anchor goes to the same place in the window as it is in
+/// the image, as CSS's `object-position` puts it
+pub fn place(fit: ImageFit, image: [f32; 2], window: [f32; 2], anchor: [f32; 2], target: Option<[f32; 2]>) -> [f32; 4] {
+    let [iw, ih] = image;
+    let [ww, wh] = window;
+    if iw <= 0.0 || ih <= 0.0 || fit == ImageFit::Fill {
+        return [0.0, 0.0, ww, wh];
+    }
+    let scaled = |k: f32| [iw * k, ih * k];
+    let contain = scaled((ww / iw).min(wh / ih));
+    let size = match fit {
+        ImageFit::Fill => [ww, wh],
+        ImageFit::Contain => contain,
+        ImageFit::Cover => scaled((ww / iw).max(wh / ih)),
+        ImageFit::None => image,
+        ImageFit::ScaleDown if iw > ww || ih > wh => contain,
+        ImageFit::ScaleDown => image,
+    };
+    let target = target.unwrap_or(anchor);
+    let at = |n: usize| {
+        let slack = window[n] - size[n];
+        (target[n] * window[n] - anchor[n] * size[n]).clamp(slack.min(0.0), slack.max(0.0))
+    };
+    [at(0), at(1), size[0], size[1]]
 }
 
 /// Where the scaled copy of the image at `path` is kept. It names the file's path, size and
@@ -166,5 +250,72 @@ mod tests {
         assert!(!is_raster("C:\\\\art\\\\tile.SVG"));
         assert!(is_raster("wallpaper.jpg"));
         assert!(is_raster("no extension"));
+    }
+
+    const WINDOW: [f32; 2] = [800.0, 600.0];
+    const CENTRE: [f32; 2] = [0.5, 0.5];
+
+    #[test]
+    fn centred_it_sits_where_it_always_has() {
+        // A wide image covering the window is cut evenly left and right
+        assert_eq!(place(ImageFit::Cover, [1600.0, 600.0], WINDOW, CENTRE, Some(CENTRE)), [
+            -400.0, 0.0, 1600.0, 600.0
+        ]);
+        // Contained, it's centred top to bottom
+        assert_eq!(place(ImageFit::Contain, [1600.0, 600.0], WINDOW, CENTRE, Some(CENTRE)), [
+            0.0, 150.0, 800.0, 300.0
+        ]);
+        assert_eq!(place(ImageFit::Fill, [1600.0, 600.0], WINDOW, [0.0, 0.0], None), [
+            0.0, 0.0, 800.0, 600.0
+        ]);
+    }
+
+    #[test]
+    fn the_anchor_goes_to_the_target_as_near_as_the_image_allows() {
+        // The image's point at 60% (960) at the window's left third (266.7)
+        let [x, ..] = place(ImageFit::Cover, [1600.0, 600.0], WINDOW, [0.6, 0.5], Some([1.0 / 3.0, 0.5]));
+        assert!((x - (800.0 / 3.0 - 960.0)).abs() < 0.01);
+        // At the window's left edge it would pull the image's right edge in: it stops there
+        let [x, ..] = place(ImageFit::Cover, [1600.0, 600.0], WINDOW, [0.9, 0.5], Some([0.0, 0.5]));
+        assert_eq!(x, -800.0);
+        // A smaller image doesn't slide out of the window
+        let [_, y, ..] = place(ImageFit::Contain, [1600.0, 600.0], WINDOW, [0.5, 0.0], Some([0.5, 1.0]));
+        assert_eq!(y, 300.0);
+    }
+
+    #[test]
+    fn without_a_target_the_anchor_lines_up_as_css_does() {
+        // object-position 25% 100%: the image's quarter at the window's quarter, bottoms together
+        assert_eq!(place(ImageFit::Cover, [1600.0, 600.0], WINDOW, [0.25, 1.0], None), [
+            -200.0, 0.0, 1600.0, 600.0
+        ]);
+        assert_eq!(place(ImageFit::None, [200.0, 100.0], WINDOW, [1.0, 1.0], None), [
+            600.0, 500.0, 200.0, 100.0
+        ]);
+    }
+
+    #[test]
+    fn scale_down_shrinks_only_what_is_too_big() {
+        assert_eq!(place(ImageFit::ScaleDown, [200.0, 100.0], WINDOW, CENTRE, None)[2..], [
+            200.0, 100.0
+        ]);
+        assert_eq!(place(ImageFit::ScaleDown, [1600.0, 600.0], WINDOW, CENTRE, None)[2..], [
+            800.0, 300.0
+        ]);
+    }
+
+    #[test]
+    fn edges_average_their_own_strip() {
+        // 4 by 4: the top row red, the rest blue
+        let mut rgba = Vec::new();
+        for y in 0..4 {
+            for _ in 0..4 {
+                rgba.extend_from_slice(if y == 0 { &[255, 0, 0, 255] } else { &[0, 0, 255, 255] });
+            }
+        }
+        let [top, right, bottom, _] = edge_colors(4, 4, &rgba);
+        assert_eq!((top.r, top.b), (1.0, 0.0));
+        assert_eq!((bottom.r, bottom.b), (0.0, 1.0));
+        assert!((right.r - 0.25).abs() < 1e-6, "a quarter of the right edge is red");
     }
 }

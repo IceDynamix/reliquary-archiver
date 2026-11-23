@@ -229,6 +229,9 @@ fn reset(s: &mut Ui) {
         background_image: s.settings.background_image.clone(),
         background_opacity: s.settings.background_opacity,
         image_fit: s.settings.image_fit,
+        background_anchor: s.settings.background_anchor,
+        background_target: s.settings.background_target,
+        background_fill: s.settings.background_fill,
         ..Settings::default()
     };
     let images = s.images.take();

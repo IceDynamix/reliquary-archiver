@@ -26,6 +26,51 @@ pub enum ImageFit {
     None,
 }
 
+/// What fills the window where the background image doesn't reach, when it's placed smaller than
+/// the window (see [`ImageFit`])
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum BackgroundFill {
+    /// The window's own background
+    None,
+    /// The image again, covering the window behind, blurred
+    #[default]
+    Blur,
+    /// The average colour along each of the image's edges
+    EdgeColor,
+    /// The image's outermost pixels drawn out to the window's edges
+    Extend,
+    /// The image reflected at its edges, and again past those
+    Mirror,
+    /// Reflected as `Mirror`, blurring more the further from the image it reaches
+    MirrorBlur,
+    /// The image again side by side
+    Repeat,
+}
+
+impl BackgroundFill {
+    pub const ALL: [BackgroundFill; 7] = [
+        BackgroundFill::None,
+        BackgroundFill::Blur,
+        BackgroundFill::EdgeColor,
+        BackgroundFill::Extend,
+        BackgroundFill::Mirror,
+        BackgroundFill::MirrorBlur,
+        BackgroundFill::Repeat,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BackgroundFill::None => "None",
+            BackgroundFill::Blur => "Blur",
+            BackgroundFill::EdgeColor => "Edge colour",
+            BackgroundFill::Extend => "Extend",
+            BackgroundFill::Mirror => "Mirror",
+            BackgroundFill::MirrorBlur => "Mirror, blurred",
+            BackgroundFill::Repeat => "Repeat",
+        }
+    }
+}
+
 /// Light or dark
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ThemeMode {
@@ -133,6 +178,14 @@ pub struct Settings {
     pub image_fit: ImageFit,
     /// How strongly the background image shows, from 0 to 1
     pub background_opacity: f32,
+    /// The point of the background image that matters, from 0 to 1 across and down it
+    pub background_anchor: [f32; 2],
+    /// Where in the window that point goes, from 0 to 1 across and down it: as near as the image
+    /// allows without leaving a gap it could cover, or sliding out of view. None puts it at the
+    /// same place in the window as it is in the image (CSS's `object-position`)
+    pub background_target: Option<[f32; 2]>,
+    /// What fills the window where the image doesn't reach
+    pub background_fill: BackgroundFill,
     /// Where the cards sit when the window is bigger than they are
     pub card_anchor: Anchor,
     pub theme: ThemeMode,
@@ -158,6 +211,9 @@ impl Default for Settings {
             background_image: String::new(),
             image_fit: ImageFit::default(),
             background_opacity: 0.12,
+            background_anchor: [0.5, 0.5],
+            background_target: Some([0.5, 0.5]),
+            background_fill: BackgroundFill::default(),
             card_anchor: Anchor::default(),
             theme: ThemeMode::default(),
             accent: Accent::default(),

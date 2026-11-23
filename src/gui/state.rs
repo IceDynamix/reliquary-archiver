@@ -15,7 +15,7 @@ use tracing::level_filters::LevelFilter;
 
 use super::background;
 use super::services::{self, Services};
-use super::settings::{ImageFit, Settings};
+use super::settings::{BackgroundFill, ImageFit, Settings};
 use crate::session::SessionEvent;
 use crate::warps::Pool;
 use crate::warps::service::{Command as WarpCommand, ProfileChoice, Summary, Update as WarpUpdate};
@@ -70,6 +70,9 @@ pub struct Ui {
     pub images: Option<ImageCache>,
     /// The background image and the path it was loaded from
     pub background: Option<(String, Image)>,
+    /// The average colour along each edge of the background image (top, right, bottom, left), for
+    /// [`BackgroundFill::EdgeColor`]; none for vector images
+    pub background_edges: Option<[rune::Color; 4]>,
     /// Gets background images ready off the UI thread, set up with the window
     pub background_loader: Option<rune::Latest<(String, Result<background::Prepared, String>)>>,
     /// The background the loader is working on
@@ -400,6 +403,7 @@ impl Ui {
             images: None,
             background: None,
             background_loader: None,
+            background_edges: None,
             background_loading: None,
             background_error: None,
             warps: Warps::default(),
@@ -1005,6 +1009,7 @@ impl Ui {
         } else {
             // Rune draws vector images at the size they're shown at, which only needs the size
             let image = images.file(&path, 1024.0, 1.0);
+            self.background_edges = None;
             self.background = Some((path, image));
         }
     }
@@ -1020,13 +1025,17 @@ impl Ui {
         }
         let image = if background::is_raster(&path) {
             match background::prepare(&path) {
-                Ok(prepared) => images.rgba(prepared.width, prepared.height, prepared.rgba),
+                Ok(prepared) => {
+                    self.background_edges = Some(prepared.edges);
+                    images.rgba(prepared.width, prepared.height, prepared.rgba)
+                }
                 Err(e) => {
                     self.background_error = Some(e);
                     return;
                 }
             }
         } else {
+            self.background_edges = None;
             images.file(&path, 1024.0, 1.0)
         };
         let _ = image.wait();
@@ -1048,6 +1057,7 @@ impl Ui {
         match prepared {
             Ok(prepared) => {
                 if let Some(images) = &self.images {
+                    self.background_edges = Some(prepared.edges);
                     self.background = Some((path, images.rgba(prepared.width, prepared.height, prepared.rgba)));
                 }
             }
@@ -1081,6 +1091,27 @@ impl Ui {
 
     pub fn set_image_fit(&mut self, fit: ImageFit) {
         self.settings_mut(|s| s.image_fit = fit);
+    }
+
+    /// Sets the point of the background image that matters. Whole percents, so dragging doesn't
+    /// save a new file for every pixel moved
+    pub fn set_background_anchor(&mut self, anchor: [f32; 2]) {
+        let anchor = anchor.map(whole_percent);
+        if anchor != self.settings.background_anchor {
+            self.settings_mut(|s| s.background_anchor = anchor);
+        }
+    }
+
+    /// Sets where in the window the image's point goes, in whole percents as the point is
+    pub fn set_background_target(&mut self, target: Option<[f32; 2]>) {
+        let target = target.map(|target| target.map(whole_percent));
+        if target != self.settings.background_target {
+            self.settings_mut(|s| s.background_target = target);
+        }
+    }
+
+    pub fn set_background_fill(&mut self, fill: BackgroundFill) {
+        self.settings_mut(|s| s.background_fill = fill);
     }
 
     pub fn set_background_opacity(&mut self, opacity: f32) {
@@ -1391,4 +1422,9 @@ mod tests {
         assert!(ui.expire(now + CAPTURE_ERROR_TTL));
         assert!(ui.capture.error.is_none());
     }
+}
+
+/// 0 to 1, to the nearest whole percent
+fn whole_percent(v: f32) -> f32 {
+    (v.clamp(0.0, 1.0) * 100.0).round() / 100.0
 }

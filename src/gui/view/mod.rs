@@ -3,12 +3,12 @@
 //! logs open over it as sheets.
 
 use parts::{Pill, pill, plate, ring_button};
-use rune::{Cx, El, SurfaceFit, Tx, col, el, icon, row, text};
+use rune::{Cx, El, Tx, col, el, icon, row, text};
 
-use super::icons;
 use super::settings::{ImageFit, ThemeMode};
 use super::state::{LiveSync, Notice, Panel, Screen, Ui, Update};
 use super::theme::{self, Theme};
+use super::{background, icons};
 
 mod delivery;
 mod logs;
@@ -16,6 +16,7 @@ pub mod parts;
 mod settings;
 mod sky;
 mod status;
+mod wallpaper;
 mod warp_screen;
 mod warps;
 
@@ -99,31 +100,39 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
     rune_kit::root(page, layer)
 }
 
-/// The user's image behind everything, faded to the opacity they picked
+/// The background as the settings place it in a window `window` points large, on a display of
+/// `scale` pixels to the point
+pub(super) fn wallpaper_for<'a>(s: &Ui, image: &'a rune::Image, window: [f32; 2], scale: f32) -> Option<wallpaper::Wallpaper<'a>> {
+    // The image's own size is one image pixel per device pixel; a vector image without one fills
+    let own = image.size().map_or(window, |[w, h]| [w as f32 / scale, h as f32 / scale]);
+    let settings = &s.settings;
+    let place = |fit| background::place(fit, own, window, settings.background_anchor, settings.background_target);
+    // On whole device pixels, so the image isn't softened by sitting between them
+    let rect = place(settings.image_fit);
+    let snap = |v: f32| (v * scale).round() / scale;
+    let rect = [snap(rect[0]), snap(rect[1]), snap(rect[2]), snap(rect[3])];
+    Some(wallpaper::Wallpaper {
+        pixels: image.pixels(),
+        rect,
+        cover: place(ImageFit::Cover),
+        window,
+        fill: settings.background_fill,
+        edges: s.background_edges,
+        scale: 1.0,
+    })
+}
+
+/// The user's image behind everything, where they placed it and with what they picked around it,
+/// faded to the opacity they picked
 fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
     let image = s.background_image()?;
-    let pixels = image.pixels();
-    let layer = el().w_full().h_full().opacity(s.settings.background_opacity);
-
-    let layer = match s.settings.image_fit {
-        ImageFit::Fill => layer.pixels(pixels),
-        ImageFit::Contain => layer.pixels_fit(pixels, SurfaceFit::Fit),
-        ImageFit::Cover => layer.pixels_fit(pixels, SurfaceFit::Fill),
-        fit @ (ImageFit::None | ImageFit::ScaleDown) => {
-            // The image's own size is one image pixel per device pixel
-            let [width, height] = image.size()?;
-            let scale = cx.env().scale;
-            let (width, height) = (width as f32 / scale, height as f32 / scale);
-            let too_big = cx
-                .layout_size("page")
-                .is_none_or(|[window_width, window_height]| width > window_width || height > window_height);
-            if fit == ImageFit::ScaleDown && too_big {
-                layer.pixels_fit(pixels, SurfaceFit::Fit)
-            } else {
-                layer.center().child(el().size(width, height).pixels(pixels))
-            }
-        }
-    };
+    let window = cx.layout_size("page").unwrap_or([460.0, 700.0]);
+    let scale = cx.env().scale;
+    let wallpaper = wallpaper_for(s, image, window, scale)?;
+    let layer = el()
+        .pin(Some(0.0), Some(0.0), None, None)
+        .opacity(s.settings.background_opacity)
+        .child(wallpaper.build());
 
     // The header and footer sit right on the image, fading its edges into the window keeps them readable
     let edge = |top: bool| {
