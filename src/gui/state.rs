@@ -46,9 +46,9 @@ pub struct Ui {
     pub settings: Settings,
     /// The port field in the settings panel
     pub port_edit: TextEdit,
-    /// The background colour as it's being picked: its hue kept through greys, which have none
+    /// The background color as it's being picked: its hue kept through grays, which have none
     pub background_hsv: Option<rune_kit::Hsv>,
-    /// The background colour's hex code, typed or kept in step with the picker
+    /// The background color's hex code, typed or kept in step with the picker
     pub background_hex: TextEdit,
     /// A port that was asked for and hasn't been opened yet
     pub pending_port: Option<u16>,
@@ -74,12 +74,12 @@ pub struct Ui {
     pub images: Option<ImageCache>,
     /// The background image and the path it was loaded from
     pub background: Option<(String, Image)>,
-    /// The average colour along each edge of the background image (top, right, bottom, left), for
+    /// The average color along each edge of the background image (top, right, bottom, left), for
     /// [`BackgroundFill::EdgeColor`]; none for vector images
     pub background_edges: Option<[rune::Color; 4]>,
-    /// A small copy of the background image, to pick colours from; not for vector images
+    /// A small copy of the background image, to pick colors from; not for vector images
     pub background_sample: Option<std::sync::Arc<background::Sample>>,
-    /// The eyedropper is on: pressing on the image picks the colour around it
+    /// The eyedropper is on: pressing on the image picks the color around it
     pub background_dropper: bool,
     /// Gets background images ready off the UI thread, set up with the window
     pub background_loader: Option<rune::Latest<(String, Result<background::Prepared, String>)>>,
@@ -967,7 +967,7 @@ impl Ui {
         });
     }
 
-    /// The path a file dialog was answered with, if it wasn't cancelled
+    /// The path a file dialog was answered with, if it wasn't canceled
     fn dialog_path(&mut self, result: FileDialogResult, tx: &mut Tx) -> Option<PathBuf> {
         match result {
             Ok(path) => path,
@@ -1131,8 +1131,8 @@ impl Ui {
         self.settings_mut(|s| s.background_fill = fill);
     }
 
-    /// The colour [`BackgroundFill::Color`] fills with: the one picked, else the image's darkest
-    /// edge colour, else the window's own
+    /// The color [`BackgroundFill::Color`] fills with: the one picked, else the image's darkest
+    /// edge color, else the window's own
     pub fn background_color(&self, fallback: rune::Color) -> rune_kit::Hsv {
         self.background_hsv
             .or_else(|| self.settings.background_color.as_deref().and_then(rune_kit::Hsv::from_hex))
@@ -1146,7 +1146,7 @@ impl Ui {
             .unwrap_or_else(|| rune_kit::Hsv::of(fallback))
     }
 
-    /// Picks the colour around `at` (0 to 1 across and down) of the background image for
+    /// Picks the color around `at` (0 to 1 across and down) of the background image for
     /// [`BackgroundFill::Color`], as the eyedropper does
     pub fn pick_background_color(&mut self, at: [f32; 2]) {
         let Some(hsv) = self
@@ -1161,7 +1161,7 @@ impl Ui {
         self.background_hex.replace_text(hsv.hex());
     }
 
-    /// Picks the colour [`BackgroundFill::Color`] fills with
+    /// Picks the color [`BackgroundFill::Color`] fills with
     pub fn set_background_color(&mut self, hsv: rune_kit::Hsv) {
         self.background_hsv = Some(hsv);
         let hex = hsv.hex();

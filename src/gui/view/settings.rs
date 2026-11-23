@@ -211,7 +211,7 @@ fn appearance(s: &Ui, t: &Theme) -> El {
         ))
 }
 
-/// A face down tile from each accent's set, its back in that set's colour. The chosen one stands
+/// A face down tile from each accent's set, its back in that set's color. The chosen one stands
 /// a little taller, with a mark under it
 fn accent_picker(current: Accent, t: &Theme) -> El {
     let swatch = |accent: Accent| {
@@ -786,8 +786,8 @@ fn updates(s: &Ui, t: &Theme) -> El {
         )
 }
 
-/// The colour around the image: picked on the picker (`rune_kit::ColorPicker`, our Rune patch:
-/// anomalyco/rune#1433), typed as a code, or one of the image's own edge colours, black, white or
+/// The color around the image: picked on the picker (`rune_kit::ColorPicker`, our Rune patch:
+/// anomalyco/rune#1433), typed as a code, or one of the image's own edge colors, black, white or
 /// the window's own
 fn color_picker(s: &Ui, t: &Theme) -> El {
     let mut swatches = vec![t.bg, Color::BLACK, Color::WHITE];
@@ -795,7 +795,7 @@ fn color_picker(s: &Ui, t: &Theme) -> El {
         swatches.extend(edges.map(|c| c.alpha(1.0)));
     }
     let mut picker = rune_kit::ColorPicker::new(s.background_color(t.bg))
-        .label("Colour around the image")
+        .label("Color around the image")
         .size(ROOM, 132.0)
         .swatches(swatches)
         .on_change(|s: &mut Ui, hsv, _| s.set_background_color(hsv))
@@ -811,8 +811,8 @@ fn color_picker(s: &Ui, t: &Theme) -> El {
         .child(picker.build(&t.kit))
 }
 
-/// The image to pick a colour from with the eyedropper, as wide as the sheet: pressing picks the
-/// colour under the pointer, dragging picks as it goes, and letting go puts the eyedropper away
+/// The image to pick a color from with the eyedropper, as wide as the sheet: pressing picks the
+/// color under the pointer, dragging picks as it goes, and letting go puts the eyedropper away
 fn dropper(s: &Ui, t: &Theme) -> Option<El> {
     let image = s.background_image()?;
     let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
@@ -825,7 +825,7 @@ fn dropper(s: &Ui, t: &Theme) -> Option<El> {
         .clip_rounded(6.0)
         .border(2.0, t.accent)
         .role("button")
-        .label("Pick a colour from the image")
+        .label("Pick a color from the image")
         .cursor(rune::Cursor::Crosshair)
         .pixels(image.pixels())
         .on_drag(|s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
@@ -840,6 +840,6 @@ fn dropper(s: &Ui, t: &Theme) -> Option<El> {
             .gap(6.0)
             .items_center()
             .child(surface)
-            .child(note("Press on the image to pick its colour there.", false, t)),
+            .child(note("Press on the image to pick its color there.", false, t)),
     )
 }

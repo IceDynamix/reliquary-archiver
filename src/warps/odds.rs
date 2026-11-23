@@ -165,7 +165,7 @@ mod tests {
         close(character[1], 0.006, 1e-12);
         close(character[74], 0.04253534861116301, 1e-12);
         close(character[77], 0.105347414622264, 1e-12);
-        // Their last entry multiplies by an uncapped 102.6% (they renormalise later)
+        // Their last entry multiplies by an uncapped 102.6% (they renormalize later)
         close(character[89], 0.000002053394710113599, 1e-15);
         close(character.iter().sum(), 1.0, 1e-9);
         let light_cone = next_five(&Rates::of(Pool::LightCone), 0);

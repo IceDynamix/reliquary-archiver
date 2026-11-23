@@ -143,7 +143,7 @@ pub const SCENES: &[Scene] = &[
         s.settings.background_target = Some([0.5, 0.2]);
         s.panel = Some(Panel::Settings);
     }),
-    // The colour around the background picked in the settings
+    // The color around the background picked in the settings
     ("background-color", |s| {
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));
@@ -154,7 +154,7 @@ pub const SCENES: &[Scene] = &[
         s.background_hex.replace_text("#2a1f4d");
         s.panel = Some(Panel::Settings);
     }),
-    // The eyedropper out, to pick the colour around the background from the image
+    // The eyedropper out, to pick the color around the background from the image
     ("background-dropper", |s| {
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));

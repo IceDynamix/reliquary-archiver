@@ -152,7 +152,7 @@ pub struct BannerArt {
     pub surface: Option<Surface>,
 }
 
-/// The panel behind a banner's art in the game: a colour, a second one fading in towards the
+/// The panel behind a banner's art in the game: a color, a second one fading in towards the
 /// bottom, and a small motif tiled over both (`Art::Pattern`). A light cone's banner has only
 /// the motif, from the frame beside its art
 #[derive(Clone, Debug, PartialEq)]
@@ -162,7 +162,7 @@ pub struct Surface {
     pub pattern: Option<Pattern>,
 }
 
-/// A panel layer's colour: one, or a gradient's two (the game's runs between them at an angle,
+/// A panel layer's color: one, or a gradient's two (the game's runs between them at an angle,
 /// most often top to bottom)
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Paint {
@@ -196,8 +196,8 @@ pub struct LayerArt {
 /// Where a character's visual weight sits, measured by hsr-warp-art from its opacity
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Weight {
-    /// The centre of its opacity
-    pub centre: [f32; 2],
+    /// The center of its opacity
+    pub center: [f32; 2],
     /// The box holding most of it, without the props and effects that reach out from the figure
     pub core: [f32; 4],
     /// The character themselves, as an anime person detector found them: without the scenery and
@@ -261,7 +261,7 @@ impl Manifest {
                                 .filter(|v| v.len() == 2)
                                 .zip(floats(&l["weight"]["core"]).filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0))
                                 .map(|(c, k)| Weight {
-                                    centre: [c[0], c[1]],
+                                    center: [c[0], c[1]],
                                     core: [k[0], k[1], k[2], k[3]],
                                     person: floats(&l["weight"]["person"])
                                         .filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0)
@@ -316,7 +316,7 @@ impl Surface {
                 tile: [tile[0], tile[1]],
             })
         };
-        // A gradient's colours take the place of the layer's own
+        // A gradient's colors take the place of the layer's own
         let paint = |v: &serde_json::Value| -> Option<Paint> {
             let stops = v["gradient"]["colors"].as_array();
             match stops.map(|s| s.iter().map(color).collect::<Option<Vec<_>>>()) {
@@ -345,7 +345,7 @@ impl Surface {
     }
 }
 
-/// A colour as the game's UI gives it, in sRGB
+/// A color as the game's UI gives it, in sRGB
 fn srgb(rgb: [f32; 3], alpha: f32) -> Color {
     let [r, g, b] = rgb.map(|c| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) });
     Color { r, g, b, a: alpha }
@@ -523,7 +523,7 @@ impl ArtCache {
         }
     }
 
-    /// The colour of a banner's backdrop, once it's here: the banner's own accent
+    /// The color of a banner's backdrop, once it's here: the banner's own accent
     pub fn tint(&self, item: u32) -> Option<Color> {
         self.tints
             .lock()
@@ -568,8 +568,8 @@ impl ArtCache {
     }
 }
 
-/// An accent from a picture's colour: its hue, at a lightness and strength that read as an accent
-/// on dark and light alike. A grey picture gives a soft gold
+/// An accent from a picture's color: its hue, at a lightness and strength that read as an accent
+/// on dark and light alike. A gray picture gives a soft gold
 fn color(rgb: [f32; 3]) -> Color {
     let [_, a, bb, _] = srgb(rgb, 1.0).to_oklab();
     let chroma = (a * a + bb * bb).sqrt();
@@ -628,7 +628,7 @@ fn fetch_manifest(agent: &ureq::Agent) -> Option<Manifest> {
     Manifest::parse(&bytes)
 }
 
-/// The art from the cache folder, or downloaded into it, and for a banner's backdrop its colour.
+/// The art from the cache folder, or downloaded into it, and for a banner's backdrop its color.
 /// `source` is, for a banner layer, the manifest's build, the base and the file, a line each
 fn fetch(agent: &ureq::Agent, art: Art, source: &str) -> (Option<Fetched>, Option<[f32; 3]>) {
     let mut lines = source.lines();
@@ -705,7 +705,7 @@ fn keep(path: &std::path::Path, bytes: &[u8]) {
     }
 }
 
-/// The image's colour, its saturated pixels counting most, as sRGB 0..1
+/// The image's color, its saturated pixels counting most, as sRGB 0..1
 fn mean_color(image: &DynamicImage) -> [f32; 3] {
     let small = image.thumbnail(32, 32).into_rgb8();
     let (mut sum, mut weight) = ([0.0f32; 3], 0.0f32);
@@ -792,7 +792,7 @@ mod tests {
         let cone = &manifest.banners[&23048];
         assert!(!cone.placed());
         assert!(cone.layer(Layer::Back).is_none() && cone.layer(Layer::Tab).is_some());
-        // A character's panel: its colours in linear light, a gradient's in place of the layer's
+        // A character's panel: its colors in linear light, a gradient's in place of the layer's
         // own, and the panel's own motif
         let panel = banner.surface.as_ref().unwrap();
         let fill = panel.fill.unwrap();

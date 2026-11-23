@@ -100,7 +100,7 @@ pub fn status_line(s: &Ui, t: &Theme) -> El {
     )
 }
 
-/// Where syncing stands, in words, and its colour: faint when there's nothing to say, good when
+/// Where syncing stands, in words, and its color: faint when there's nothing to say, good when
 /// synced, warn when pulls wait, bad when warps can't be kept
 pub fn status(s: &Ui, t: &Theme) -> (String, rune::Color) {
     let now = chrono::Utc::now().timestamp();

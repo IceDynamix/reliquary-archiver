@@ -90,7 +90,7 @@ pub fn dialog(s: &Ui, cx: &Cx<Ui>, t: &Theme, layer: &mut Vec<El>) {
     sheet(spec, body, cx, t, layer);
 }
 
-/// A line with its time faded and its level coloured, wrapping as one paragraph
+/// A line with its time faded and its level colored, wrapping as one paragraph
 fn log_line(i: usize, line: &str, t: &Theme) -> El {
     let mut words = line.split_whitespace();
     let (Some(time), Some(level)) = (words.next(), words.next()) else {

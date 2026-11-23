@@ -1,6 +1,6 @@
 //! The warp screen. It takes the game's warp screen as its visual language, built from the same
 //! pieces as the main window (plates that tear like tickets, tags, medallions on a gold track): the
-//! banner's art is the place, not a picture on it, its colour is the screen's accent, and one
+//! banner's art is the place, not a picture on it, its color is the screen's accent, and one
 //! number carries the screen. What's on it, in the order it matters:
 //!
 //! 1. The pity on a gold track, how near soft and hard pity it is, and whether the next 5 star is a
@@ -8,7 +8,7 @@
 //! 2. What the warps in hand buy: the chance of a 5 star, and of the featured one, before they run
 //!    out, and the most it can take.
 //! 3. How far they go towards copies of what's featured, from what the account owns.
-//! 4. Every 5 star as a bar of its pity, coloured by its 50/50.
+//! 4. Every 5 star as a bar of its pity, colored by its 50/50.
 //! 5. What was pulled this session, while the game's history catches up.
 //!
 //! The warps are tickets down a rail on the left: their art, and their pity on the stub. Under each
@@ -131,7 +131,7 @@ impl Fit {
         PAD + self.ticket()[0] + GAP
     }
 
-    /// Where the room the art is sized and centred in starts: past the card
+    /// Where the room the art is sized and centered in starts: past the card
     fn stage_from(self, width: f32) -> f32 {
         self.card_from() + self.card(width)
     }
@@ -154,7 +154,7 @@ fn rise(el: El, delay: f32) -> El {
     .enter_delay(delay)
 }
 
-/// Each warp's own colour, for when its art has none to give
+/// Each warp's own color, for when its art has none to give
 fn pool_color(pool: Pool) -> Color {
     match pool {
         Pool::Character => rune::oklch(0.68, 0.16, 22.0),
@@ -470,7 +470,7 @@ fn backdrop(s: &Ui, view: &View, t: &Theme) -> El {
                 .key(format!("backdrop-{item}"))
                 .pixels_fit(image.pixels(), SurfaceFit::Fill)
                 .transition(Transition::opacity().springs(art_springs())),
-            // Without the banner's own, a wash of its colour
+            // Without the banner's own, a wash of its color
             None => full()
                 .key(format!("backdrop-wash-{item}"))
                 .radial_gradient([0.78, 0.35], 0.75, [(0.0, view.accent.alpha(0.4)), (1.0, view.accent.alpha(0.0))])
@@ -511,14 +511,14 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
             let room = fit.stage_from(width);
             let (room_w, room_h) = ((width - room - PAD).max(1.0), (height - ART_TOP - PAD).max(1.0));
             let cover = (width / REFERENCE[0]).max(height / REFERENCE[1]);
-            let centre = [(room + width - PAD) / 2.0, ART_TOP + room_h / 2.0];
+            let center = [(room + width - PAD) / 2.0, ART_TOP + room_h / 2.0];
             match main.weight {
                 // Placed on the character themselves: their person's box (or without one, the core
                 // of their opacity, the body without the props and effects reaching out from it)
                 // takes the same share of the room for everyone, drawn larger by their head's size when
                 // a sprawled pose widens the box, or fills it when it's
                 // much longer one way, and whatever reaches out past the room falls off it. They stand in the
-                // room's middle: the person's box centred, or the centre of their opacity across and
+                // room's middle: the person's box centered, or the center of their opacity across and
                 // the core's middle up and down
                 Some(weight) => {
                     let at = |x: f32, y: f32| {
@@ -535,7 +535,7 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
                     let [x1, y1] = at(figure[0] + figure[2], figure[1] + figure[3]);
                     let cx = match weight.person {
                         Some(_) => (x0 + x1) / 2.0,
-                        None => at(weight.centre[0], weight.centre[1])[0],
+                        None => at(weight.center[0], weight.center[1])[0],
                     };
                     let (figure_w, figure_h) = (x1 - x0, y1 - y0);
                     let by_figure = (area * room_w * room_h / (figure_w * figure_h)).sqrt();
@@ -549,14 +549,14 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
                         .min(room_w / figure_w)
                         .min(room_h / figure_h)
                         .min(cover * MAX_ZOOM);
-                    (k, centre[0] - cx * k, centre[1] - (y0 + y1) / 2.0 * k)
+                    (k, center[0] - cx * k, center[1] - (y0 + y1) / 2.0 * k)
                 }
                 None => {
                     let k = cover.min(room_w / shown[2]).min(room_h / shown[3]);
                     (
                         k,
-                        centre[0] - (shown[0] + shown[2] / 2.0) * k,
-                        centre[1] - (shown[1] + shown[3] / 2.0) * k,
+                        center[0] - (shown[0] + shown[2] / 2.0) * k,
+                        center[1] - (shown[1] + shown[3] / 2.0) * k,
                     )
                 }
             }
@@ -780,10 +780,10 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
                 let shine = glint.map(|(white, [sw, sh])| {
                     let above = sh - SELECTED_BELOW - plain_size[1];
                     let (x, y, w, h) = (SELECTED_LEFT * k, -above * k, sw * k, sh * k);
-                    // Rune's shimmer, slanted: a frame turned by `SLANT`, centred on the ticket, holds
+                    // Rune's shimmer, slanted: a frame turned by `SLANT`, centered on the ticket, holds
                     // a window that slides across it once while the white inside the window slides
                     // back as far. The window's straight edges come out slanted; the white, turned
-                    // back about its centre (the ticket's, as the slides cancel), sits upright on the
+                    // back about its center (the ticket's, as the slides cancel), sits upright on the
                     // ticket. It mounts afresh on each pick, so each pick sweeps; played out it rests
                     // past the ticket, its window empty
                     const SLANT: f32 = 0.35;
@@ -1052,7 +1052,7 @@ fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], width: f32, cx: 
 }
 
 /// The featured banner's own panel under the warp card, as the game puts it behind the art: its
-/// colours rising from the bottom, faint enough to read over, and its motif tiled across
+/// colors rising from the bottom, faint enough to read over, and its motif tiled across
 fn card_surface(s: &Ui, item: u32, t: &Theme) -> Option<El> {
     let art = s.art.as_ref()?;
     let surface = art.banner(item)?.surface?;
@@ -1482,7 +1482,7 @@ fn name_tags(view: &View, item: u32, t: &Theme) -> El {
     )
 }
 
-/// Every 5 star of the pool as a bar of its pity, oldest on the left, coloured by its 50/50: the
+/// Every 5 star of the pool as a bar of its pity, oldest on the left, colored by its 50/50: the
 /// warp card's last section, in its palette, the bars soft enough not to outshout the art
 fn history_strip(view: &View, width: f32, t: &Theme) -> El {
     let stats = view.stats;

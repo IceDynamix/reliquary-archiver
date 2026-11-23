@@ -22,7 +22,7 @@ pub enum ImageFit {
     Cover,
     /// Like contain, but never larger than the image itself
     ScaleDown,
-    /// At the image's own size, centred
+    /// At the image's own size, centered
     None,
 }
 
@@ -35,9 +35,9 @@ pub enum BackgroundFill {
     /// The image again, covering the window behind, blurred
     #[default]
     Blur,
-    /// The average colour along each of the image's edges
+    /// The average color along each of the image's edges
     EdgeColor,
-    /// One colour, picked (`Settings::background_color`)
+    /// One color, picked (`Settings::background_color`)
     Color,
     /// The image's outermost pixels drawn out to the window's edges
     Extend,
@@ -65,8 +65,8 @@ impl BackgroundFill {
         match self {
             BackgroundFill::None => "None",
             BackgroundFill::Blur => "Blur",
-            BackgroundFill::EdgeColor => "Edge colour",
-            BackgroundFill::Color => "Colour",
+            BackgroundFill::EdgeColor => "Edge color",
+            BackgroundFill::Color => "Color",
             BackgroundFill::Extend => "Extend",
             BackgroundFill::Mirror => "Mirror",
             BackgroundFill::MirrorBlur => "Mirror, blurred",
@@ -85,7 +85,7 @@ pub enum ThemeMode {
     Light,
 }
 
-/// The colour that marks what matters, named after the gems relics are set with
+/// The color that marks what matters, named after the gems relics are set with
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum Accent {
     #[default]
@@ -190,8 +190,8 @@ pub struct Settings {
     pub background_target: Option<[f32; 2]>,
     /// What fills the window where the image doesn't reach
     pub background_fill: BackgroundFill,
-    /// The colour [`BackgroundFill::Color`] fills with, as `#rrggbb`. None until one is picked:
-    /// the image's darkest edge colour until then
+    /// The color [`BackgroundFill::Color`] fills with, as `#rrggbb`. None until one is picked:
+    /// the image's darkest edge color until then
     pub background_color: Option<String>,
     /// Where the cards sit when the window is bigger than they are
     pub card_anchor: Anchor,

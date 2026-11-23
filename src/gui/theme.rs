@@ -1,9 +1,9 @@
-//! Colours and type, after the game's own interface: hairlines and numbers in the accent, a
-//! second colour for secondary labels, and cyan for things going well, in a dark or a light
+//! Colors and type, after the game's own interface: hairlines and numbers in the accent, a
+//! second color for secondary labels, and cyan for things going well, in a dark or a light
 //! variant.
 //!
 //! Accents are hand picked rather than free: each gem's lightness is tuned for contrast in both
-//! variants, it comes with a second colour that sets it off, and the error colour moves away
+//! variants, it comes with a second color that sets it off, and the error color moves away
 //! from it where they'd be confused.
 
 use rune::{Color, TextStyle, oklch};
@@ -62,9 +62,9 @@ struct Gem {
     /// Lightness on dark and on light backgrounds
     on_dark: f32,
     on_light: f32,
-    /// The second colour's hue and chroma
+    /// The second color's hue and chroma
     second: (f32, f32),
-    /// The error colour's hue, moved off the accent where they'd be confused
+    /// The error color's hue, moved off the accent where they'd be confused
     bad_hue: f32,
 }
 
@@ -133,7 +133,7 @@ pub fn accent_color(accent: Accent, dark: bool) -> Color {
 }
 
 /// The back of an accent's tile set, and its lower edge. Real mahjong sets come with backs in
-/// colours like these: jade, sapphire, amber, slate
+/// colors like these: jade, sapphire, amber, slate
 pub fn tile_back(accent: Accent, dark: bool) -> (Color, Color) {
     let gem = gem(accent);
     let (back, edge) = if dark { (0.5, 0.41) } else { (0.6, 0.52) };
@@ -203,7 +203,7 @@ impl Theme {
         theme.with_kit()
     }
 
-    /// The component kit, in this theme's colours
+    /// The component kit, in this theme's colors
     fn with_kit(mut self) -> Theme {
         let mut kit = Kit::from_palette(PaletteSeed {
             bg: self.bg,

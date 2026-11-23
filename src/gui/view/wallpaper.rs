@@ -26,7 +26,7 @@ pub struct Wallpaper<'a> {
     pub cover: [f32; 4],
     pub window: [f32; 2],
     pub fill: BackgroundFill,
-    /// The image's edge colours, top, right, bottom, left
+    /// The image's edge colors, top, right, bottom, left
     pub edges: Option<[Color; 4]>,
     /// What [`BackgroundFill::Color`] fills with
     pub color: Color,

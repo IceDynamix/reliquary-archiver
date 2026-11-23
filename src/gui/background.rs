@@ -24,16 +24,16 @@ pub struct Prepared {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
-    /// The average colour along each edge: top, right, bottom, left
+    /// The average color along each edge: top, right, bottom, left
     pub edges: [rune::Color; 4],
-    /// A small copy, to pick colours from with the eyedropper
+    /// A small copy, to pick colors from with the eyedropper
     pub sample: std::sync::Arc<Sample>,
 }
 
 /// How wide or tall [`Sample`] is at most, in pixels: far finer than a pointer picks
 const SAMPLE: u32 = 512;
 
-/// A small copy of the background image, straight-alpha sRGB rows, to pick colours from
+/// A small copy of the background image, straight-alpha sRGB rows, to pick colors from
 #[derive(Debug)]
 pub struct Sample {
     pub width: u32,
@@ -42,7 +42,7 @@ pub struct Sample {
 }
 
 impl Sample {
-    /// The colour at `at` (0 to 1 across and down), averaged over the pixels around it so a single
+    /// The color at `at` (0 to 1 across and down), averaged over the pixels around it so a single
     /// speck of noise doesn't decide it, as `#rrggbb`
     pub fn hex_at(&self, at: [f32; 2]) -> Option<String> {
         let (w, h) = (self.width as i64, self.height as i64);
@@ -167,7 +167,7 @@ fn into_prepared(image: DynamicImage) -> Prepared {
     }
 }
 
-/// The average colour of a strip along each edge of straight-alpha sRGB rows (top, right, bottom,
+/// The average color of a strip along each edge of straight-alpha sRGB rows (top, right, bottom,
 /// left), averaged in linear light, as the eye mixes them
 fn edge_colors(width: u32, height: u32, rgba: &[u8]) -> [rune::Color; 4] {
     let (w, h) = (width as usize, height as usize);
@@ -299,16 +299,16 @@ mod tests {
     }
 
     const WINDOW: [f32; 2] = [800.0, 600.0];
-    const CENTRE: [f32; 2] = [0.5, 0.5];
+    const CENTER: [f32; 2] = [0.5, 0.5];
 
     #[test]
-    fn centred_it_sits_where_it_always_has() {
+    fn centered_it_sits_where_it_always_has() {
         // A wide image covering the window is cut evenly left and right
-        assert_eq!(place(ImageFit::Cover, [1600.0, 600.0], WINDOW, CENTRE, Some(CENTRE)), [
+        assert_eq!(place(ImageFit::Cover, [1600.0, 600.0], WINDOW, CENTER, Some(CENTER)), [
             -400.0, 0.0, 1600.0, 600.0
         ]);
-        // Contained, it's centred top to bottom
-        assert_eq!(place(ImageFit::Contain, [1600.0, 600.0], WINDOW, CENTRE, Some(CENTRE)), [
+        // Contained, it's centered top to bottom
+        assert_eq!(place(ImageFit::Contain, [1600.0, 600.0], WINDOW, CENTER, Some(CENTER)), [
             0.0, 150.0, 800.0, 300.0
         ]);
         assert_eq!(place(ImageFit::Fill, [1600.0, 600.0], WINDOW, [0.0, 0.0], None), [
@@ -342,10 +342,10 @@ mod tests {
 
     #[test]
     fn scale_down_shrinks_only_what_is_too_big() {
-        assert_eq!(place(ImageFit::ScaleDown, [200.0, 100.0], WINDOW, CENTRE, None)[2..], [
+        assert_eq!(place(ImageFit::ScaleDown, [200.0, 100.0], WINDOW, CENTER, None)[2..], [
             200.0, 100.0
         ]);
-        assert_eq!(place(ImageFit::ScaleDown, [1600.0, 600.0], WINDOW, CENTRE, None)[2..], [
+        assert_eq!(place(ImageFit::ScaleDown, [1600.0, 600.0], WINDOW, CENTER, None)[2..], [
             800.0, 300.0
         ]);
     }
@@ -371,7 +371,7 @@ mod sample_tests {
     use super::*;
 
     #[test]
-    fn a_picked_colour_averages_the_pixels_around_it() {
+    fn a_picked_color_averages_the_pixels_around_it() {
         // 3 by 1: red, red, blue. The middle averages all three; the left edge only its two
         let sample = Sample {
             width: 3,

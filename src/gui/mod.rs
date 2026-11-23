@@ -206,7 +206,7 @@ fn remember_frame(s: &mut Ui) {
 }
 
 /// Brings a window opened where it was last time back onto a display, for when that display is
-/// gone or moved: centred on the display nearest to it if too little of its top edge, where it's
+/// gone or moved: centered on the display nearest to it if too little of its top edge, where it's
 /// dragged from, shows
 fn keep_on_screen(window: &rune::WindowHandle, handle: &AppHandle<Ui>) {
     let Some(placement) = window.placement() else { return };

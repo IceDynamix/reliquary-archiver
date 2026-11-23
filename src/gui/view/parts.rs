@@ -4,7 +4,7 @@
 //! The look follows the game's own interface: big panels sharp at two corners and generously
 //! round at the other two, everything small a pill or a circle, light catching an edge rather
 //! than outlines, a line offset outside a panel for an accent, neutral chrome with one accent
-//! colour, gold for progress, sentence case.
+//! color, gold for progress, sentence case.
 
 use rune::{Color, Cx, El, Icon, LineCap, Path, Shape, Tx, col, el, icon, row, text};
 
@@ -64,7 +64,7 @@ pub fn ticket(key: &str, tears: &[&str], cx: &Cx<Ui>, t: &Theme) -> El {
 }
 
 /// A ticket with `surface` over its glass and under what it holds, cut to its corners and
-/// notches: a banner's colours and motif behind the warp card
+/// notches: a banner's colors and motif behind the warp card
 pub fn ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t: &Theme) -> El {
     let rect = cx.layout(key);
     let mut holes = Vec::new();
@@ -140,7 +140,7 @@ fn accent_lines(w: f32, h: f32, t: &Theme) -> Shape {
     shape
 }
 
-/// A tag on a plate's top edge: a sharp strip of colour that fades out to the right, as the game
+/// A tag on a plate's top edge: a sharp strip of color that fades out to the right, as the game
 /// tags its cards. Put it first in the plate
 pub fn tab(key: &str, label: &str, tint: Color, cx: &Cx<Ui>, t: &Theme) -> El {
     let _ = cx;
@@ -224,7 +224,7 @@ pub fn stub_perforation(key: &str, from_right: f32, cx: &Cx<Ui>, t: &Theme) -> E
 pub enum Pill {
     /// The thing to do next: cream, dark text, a fine ring inside, on a soft shadow
     Primary,
-    /// A wash of the text colour
+    /// A wash of the text color
     Secondary,
     /// Just text in the accent
     Quiet,
@@ -362,7 +362,7 @@ const PULSE: rune::Cycle = rune::Cycle {
     fps: 30.0,
 };
 
-/// Steps as medallions on a gold line, each labelled underneath: done ones gold with a check,
+/// Steps as medallions on a gold line, each labeled underneath: done ones gold with a check,
 /// the current one glowing in the accent, the rest dim
 pub fn node_track(steps: &[(&'static str, Node)], t: &Theme) -> El {
     const SIZE: f32 = 30.0;
@@ -413,7 +413,7 @@ pub fn node_track(steps: &[(&'static str, Node)], t: &Theme) -> El {
     track
 }
 
-/// The red dragon on the app's tile, the one colour that stays the same in every theme
+/// The red dragon on the app's tile, the one color that stays the same in every theme
 pub fn dragon() -> Color {
     rune::oklch(0.66, 0.22, 8.0)
 }

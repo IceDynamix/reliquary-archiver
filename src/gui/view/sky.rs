@@ -83,8 +83,8 @@ pub fn sky(w: f32, h: f32, t: &Theme) -> El {
     let armillary_size = (long * 0.5).clamp(280.0, 720.0);
     let armillary_at = [w * 0.95, h * 0.06];
 
-    let placed = |piece: El, centre: [f32; 2], size: f32| {
-        el().absolute((centre[0] - size / 2.0).round(), (centre[1] - size / 2.0).round())
+    let placed = |piece: El, center: [f32; 2], size: f32| {
+        el().absolute((center[0] - size / 2.0).round(), (center[1] - size / 2.0).round())
             .child(piece)
     };
 
@@ -111,7 +111,7 @@ fn chart(w: f32, h: f32, astrolabe: [f32; 2], armillary: [f32; 2], inks: Inks) -
     let mut shape = Shape::new();
     let in_window = |p: [f32; 2]| p[0] >= -2.0 && p[0] <= w + 2.0 && p[1] >= -2.0 && p[1] <= h + 2.0;
 
-    // Orbits centred on the astrolabe, the outermost passing through the armillary
+    // Orbits centered on the astrolabe, the outermost passing through the armillary
     let reach = (armillary[0] - astrolabe[0]).hypot(armillary[1] - astrolabe[1]);
     let toward = (armillary[1] - astrolabe[1]).atan2(armillary[0] - astrolabe[0]).to_degrees();
     for (k, (fraction, dashed, planet)) in [(0.58, false, 18.0), (0.79, true, -9.0), (1.0, false, 26.0)]
@@ -226,7 +226,7 @@ fn chart(w: f32, h: f32, astrolabe: [f32; 2], armillary: [f32; 2], inks: Inks) -
 }
 
 /// An armillary sphere: graduated outer rings, the ecliptic and meridian bands seen at a tilt, the
-/// axis through them and the earth at the centre
+/// axis through them and the earth at the center
 fn armillary(size: f32, inks: Inks) -> Shape {
     let c = size / 2.0;
     let r = c - 2.0;
@@ -329,7 +329,7 @@ fn astrolabe(size: f32, inks: Inks) -> Shape {
     }
     let horizon = ([c, c + r * 0.12], r * 0.58);
     let zenith = [c, c - r * 0.2];
-    let inside = |p: [f32; 2], centre: [f32; 2], radius: f32| (p[0] - centre[0]).hypot(p[1] - centre[1]) <= radius;
+    let inside = |p: [f32; 2], center: [f32; 2], radius: f32| (p[0] - center[0]).hypot(p[1] - center[1]) <= radius;
     let on_plate = |p: [f32; 2]| inside(p, [c, c], capricorn);
     let above_horizon = |p: [f32; 2]| inside(p, horizon.0, horizon.1 + 0.5) && on_plate(p);
     shape = shape.stroke(circle(horizon.0[0], horizon.0[1], horizon.1), 0.9, mid);
@@ -346,9 +346,9 @@ fn astrolabe(size: f32, inks: Inks) -> Shape {
     for k in 1..=5 {
         let offset = r * 0.16 * k as f32;
         for side in [-1.0, 1.0] {
-            let centre = [c + side * offset, mid_y];
-            let radius = (centre[0] - zenith[0]).hypot(centre[1] - zenith[1]);
-            for run in clipped(circle(centre[0], centre[1], radius), above_horizon) {
+            let center = [c + side * offset, mid_y];
+            let radius = (center[0] - zenith[0]).hypot(center[1] - zenith[1]);
+            for run in clipped(circle(center[0], center[1], radius), above_horizon) {
                 shape = shape.stroke(run, 0.55, faint);
             }
         }
@@ -358,7 +358,7 @@ fn astrolabe(size: f32, inks: Inks) -> Shape {
             .line([c - capricorn, c], [c + capricorn, c], 0.6, BUTT, faint)
             .line([c, c - capricorn], [c, c + capricorn], 0.6, BUTT, faint);
 
-    // The rete: the ecliptic ring set off centre, its arms, and pointers to the bright stars
+    // The rete: the ecliptic ring set off center, its arms, and pointers to the bright stars
     let (ex, ey, er) = (c, c - r * 0.17, r * 0.5);
     shape = shape
         .stroke(circle(ex, ey, er), 1.1, strong)
