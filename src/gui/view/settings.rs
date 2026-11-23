@@ -724,13 +724,18 @@ fn slider(value: f32, t: &Theme) -> El {
         .focusable(true)
         .h(24.0)
         .min_w(0.0)
+        // Half a knob of room each side, outside where the track was: the knob at either end
+        // reaches past the track, and a press on any of it is the slider's
+        .px(KNOB / 2.0)
+        .mx(-KNOB / 2.0)
         .center_y()
         .cursor(rune::Cursor::Pointer)
         .on_drag(set)
         .on_step(move |s: &mut Ui, delta, _| s.set_background_opacity(s.settings.background_opacity + delta as f32 * 0.05))
         .child(track(t.accent).w_frac(value))
         .child(
-            el().size(KNOB, KNOB)
+            el().key("opacity-knob")
+                .size(KNOB, KNOB)
                 .radius(KNOB / 2.0)
                 .fill(t.primary)
                 .border(2.0, t.accent)
