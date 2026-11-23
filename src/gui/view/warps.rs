@@ -8,7 +8,7 @@ use crate::gui::icons;
 use crate::gui::state::Ui;
 use crate::gui::theme::{self, Theme};
 use crate::warps::Pool;
-use crate::warps::stats::PoolStats;
+use crate::warps::stats::{Highlight, PoolStats};
 
 /// The pools the plate shows, with short names
 const PLATE_POOLS: [(Pool, &str); 3] = [
@@ -139,6 +139,25 @@ pub fn status(s: &Ui, t: &Theme) -> (String, rune::Color) {
 }
 
 /// 7418 as 7,418
+/// A key for each of `fives` (in the pool's order, newest first): when it came and what it was,
+/// and for another of the same in the same second (a ten pull can give two) how many came before
+/// it. A count of the repeats only, so a new 5 star doesn't change the others' keys
+pub(super) fn five_keys<'a>(fives: impl IntoIterator<Item = &'a Highlight>) -> Vec<String> {
+    let mut seen: std::collections::HashMap<(i64, u32), usize> = std::collections::HashMap::new();
+    fives
+        .into_iter()
+        .map(|five| {
+            let n = seen.entry((five.time, five.item_id)).or_default();
+            let key = match *n {
+                0 => format!("five-{}-{}", five.time, five.item_id),
+                n => format!("five-{}-{}-{n}", five.time, five.item_id),
+            };
+            *n += 1;
+            key
+        })
+        .collect()
+}
+
 pub(super) fn grouped(n: usize) -> String {
     let digits = n.to_string();
     let mut out = String::new();
@@ -184,5 +203,29 @@ mod tests {
         assert_eq!(ago(1000, 990), "just now");
         assert_eq!(ago(10_000, 10_000 - 300), "5 min ago");
         assert_eq!(ago(100_000, 100_000 - 7200), "2 h ago");
+    }
+
+    #[test]
+    fn five_keys_tell_two_of_the_same_in_one_second_apart() {
+        use crate::warps::stats::Outcome;
+        let five = |time, item_id| Highlight {
+            item_id,
+            rarity: 5,
+            pity: 80,
+            outcome: Outcome::Unknown,
+            time,
+            confirmed: true,
+        };
+        let fives = [five(300, 1), five(200, 7), five(200, 7), five(200, 8), five(100, 7)];
+        assert_eq!(five_keys(&fives), [
+            "five-300-1",
+            "five-200-7",
+            "five-200-7-1",
+            "five-200-8",
+            "five-100-7"
+        ]);
+        // A newer 5 star leaves the others' keys as they were
+        let newer = [five(400, 2), five(300, 1), five(200, 7), five(200, 7)];
+        assert_eq!(five_keys(&newer)[1..], ["five-300-1", "five-200-7", "five-200-7-1"]);
     }
 }

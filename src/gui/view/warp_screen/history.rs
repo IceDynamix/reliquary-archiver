@@ -143,7 +143,8 @@ fn fives_card(s: &Ui, view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
     let body = if stats.fives.is_empty() {
         col().w_full().child(text("No 5-stars here yet.").font(theme::BODY).color(t.muted))
     } else {
-        let medallions = stats.fives.iter().enumerate().map(|(i, five)| medallion(s, view, five, i, t));
+        let keys = super::super::warps::five_keys(&stats.fives);
+        let medallions = stats.fives.iter().zip(keys).map(|(five, key)| medallion(s, view, five, key, t));
         col()
             .w_full()
             .gap(16.0)
@@ -153,7 +154,7 @@ fn fives_card(s: &Ui, view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
     card("history-fives-card", "5-stars", view.accent, cx, t).child(body.px(22.0).pt(16.0).pb(20.0))
 }
 
-fn medallion(s: &Ui, view: &View, five: &Highlight, i: usize, t: &Theme) -> El {
+fn medallion(s: &Ui, view: &View, five: &Highlight, key: String, t: &Theme) -> El {
     let name = view.summary.name(five.item_id);
     let ring = outcome_color(five.outcome, t);
     let when = chrono::DateTime::from_timestamp(five.time, 0)
@@ -183,7 +184,7 @@ fn medallion(s: &Ui, view: &View, five: &Highlight, i: usize, t: &Theme) -> El {
         .child(text(five.pity.to_string()).font(COUNT).color(ring))
         .children((!five.confirmed).then(|| text("LIVE").font(theme::KICKER).color(t.warn)));
     col()
-        .key(format!("five-{}-{}-{i}", five.time, five.item_id))
+        .key(key)
         .w(CELL)
         .pb(14.0)
         .gap(5.0)

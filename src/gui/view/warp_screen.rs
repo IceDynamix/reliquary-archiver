@@ -1495,14 +1495,15 @@ fn history_strip(view: &View, width: f32, t: &Theme) -> El {
     let shown: Vec<&Highlight> = stats.fives.iter().take(fit).collect();
     let n = shown.len();
     let stagger = Stagger::new(0.012).from(StaggerFrom::Last);
-    let bars = shown.iter().rev().enumerate().map(|(i, five)| {
+    let keys = super::warps::five_keys(shown.iter().copied());
+    let bars = shown.iter().zip(keys).rev().enumerate().map(|(i, (five, key))| {
         let when = chrono::DateTime::from_timestamp(five.time, 0)
             .map_or(String::new(), |d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string());
         let outcome = match outcome_words(five.outcome) {
             "" => String::new(),
             w => format!(", {w}"),
         };
-        el().key(format!("five-{}-{}", five.time, five.item_id))
+        el().key(key)
             .w(bar_w)
             .h(4.0 + (tall - 4.0) * (five.pity as f32 / hard).min(1.0))
             // .corners([bar_w / 2.0, bar_w / 2.0, 0.0, 0.0])
