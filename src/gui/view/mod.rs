@@ -16,7 +16,7 @@ pub mod parts;
 mod settings;
 mod sky;
 mod status;
-mod wallpaper;
+pub(super) mod wallpaper;
 mod warp_screen;
 mod warps;
 
@@ -119,6 +119,7 @@ pub(super) fn wallpaper_for<'a>(s: &Ui, image: &'a rune::Image, window: [f32; 2]
         fill: settings.background_fill,
         edges: s.background_edges,
         scale: 1.0,
+        reach: 1.0,
     })
 }
 

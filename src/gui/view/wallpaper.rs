@@ -30,6 +30,9 @@ pub struct Wallpaper<'a> {
     pub edges: Option<[Color; 4]>,
     /// Drawn this much smaller than the window it stands for, which blurs scale with
     pub scale: f32,
+    /// What the blurred mirror's bands reach scales with: `scale`, but less in a preview too
+    /// small for them to show at that
+    pub reach: f32,
 }
 
 impl Wallpaper<'_> {
@@ -88,7 +91,7 @@ impl Wallpaper<'_> {
                 let mut layer = layer.child(self.wrapped(Wrap::Mirror, [0.0, 0.0], MIRROR_FAR * k));
                 let [x, y, w, h] = self.rect;
                 for (reach, blur) in MIRROR_BANDS {
-                    let reach = reach * k;
+                    let reach = reach * self.reach;
                     let band = [x - reach, y - reach, w + 2.0 * reach, h + 2.0 * reach];
                     let fade = reach * BAND_FADE;
                     layer = layer.child(
@@ -103,7 +106,7 @@ impl Wallpaper<'_> {
         }
     }
 
-    /// The image wrapped across the window, in an element whose parent starts at `origin` in the
+    /// The image wrapped across the window (`El::pixels_wrap`, our Rune patch: anomalyco/rune#1432), in an element whose parent starts at `origin` in the
     /// window, blurred by `blur` (and reaching past the window by three blurs, so its edges don't
     /// fade to clear)
     fn wrapped(&self, wrap: Wrap, origin: [f32; 2], blur: f32) -> El {

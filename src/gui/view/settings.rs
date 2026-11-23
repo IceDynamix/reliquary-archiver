@@ -1,10 +1,11 @@
 //! The settings sheet. Every change applies and saves at once, except the port, which is only
 //! saved once the server could open it.
 
-use rune::{Color, Cx, Drag, El, ScrollSpec, Tx, col, el, row, text};
+use rune::{Color, Cx, Drag, El, ScrollSpec, Tx, col, el, icon, row, text};
 use rune_kit::{ControlSize, SegmentedControl, Switch, TextInput};
 
 use super::parts::{Pill, Sheet, TileLook, kicker, pill, sheet, tile};
+use crate::gui::icons;
 use crate::gui::settings::{Accent, Anchor, BackgroundFill, ImageFit, ThemeMode};
 use crate::gui::state::{Panel, Ui, Update};
 use crate::gui::theme::{self, Theme};
@@ -16,7 +17,8 @@ pub fn dialog(s: &Ui, cx: &Cx<Ui>, t: &Theme, layer: &mut Vec<El>) {
     let mut body = col()
         .key("settings-body")
         .w_full()
-        .max_h(440.0)
+        // As tall as the window leaves room for under the sheet's title
+        .max_h(cx.layout_size("page").map_or(440.0, |[_, h]| (h - 170.0).clamp(320.0, 720.0)))
         .min_h(0.0)
         .pt(16.0)
         .child(appearance(s, t))
@@ -299,38 +301,9 @@ fn anchor_picker(current: Anchor, t: &Theme) -> El {
 }
 
 fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
-    let k = &t.kit;
     let path = &s.settings.background_image;
     let chosen = !path.is_empty();
-    let name = std::path::Path::new(path)
-        .file_name()
-        .map_or_else(|| "None".to_string(), |name| name.to_string_lossy().into_owned());
-
-    let mut picker = row().gap(8.0).center_y().child(
-        text(name)
-            .key("background-name")
-            .font(theme::BODY)
-            .color(if chosen { t.text } else { t.faint })
-            .truncate()
-            .grow(1.0)
-            .min_w(0.0),
-    );
-    if chosen {
-        picker = picker.child(pill("remove-background", "Remove", None, Pill::Quiet, true, t, |s, _| {
-            s.remove_background()
-        }));
-    }
-    picker = picker.child(pill(
-        "choose-background",
-        if chosen { "Change…" } else { "Choose image…" },
-        None,
-        Pill::Secondary,
-        true,
-        t,
-        |s: &mut Ui, tx: &mut Tx| s.choose_background(tx),
-    ));
-
-    let mut section = section("background-settings", "Background", t).child(picker);
+    let mut section = section("background-settings", "Background", t).child(image_row(s, t));
     if !chosen {
         return section.child(note(
             "An image of your choice behind the window, faded so the text stays easy to read.",
@@ -363,12 +336,12 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
                         .label("Background fit")
                         .fit()
                         .on_pick(|s: &mut Ui, i, _| s.set_image_fit(FITS[i].0))
-                        .build(k)
+                        .build(&t.kit)
                         .key("background-fit"),
                 ),
         )
-        .children(position(s, cx, t))
-        .child(fill_picker(s, t))
+        .children(placement(s, cx, t))
+        .children(fill_picker(s, t))
         .child(
             row()
                 .gap(12.0)
@@ -383,6 +356,352 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
                         .w(36.0),
                 ),
         )
+}
+
+/// The image chosen, as a thumbnail with its name and size, and the buttons to change it
+fn image_row(s: &Ui, t: &Theme) -> El {
+    const THUMB: [f32; 2] = [56.0, 38.0];
+    let path = &s.settings.background_image;
+    let chosen = !path.is_empty();
+    let name = std::path::Path::new(path)
+        .file_name()
+        .map_or_else(|| "No image".to_string(), |name| name.to_string_lossy().into_owned());
+    let image = s.background_image();
+    let mut thumb = el()
+        .key("background-thumb")
+        .size(THUMB[0], THUMB[1])
+        .radius(5.0)
+        .clip_rounded(5.0)
+        .fill(t.well)
+        .border(1.0, t.line);
+    if let Some(image) = image {
+        thumb = thumb.child(
+            el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                .pixels_fit(image.pixels(), rune::SurfaceFit::Fill),
+        );
+    }
+    let size = image.and_then(|image| image.size()).map(|[w, h]| format!("{w} × {h}"));
+    let mut row_ = row().w_full().gap(12.0).center_y().child(thumb).child(
+        col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(2.0)
+            .child(
+                text(name)
+                    .key("background-name")
+                    .font(theme::BODY)
+                    .color(if chosen { t.text } else { t.faint })
+                    .truncate(),
+            )
+            .children(size.map(|size| text(size).font(theme::SMALL).color(t.faint))),
+    );
+    if chosen {
+        row_ = row_.child(pill("remove-background", "Remove", None, Pill::Quiet, true, t, |s, _| {
+            s.remove_background()
+        }));
+    }
+    row_.child(pill(
+        "choose-background",
+        if chosen { "Change…" } else { "Choose image…" },
+        None,
+        Pill::Secondary,
+        true,
+        t,
+        |s: &mut Ui, tx: &mut Tx| s.choose_background(tx),
+    ))
+}
+
+/// The room the background controls have across the settings sheet
+const ROOM: f32 = 376.0;
+/// The tallest the placement pickers stand
+const PICKER_HEIGHT: f32 = 118.0;
+/// How far an arrow key moves a point
+const POINT_STEP: f32 = 0.05;
+
+/// Where the image sits: the point of it that matters, picked on the image, and where in the
+/// window that point goes, picked on a small window showing the result, fill and all. Between
+/// them a link: linked, the point goes to the same place in the window as it is in the image
+fn placement(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
+    const LINK: f32 = 30.0;
+    const GAP: f32 = 10.0;
+    let image = s.background_image()?;
+    let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
+    let window = cx.layout_size("page").unwrap_or([460.0, 700.0]);
+    let anchor = s.settings.background_anchor;
+    let linked = s.settings.background_target.is_none();
+    let target = s.settings.background_target.unwrap_or(anchor);
+
+    // Both as tall as fits across the sheet with the link between them
+    let (image_aspect, window_aspect) = (iw / ih, window[0] / window[1]);
+    let height = PICKER_HEIGHT.min((ROOM - LINK - 2.0 * GAP) / (image_aspect + window_aspect));
+    let picture_size = [height * image_aspect, height];
+    let frame = [height * window_aspect, height];
+
+    let picture = point_picker(
+        "background-anchor",
+        "The part of the image that matters",
+        picture_size,
+        anchor,
+        false,
+        t,
+        |s: &mut Ui, at| s.set_background_anchor(at),
+        |s: &Ui| s.settings.background_anchor,
+        el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).inert().pixels(image.pixels()),
+    );
+
+    let k = height / window[1];
+    let mut shown = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).inert().fill(t.bg);
+    if let Some(mut wallpaper) = super::wallpaper_for(s, image, window, cx.env().scale) {
+        let scaled = |r: [f32; 4]| r.map(|v| v * k);
+        wallpaper.rect = scaled(wallpaper.rect);
+        wallpaper.cover = scaled(wallpaper.cover);
+        wallpaper.window = frame;
+        wallpaper.scale = k;
+        wallpaper.reach = k;
+        shown = shown.child(wallpaper.build());
+    }
+    let preview = point_picker(
+        "background-target",
+        "Where in the window it goes",
+        frame,
+        target,
+        linked,
+        t,
+        |s: &mut Ui, at| s.set_background_target(Some(at)),
+        |s: &Ui| s.settings.background_target.unwrap_or(s.settings.background_anchor),
+        shown,
+    );
+
+    let link = el()
+        .key("background-link")
+        .size(LINK, LINK)
+        .radius(LINK / 2.0)
+        .center()
+        .role("switch")
+        .label("Put it in the same place in the window as in the image")
+        .help(if linked {
+            "Linked: the point goes to the same place in the window as in the image"
+        } else {
+            "Link: put the point in the same place in the window as in the image"
+        })
+        .checked(linked)
+        .focusable(true)
+        .cursor(rune::Cursor::Pointer)
+        .fill(if linked { t.accent.alpha(0.2) } else { t.well })
+        .border(1.0, if linked { t.accent } else { t.line })
+        .hover(t.accent.alpha(0.14))
+        .on_press(|s: &mut Ui| {
+            let next = match s.settings.background_target {
+                Some(_) => None,
+                None => Some(s.settings.background_anchor),
+            };
+            s.set_background_target(next)
+        })
+        .child(icon(&icons::LINK, 15.0).color(if linked { t.accent } else { t.muted }));
+
+    let caption = |kicker_text: &'static str, words: String, width: f32| {
+        col()
+            .w(width)
+            .gap(1.0)
+            .child(kicker(kicker_text, t.muted))
+            .child(text(words).font(theme::SMALL).color(t.faint).truncate())
+    };
+    let percent = |[x, y]: [f32; 2]| format!("{}% across, {}% down", (x * 100.0).round(), (y * 100.0).round());
+    let goes = if linked {
+        "Same place as in the image".to_string()
+    } else {
+        percent(target)
+    };
+
+    let mut block = col()
+        .key("background-placement")
+        .w_full()
+        .gap(8.0)
+        .child(col().gap(2.0).child(text("Position").font(theme::BODY).color(t.text)).child(note(
+            "Pick the part of the image to keep in view, then where in the window it goes.",
+            false,
+            t,
+        )))
+        .child(row().gap(GAP).center_y().child(picture).child(link).child(preview))
+        .child(
+            row()
+                .gap(GAP)
+                .child(caption("Image", percent(anchor), picture_size[0]))
+                .child(el().w(LINK))
+                .child(caption("Window", goes, frame[0].max(120.0))),
+        );
+    if s.settings.image_fit == ImageFit::Fill {
+        block = block.opacity(0.45).child(note(
+            "Stretched to the window, the whole image shows wherever it's placed.",
+            false,
+            t,
+        ));
+    }
+    Some(block)
+}
+
+/// A surface `size` points large to pick a point on, by dragging or with the arrow keys: `content`
+/// in it, and the point at `at` (0 to 1 across and down) marked over that, hollow when it only
+/// follows another point
+#[allow(clippy::too_many_arguments)]
+fn point_picker(
+    key: &'static str,
+    label: &'static str,
+    size: [f32; 2],
+    at: [f32; 2],
+    following: bool,
+    t: &Theme,
+    set: fn(&mut Ui, [f32; 2]),
+    get: fn(&Ui) -> [f32; 2],
+    content: El,
+) -> El {
+    const MARK: f32 = 16.0;
+    // Crosshairs across the whole surface, faint, so the point reads against any image
+    let hair = Color::WHITE.alpha(0.35);
+    let cross = el()
+        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        .inert()
+        .child(el().pin(Some(at[0] * size[0]), Some(0.0), None, Some(0.0)).w(1.0).fill(hair))
+        .child(el().pin(Some(0.0), Some(at[1] * size[1]), Some(0.0), None).h(1.0).fill(hair));
+    let mut mark = el()
+        .key(format!("{key}-mark"))
+        .pin(Some(at[0] * size[0] - MARK / 2.0), Some(at[1] * size[1] - MARK / 2.0), None, None)
+        .size(MARK, MARK)
+        .radius(MARK / 2.0)
+        .center()
+        .inert()
+        .border(2.0, Color::WHITE)
+        .shadow(0.0, 4.0, Color::BLACK.alpha(0.6));
+    if !following {
+        mark = mark.child(el().size(6.0, 6.0).radius(3.0).fill(t.accent));
+    }
+    el().key(key)
+        .size(size[0], size[1])
+        .radius(6.0)
+        .clip_rounded(6.0)
+        .border(1.0, t.accent_line)
+        .role("slider")
+        .label(label)
+        .help(label)
+        .focusable(true)
+        .cursor(rune::Cursor::Crosshair)
+        .on_drag(move |s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
+            set(s, [drag.x / drag.w.max(1.0), drag.y / drag.h.max(1.0)]);
+        })
+        .on_key(move |s: &mut Ui, ev: &rune::KeyEvent, _: &mut Tx| {
+            let [x, y] = get(s);
+            let to = match ev.key {
+                rune::Key::Left => [x - POINT_STEP, y],
+                rune::Key::Right => [x + POINT_STEP, y],
+                rune::Key::Up => [x, y - POINT_STEP],
+                rune::Key::Down => [x, y + POINT_STEP],
+                _ => return false,
+            };
+            set(s, to);
+            true
+        })
+        .child(content)
+        .child(cross)
+        .child(mark)
+}
+
+/// What fills the window around an image smaller than it: each choice as a tile showing the image
+/// with that fill around it
+fn fill_picker(s: &Ui, t: &Theme) -> Option<El> {
+    const PER_ROW: usize = 4;
+    const GAP: f32 = 8.0;
+    const TILE_H: f32 = 58.0;
+    let image = s.background_image()?;
+    let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
+    let covers = matches!(s.settings.image_fit, ImageFit::Cover | ImageFit::Fill);
+    let tile_w = (ROOM - GAP * (PER_ROW - 1) as f32) / PER_ROW as f32;
+    // In each tile the image small in the middle, so there's room around it to fill
+    let inner = (tile_w * 0.56 / iw).min(TILE_H * 0.56 / ih);
+    let (w, h) = (iw * inner, ih * inner);
+    let rect = [(tile_w - w) / 2.0, (TILE_H - h) / 2.0, w, h];
+    let cover = {
+        let k = (tile_w / iw).max(TILE_H / ih);
+        [(tile_w - iw * k) / 2.0, (TILE_H - ih * k) / 2.0, iw * k, ih * k]
+    };
+
+    let tile = |fill: BackgroundFill| {
+        let on = fill == s.settings.background_fill;
+        let picture = super::wallpaper::Wallpaper {
+            pixels: image.pixels(),
+            rect,
+            cover,
+            window: [tile_w, TILE_H],
+            fill,
+            edges: s.background_edges,
+            // Blurs as strong as in a window a few times the tile's size, and the blurred
+            // mirror's bands close enough to show in the room around the image, so the fills
+            // read apart
+            scale: 0.25,
+            reach: 0.05,
+        }
+        .build();
+        col()
+            .key(format!("fill-{}", fill.label().to_lowercase().replace([' ', ','], "-")))
+            .w(tile_w)
+            .gap(5.0)
+            .role("radio")
+            .label(fill.label())
+            .checked(on)
+            .focusable(true)
+            .cursor(rune::Cursor::Pointer)
+            .on_press(move |s: &mut Ui| s.set_background_fill(fill))
+            .child(
+                el().size(tile_w, TILE_H)
+                    .radius(6.0)
+                    .clip_rounded(6.0)
+                    .fill(t.bg)
+                    .border(if on { 2.0 } else { 1.0 }, if on { t.accent } else { t.line })
+                    .hover(t.accent.alpha(0.12))
+                    .child(el().pin(Some(0.0), Some(0.0), None, None).inert().child(picture)),
+            )
+            .child(
+                text(fill.label())
+                    .font(theme::SMALL)
+                    .color(if on { t.text } else { t.muted })
+                    .truncate(),
+            )
+    };
+    let rows = BackgroundFill::ALL
+        .chunks(PER_ROW)
+        .map(|fills| row().gap(GAP).children(fills.iter().copied().map(tile)));
+
+    let mut block = col()
+        .key("background-fill")
+        .w_full()
+        .gap(8.0)
+        .child(
+            col()
+                .gap(2.0)
+                .child(text("Around the image").font(theme::BODY).color(t.text))
+                .child(note(
+                    if covers {
+                        "The image covers the window at this fit, so there's nothing around it. Fit, Shrink and Original \
+                         leave room."
+                    } else {
+                        "What fills the window where the image doesn't reach."
+                    },
+                    false,
+                    t,
+                )),
+        )
+        .child(
+            col()
+                .role("radiogroup")
+                .label("Around the image")
+                .focus_group()
+                .focus_follows()
+                .gap(10.0)
+                .children(rows),
+        );
+    if covers {
+        block = block.opacity(0.55);
+    }
+    Some(block)
 }
 
 /// A horizontal slider over 0 to 1, dragged with the pointer or stepped with the arrow keys
@@ -461,204 +780,4 @@ fn updates(s: &Ui, t: &Theme) -> El {
                 )
                 .child(action),
         )
-}
-
-/// How tall the position pickers' image and window are
-const PICKER_HEIGHT: f32 = 104.0;
-/// How far an arrow key moves a point
-const POINT_STEP: f32 = 0.05;
-
-/// Where the image sits: the point of it that matters, picked on the image, and where that point
-/// goes, picked on a small window that shows the result, fill and all
-fn position(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
-    let image = s.background_image()?;
-    let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
-    let window = cx.layout_size("page").unwrap_or([460.0, 700.0]);
-    let stretched = s.settings.image_fit == ImageFit::Fill;
-    let anchor = s.settings.background_anchor;
-    let follows = s.settings.background_target.is_none();
-    let target = s.settings.background_target.unwrap_or(anchor);
-
-    // The image, its point marked
-    let image_w = (PICKER_HEIGHT * iw / ih).min(200.0);
-    let image_h = image_w * ih / iw;
-    let picture = point_picker(
-        "background-anchor",
-        "Point in the image",
-        [image_w, image_h],
-        anchor,
-        t,
-        |s: &mut Ui, at| s.set_background_anchor(at),
-        |s: &Ui| s.settings.background_anchor,
-        el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).inert().pixels(image.pixels()),
-    );
-
-    // The window, small, with the image where it'll go and the fill around it
-    let k = PICKER_HEIGHT / window[1];
-    let frame = [window[0] * k, PICKER_HEIGHT];
-    let mut shown = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).inert().fill(t.bg);
-    if let Some(mut wallpaper) = super::wallpaper_for(s, image, window, cx.env().scale) {
-        let scaled = |r: [f32; 4]| r.map(|v| v * k);
-        wallpaper.rect = scaled(wallpaper.rect);
-        wallpaper.cover = scaled(wallpaper.cover);
-        wallpaper.window = frame;
-        wallpaper.scale = k;
-        shown = shown.child(wallpaper.build());
-    }
-    let preview = point_picker(
-        "background-target",
-        "Where it goes in the window",
-        frame,
-        target,
-        t,
-        |s: &mut Ui, at| s.set_background_target(Some(at)),
-        |s: &Ui| s.settings.background_target.unwrap_or(s.settings.background_anchor),
-        shown,
-    );
-
-    let labelled = |picker: El, label: &'static str| {
-        col()
-            .gap(6.0)
-            .items_center()
-            .child(picker)
-            .child(text(label).font(theme::SMALL).color(t.muted))
-    };
-    let pickers = row()
-        .w_full()
-        .gap(16.0)
-        .items_end()
-        .child(labelled(picture, "The part that matters"))
-        .child(labelled(preview, "Where it goes"));
-
-    let mut section = col()
-        .key("background-position")
-        .w_full()
-        .gap(10.0)
-        .child(text("Position").font(theme::BODY).color(t.text))
-        .child(pickers)
-        .child(toggle(
-            "background-follows",
-            "Same place in the window as in the image",
-            None,
-            follows,
-            |s| {
-                let next = match s.settings.background_target {
-                    Some(_) => None,
-                    None => Some(s.settings.background_anchor),
-                };
-                s.set_background_target(next)
-            },
-            t,
-        ));
-    if stretched {
-        section = section.opacity(0.45).child(note(
-            "Stretched to the window, the whole image shows wherever it's placed.",
-            false,
-            t,
-        ));
-    }
-    Some(section)
-}
-
-/// A surface `size` points large to pick a point on, by dragging or with the arrow keys: `content`
-/// in it, and the point at `at` (0 to 1 across and down) marked over that
-fn point_picker(
-    key: &'static str,
-    label: &'static str,
-    size: [f32; 2],
-    at: [f32; 2],
-    t: &Theme,
-    set: fn(&mut Ui, [f32; 2]),
-    get: fn(&Ui) -> [f32; 2],
-    content: El,
-) -> El {
-    const MARK: f32 = 14.0;
-    let mark = el()
-        .key(format!("{key}-mark"))
-        .pin(Some(at[0] * size[0] - MARK / 2.0), Some(at[1] * size[1] - MARK / 2.0), None, None)
-        .size(MARK, MARK)
-        .radius(MARK / 2.0)
-        .inert()
-        .border(2.0, Color::WHITE)
-        .shadow(0.0, 4.0, Color::BLACK.alpha(0.6))
-        .child(
-            el().pin(Some(MARK / 2.0 - 2.0), Some(MARK / 2.0 - 2.0), None, None)
-                .size(4.0, 4.0)
-                .radius(2.0)
-                .fill(t.accent),
-        );
-    el().key(key)
-        .size(size[0], size[1])
-        .radius(6.0)
-        .clip_rounded(6.0)
-        .border(1.0, t.accent_line)
-        .role("slider")
-        .label(label)
-        .help(format!("{}% across, {}% down", (at[0] * 100.0).round(), (at[1] * 100.0).round()))
-        .focusable(true)
-        .cursor(rune::Cursor::Crosshair)
-        .on_drag(move |s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
-            set(s, [drag.x / drag.w.max(1.0), drag.y / drag.h.max(1.0)]);
-        })
-        .on_key(move |s: &mut Ui, ev: &rune::KeyEvent, _: &mut Tx| {
-            let [x, y] = get(s);
-            let to = match ev.key {
-                rune::Key::Left => [x - POINT_STEP, y],
-                rune::Key::Right => [x + POINT_STEP, y],
-                rune::Key::Up => [x, y - POINT_STEP],
-                rune::Key::Down => [x, y + POINT_STEP],
-                _ => return false,
-            };
-            set(s, to);
-            true
-        })
-        .child(content)
-        .child(mark)
-}
-
-/// What fills the window around an image smaller than it, as chips to pick from
-fn fill_picker(s: &Ui, t: &Theme) -> El {
-    let covers = matches!(s.settings.image_fit, ImageFit::Cover | ImageFit::Fill);
-    let chips = BackgroundFill::ALL.into_iter().map(|fill| {
-        let on = fill == s.settings.background_fill;
-        el().key(format!("fill-{}", fill.label().to_lowercase().replace([' ', ','], "-")))
-            .h(28.0)
-            .px(12.0)
-            .center()
-            .radius(14.0)
-            .role("radio")
-            .label(fill.label())
-            .checked(on)
-            .focusable(true)
-            .cursor(rune::Cursor::Pointer)
-            .fill(if on { t.accent.alpha(0.18) } else { t.well })
-            .border(1.0, if on { t.accent } else { t.line })
-            .hover(t.accent.alpha(0.12))
-            .on_press(move |s: &mut Ui| s.set_background_fill(fill))
-            .child(text(fill.label()).font(theme::LABEL).color(if on { t.text } else { t.muted }))
-    });
-    let mut picker = col()
-        .key("background-fill")
-        .w_full()
-        .gap(8.0)
-        .child(text("Around the image").font(theme::BODY).color(t.text))
-        .child(
-            row()
-                .role("radiogroup")
-                .label("Around the image")
-                .focus_group()
-                .focus_follows()
-                .w_full()
-                .flex_wrap()
-                .gap(6.0)
-                .children(chips),
-        );
-    if covers {
-        picker = picker.opacity(0.45).child(note(
-            "The image covers the window at this fit, there's nothing around it.",
-            false,
-            t,
-        ));
-    }
-    picker
 }
