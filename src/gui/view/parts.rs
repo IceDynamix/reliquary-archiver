@@ -371,11 +371,16 @@ pub fn node_track(steps: &[(&'static str, Node)], t: &Theme) -> El {
     for (i, (label, state)) in steps.iter().enumerate() {
         if i > 0 {
             let done = steps[i - 1].1 == Node::Done && *state != Node::Todo;
-            track = track.child(el().grow(1.0).h(3.0).radius(1.5).mt(SIZE / 2.0 - 1.5).mx(-30.0).fill(if done {
-                gold
-            } else {
-                t.text.alpha(0.14)
-            }));
+            // Under the medallions either side, which it reaches into
+            track = track.child(
+                el().grow(1.0)
+                    .h(3.0)
+                    .radius(1.5)
+                    .mt(SIZE / 2.0 - 1.5)
+                    .mx(-30.0)
+                    .paint_order(-1)
+                    .fill(if done { gold } else { t.text.alpha(0.14) }),
+            );
         }
         let medallion = el().size(SIZE, SIZE).radius(SIZE / 2.0).center();
         let medallion = match state {

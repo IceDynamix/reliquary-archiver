@@ -1364,6 +1364,8 @@ fn targets(view: &View, t: &Theme) -> Option<El> {
                     .radius(1.5)
                     .mt(12.5)
                     .mx(-4.0)
+                    // Under the medallions either side, which it reaches into
+                    .paint_order(-1)
                     .fill(if done { gold } else { t.text.alpha(0.14) }),
             );
         }

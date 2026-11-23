@@ -735,7 +735,9 @@ fn slider(value: f32, t: &Theme) -> El {
                 .fill(t.primary)
                 .border(2.0, t.accent)
                 .shadow(0.0, 8.0, t.accent.alpha(0.45))
-                .mx(-KNOB / 2.0),
+                .mx(-KNOB / 2.0)
+                // Over the rest of the track, which comes after it
+                .paint_order(1),
         )
         .child(track(t.line).grow(1.0))
 }
