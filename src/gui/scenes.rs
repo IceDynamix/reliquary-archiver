@@ -154,6 +154,18 @@ pub const SCENES: &[Scene] = &[
         s.background_hex.replace_text("#2a1f4d");
         s.panel = Some(Panel::Settings);
     }),
+    // The eyedropper out, to pick the colour around the background from the image
+    ("background-dropper", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        background(s, 0.6);
+        s.settings.image_fit = super::settings::ImageFit::Contain;
+        s.settings.background_fill = super::settings::BackgroundFill::Color;
+        s.settings.background_color = Some("#2a1f4d".into());
+        s.background_hex.replace_text("#2a1f4d");
+        s.background_dropper = true;
+        s.panel = Some(Panel::Settings);
+    }),
     ("anchored", |s| {
         running(s, 1);
         logged_in(s, UID, Some(INVENTORY));

@@ -26,6 +26,45 @@ pub struct Prepared {
     pub rgba: Vec<u8>,
     /// The average colour along each edge: top, right, bottom, left
     pub edges: [rune::Color; 4],
+    /// A small copy, to pick colours from with the eyedropper
+    pub sample: std::sync::Arc<Sample>,
+}
+
+/// How wide or tall [`Sample`] is at most, in pixels: far finer than a pointer picks
+const SAMPLE: u32 = 512;
+
+/// A small copy of the background image, straight-alpha sRGB rows, to pick colours from
+#[derive(Debug)]
+pub struct Sample {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl Sample {
+    /// The colour at `at` (0 to 1 across and down), averaged over the pixels around it so a single
+    /// speck of noise doesn't decide it, as `#rrggbb`
+    pub fn hex_at(&self, at: [f32; 2]) -> Option<String> {
+        let (w, h) = (self.width as i64, self.height as i64);
+        if w == 0 || h == 0 {
+            return None;
+        }
+        let x = ((at[0].clamp(0.0, 1.0) * w as f32) as i64).min(w - 1);
+        let y = ((at[1].clamp(0.0, 1.0) * h as f32) as i64).min(h - 1);
+        let mut sum = [0u32; 3];
+        let mut n = 0;
+        for yy in (y - 1).max(0)..=(y + 1).min(h - 1) {
+            for xx in (x - 1).max(0)..=(x + 1).min(w - 1) {
+                let i = ((yy * w + xx) * 4) as usize;
+                for c in 0..3 {
+                    sum[c] += u32::from(self.rgba[i + c]);
+                }
+                n += 1;
+            }
+        }
+        let [r, g, b] = sum.map(|v| (v + n / 2) / n);
+        Some(format!("#{r:02x}{g:02x}{b:02x}"))
+    }
 }
 
 /// How deep a strip along each edge [`Prepared::edges`] averages, as a share of the image
@@ -110,6 +149,12 @@ fn scaled(image: DynamicImage) -> DynamicImage {
 }
 
 fn into_prepared(image: DynamicImage) -> Prepared {
+    let small = image.thumbnail(SAMPLE, SAMPLE).into_rgba8();
+    let sample = std::sync::Arc::new(Sample {
+        width: small.width(),
+        height: small.height(),
+        rgba: small.into_raw(),
+    });
     let rgba = image.into_rgba8();
     let (width, height) = (rgba.width(), rgba.height());
     let rgba = rgba.into_raw();
@@ -118,6 +163,7 @@ fn into_prepared(image: DynamicImage) -> Prepared {
         height,
         edges: edge_colors(width, height, &rgba),
         rgba,
+        sample,
     }
 }
 
@@ -317,5 +363,23 @@ mod tests {
         assert_eq!((top.r, top.b), (1.0, 0.0));
         assert_eq!((bottom.r, bottom.b), (0.0, 1.0));
         assert!((right.r - 0.25).abs() < 1e-6, "a quarter of the right edge is red");
+    }
+}
+
+#[cfg(test)]
+mod sample_tests {
+    use super::*;
+
+    #[test]
+    fn a_picked_colour_averages_the_pixels_around_it() {
+        // 3 by 1: red, red, blue. The middle averages all three; the left edge only its two
+        let sample = Sample {
+            width: 3,
+            height: 1,
+            rgba: vec![255, 0, 0, 255, 255, 0, 0, 255, 0, 0, 255, 255],
+        };
+        assert_eq!(sample.hex_at([0.5, 0.5]).as_deref(), Some("#aa0055"));
+        assert_eq!(sample.hex_at([0.0, 0.0]).as_deref(), Some("#ff0000"));
+        assert_eq!(sample.hex_at([1.0, 1.0]).as_deref(), Some("#800080"));
     }
 }

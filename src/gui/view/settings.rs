@@ -794,13 +794,52 @@ fn color_picker(s: &Ui, t: &Theme) -> El {
     if let Some(edges) = s.background_edges {
         swatches.extend(edges.map(|c| c.alpha(1.0)));
     }
-    el().key("background-color").pt(6.0).child(
-        rune_kit::ColorPicker::new(s.background_color(t.bg))
-            .label("Colour around the image")
-            .size(ROOM, 132.0)
-            .swatches(swatches)
-            .on_change(|s: &mut Ui, hsv, _| s.set_background_color(hsv))
-            .hex_field(&s.background_hex, |s: &mut Ui| &mut s.background_hex)
-            .build(&t.kit),
+    let mut picker = rune_kit::ColorPicker::new(s.background_color(t.bg))
+        .label("Colour around the image")
+        .size(ROOM, 132.0)
+        .swatches(swatches)
+        .on_change(|s: &mut Ui, hsv, _| s.set_background_color(hsv))
+        .hex_field(&s.background_hex, |s: &mut Ui| &mut s.background_hex);
+    if s.background_sample.is_some() {
+        picker = picker.eyedropper(s.background_dropper, |s: &mut Ui, _| s.background_dropper = !s.background_dropper);
+    }
+    col()
+        .key("background-color")
+        .pt(6.0)
+        .gap(12.0)
+        .children(s.background_dropper.then(|| dropper(s, t)).flatten())
+        .child(picker.build(&t.kit))
+}
+
+/// The image to pick a colour from with the eyedropper, as wide as the sheet: pressing picks the
+/// colour under the pointer, dragging picks as it goes, and letting go puts the eyedropper away
+fn dropper(s: &Ui, t: &Theme) -> Option<El> {
+    let image = s.background_image()?;
+    let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
+    let height = (ROOM * ih / iw).min(240.0);
+    let width = height * iw / ih;
+    let surface = el()
+        .key("background-dropper")
+        .size(width, height)
+        .radius(6.0)
+        .clip_rounded(6.0)
+        .border(2.0, t.accent)
+        .role("button")
+        .label("Pick a colour from the image")
+        .cursor(rune::Cursor::Crosshair)
+        .pixels(image.pixels())
+        .on_drag(|s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
+            s.pick_background_color([drag.x / drag.w.max(1.0), drag.y / drag.h.max(1.0)]);
+            if drag.phase == rune::Phase::Up {
+                s.background_dropper = false;
+            }
+        });
+    Some(
+        col()
+            .w_full()
+            .gap(6.0)
+            .items_center()
+            .child(surface)
+            .child(note("Press on the image to pick its colour there.", false, t)),
     )
 }

@@ -77,6 +77,10 @@ pub struct Ui {
     /// The average colour along each edge of the background image (top, right, bottom, left), for
     /// [`BackgroundFill::EdgeColor`]; none for vector images
     pub background_edges: Option<[rune::Color; 4]>,
+    /// A small copy of the background image, to pick colours from; not for vector images
+    pub background_sample: Option<std::sync::Arc<background::Sample>>,
+    /// The eyedropper is on: pressing on the image picks the colour around it
+    pub background_dropper: bool,
     /// Gets background images ready off the UI thread, set up with the window
     pub background_loader: Option<rune::Latest<(String, Result<background::Prepared, String>)>>,
     /// The background the loader is working on
@@ -410,6 +414,8 @@ impl Ui {
             background: None,
             background_loader: None,
             background_edges: None,
+            background_sample: None,
+            background_dropper: false,
             background_loading: None,
             background_error: None,
             warps: Warps::default(),
@@ -1016,6 +1022,8 @@ impl Ui {
             // Rune draws vector images at the size they're shown at, which only needs the size
             let image = images.file(&path, 1024.0, 1.0);
             self.background_edges = None;
+            self.background_sample = None;
+            self.background_dropper = false;
             self.background = Some((path, image));
         }
     }
@@ -1033,6 +1041,7 @@ impl Ui {
             match background::prepare(&path) {
                 Ok(prepared) => {
                     self.background_edges = Some(prepared.edges);
+                    self.background_sample = Some(prepared.sample.clone());
                     images.rgba(prepared.width, prepared.height, prepared.rgba)
                 }
                 Err(e) => {
@@ -1042,6 +1051,7 @@ impl Ui {
             }
         } else {
             self.background_edges = None;
+            self.background_sample = None;
             images.file(&path, 1024.0, 1.0)
         };
         let _ = image.wait();
@@ -1064,6 +1074,7 @@ impl Ui {
             Ok(prepared) => {
                 if let Some(images) = &self.images {
                     self.background_edges = Some(prepared.edges);
+                    self.background_sample = Some(prepared.sample.clone());
                     self.background = Some((path, images.rgba(prepared.width, prepared.height, prepared.rgba)));
                 }
             }
@@ -1133,6 +1144,21 @@ impl Ui {
                     .map(rune_kit::Hsv::of)
             })
             .unwrap_or_else(|| rune_kit::Hsv::of(fallback))
+    }
+
+    /// Picks the colour around `at` (0 to 1 across and down) of the background image for
+    /// [`BackgroundFill::Color`], as the eyedropper does
+    pub fn pick_background_color(&mut self, at: [f32; 2]) {
+        let Some(hsv) = self
+            .background_sample
+            .as_ref()
+            .and_then(|sample| sample.hex_at(at))
+            .and_then(|hex| rune_kit::Hsv::from_hex(&hex))
+        else {
+            return;
+        };
+        self.set_background_color(hsv);
+        self.background_hex.replace_text(hsv.hex());
     }
 
     /// Picks the colour [`BackgroundFill::Color`] fills with
