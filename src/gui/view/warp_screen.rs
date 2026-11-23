@@ -919,10 +919,16 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
             .key("warp-rail")
             .w_full()
             .px(16.0)
+            // Room above for the selected ticket's head and below for its frame, which the
+            // scrolling row would clip
             .pt(HEADROOM * COMPACT_TICKET[1] / SPRITE[1])
+            .pb(SELECTED_BELOW * COMPACT_TICKET[1] / SPRITE[1])
             .gap(14.0)
             .children(tickets)
             .scroll_x()
+            // Over the pages, whose headroom reaches up under it and which slide past it as they
+            // turn
+            .paint_order(1)
     } else {
         col().key("warp-rail").pt(8.0).gap(14.0).children(tickets)
     }
