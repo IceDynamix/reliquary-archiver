@@ -42,6 +42,11 @@ struct Args {
     #[arg(long)]
     pcap: Option<PathBuf>,
 
+    /// Read packets from a streaming .pcap file instead of capturing live packets
+    #[cfg(feature = "pcap-parser")]
+    #[arg(long)]
+    pcap_file_live: Option<PathBuf>,
+
     /// Read packets from .etl file instead of capturing live packets
     #[cfg(feature = "pktmon")]
     #[arg(long)]
@@ -94,9 +99,13 @@ struct Args {
     #[cfg(all(windows, feature = "gui"))]
     #[arg(long, short = 'd')]
     detach: bool,
+
+    /// Continues reading from replay even if all of the export is ready (mainly used for debugging)
+    #[arg(short, long)]
+    keep_reading: bool
 }
 
-#[cfg(not(any(feature = "pktmon", feature = "pcap")))]
+#[cfg(not(any(feature = "pktmon", feature = "pcap", feature = "pcap-parser")))]
 compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
 
 #[cfg(all(not(windows), feature = "gui"))]

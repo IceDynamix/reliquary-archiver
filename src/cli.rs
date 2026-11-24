@@ -15,6 +15,7 @@ use tracing::{error, info, instrument, warn};
 
 use crate::Args;
 use crate::accounts::MultiAccountManager;
+use crate::capture::pipe::is_pipe;
 use crate::capture::{Replay, SourceSpec, Tap};
 use crate::session::{CaptureSession, SessionEvent};
 
@@ -48,12 +49,24 @@ impl TryFrom<&Args> for SourceSpec {
             return Ok(Replay::Etl(path.clone()).into());
         }
 
+        #[cfg(feature = "pcap-parser")]
+        if let Some(path) = &args.pcap_file_live {
+            return Ok(if is_pipe(path) {
+                Tap::PcaparsePipe(path.clone()).into()
+            } else {
+                Replay::Pcaparse(path.clone()).into()
+            })
+        }
+
         // pcap is preferred when both backends are built in
         #[cfg(feature = "pcap")]
         return Ok(Tap::Pcap.into());
 
         #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
         return Ok(Tap::Pktmon.into());
+
+        #[cfg(not(any(feature = "pcap", feature = "pktmon")))]
+        Err("pcap-parser requires the --pcap-file-live option")
     }
 }
 
@@ -128,7 +141,7 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
                     #[cfg(not(feature = "stream"))]
                     let _ = uid;
                 }
-                SessionEvent::LoginFinished if !streaming => {
+                SessionEvent::LoginFinished if !streaming && !args.keep_reading => {
                     info!("detected login end, assume initialization is finished");
                     break 'recv;
                 }
@@ -143,7 +156,7 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
         }
 
         // Check if initialized for early exit in non-streaming mode
-        if !streaming && session.is_initialized().await {
+        if (!streaming && session.is_initialized().await) && !args.keep_reading {
             info!("retrieved all relevant packets, stop listening");
             break 'recv;
         }

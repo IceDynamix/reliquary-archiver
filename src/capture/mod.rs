@@ -23,7 +23,10 @@ use tracing::instrument;
 #[cfg(all(windows, feature = "pktmon"))]
 pub mod pktmon;
 
-#[cfg(feature = "pcap")]
+#[cfg(feature = "pcap-parser")]
+pub mod pcap_file;
+
+#[cfg(any(feature = "pcap", feature = "pcap-parser"))]
 pub mod pipe;
 
 #[cfg(feature = "pcap")]
@@ -97,6 +100,9 @@ pub enum Tap {
     /// pipe too), so it's only reopened when it ends if it's a named pipe a new writer can connect to
     #[cfg(feature = "pcap")]
     PcapPipe(PathBuf),
+    /// Read pcap data as it's written to a pipe or fifo
+    #[cfg(feature = "pcap-parser")]
+    PcaparsePipe(PathBuf),
 }
 
 /// A recorded capture, read once from start to end
@@ -108,6 +114,8 @@ pub enum Replay {
     /// A recorded .etl file
     #[cfg(feature = "pktmon")]
     Etl(PathBuf),
+    #[cfg(feature = "pcap-parser")]
+    Pcaparse(PathBuf),
 }
 
 /// Describes where packets should be read from
@@ -197,6 +205,8 @@ impl Tap {
             // Opening a named pipe waits for the next writer, so there's no need to hold off
             #[cfg(feature = "pcap")]
             Tap::PcapPipe(path) => pipe::is_named_pipe(path).then_some(Duration::ZERO),
+            #[cfg(feature = "pcap-parser")]
+            Tap::PcaparsePipe(_) => Some(Duration::ZERO),
         }
     }
 
@@ -209,6 +219,8 @@ impl Tap {
             // libpcap reads a pipe as packets are written to it, and stdin for "-"
             #[cfg(feature = "pcap")]
             Tap::PcapPipe(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
+            #[cfg(feature = "pcap-parser")]
+            Tap::PcaparsePipe(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
         };
 
         source.open()
@@ -247,6 +259,8 @@ impl Replay {
             Replay::Pcap(path) => Box::new(pcap::PcapFileSource::new(path.clone())),
             #[cfg(feature = "pktmon")]
             Replay::Etl(path) => Box::new(pktmon::EtlFileSource::new(path.clone())),
+            #[cfg(feature = "pcap-parser")]
+            Replay::Pcaparse(path) => Box::new(pcap_file::PcapFile::new(path.clone())),
         };
 
         source.open()
