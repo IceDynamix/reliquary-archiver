@@ -1,15 +1,12 @@
-//! Character and light cone art for the warp screen.
-//!
-//! Two sources:
-//! - StarRailRes, for every character's and light cone's portrait and preview.
-//! - The warp banner layers (hsr-warp-art): a limited banner's art as the game draws it, in layers
-//!   cut from one canvas (backdrop, back, character, front), with where the game places each. Its
-//!   `index.json` says what's there. Until it has a home online it's read from wherever
-//!   `RQA_WARP_ART` points: a folder or a URL.
+//! Character and light cone art for the warp screen, from hsr-warp-art: every character's and
+//! light cone's portrait, preview and icon, the passes' icons, and each limited banner's art as
+//! the game draws it, in layers cut from one canvas (backdrop, back, character, front), with where
+//! the game places each. Its `index.json` says what's there, and each file's SHA-256. It's read
+//! from GitHub, or from wherever `RQA_WARP_ART` points: a folder or a URL.
 //!
 //! Art is downloaded the first time it's shown and kept in the app's cache folder, so it isn't
-//! shipped with the app and is only fetched once. Portraits and banner layers are kept decoded (as
-//! QOI) at the size the game has them, since the warp screen draws them about as large.
+//! shipped with the app and is only fetched again when its hash changes. It comes as JPEG XL and is
+//! kept decoded (as QOI) at the size the game has it, since the warp screen draws it about as large.
 //!
 //! The view asks with [`ArtCache::get`], which answers at once: the image if it's there, `None`
 //! while it's on its way. A worker thread downloads and decodes, then wakes the window, and
@@ -23,8 +20,9 @@ use std::time::Duration;
 use image::DynamicImage;
 use rune::{Color, Image, ImageCache};
 
-const BASE_URL: &str = "https://raw.githubusercontent.com/Mar-7th/StarRailRes/master";
-/// Where the warp banner layers are, until they have a home online: a folder or a URL
+/// Where the art is
+const WARP_ART_URL: &str = "https://raw.githubusercontent.com/emmachase/hsr-warp-art/main";
+/// Where to read the art from instead, for trying a new extraction: a folder or a URL
 const WARP_ART_ENV: &str = "RQA_WARP_ART";
 /// Portraits taller than this are scaled down to it. Their source is 2048, which a high density
 /// screen shows nearly at full size, so it's kept
@@ -108,40 +106,43 @@ impl Layer {
 }
 
 impl Art {
-    fn path(self) -> String {
-        let db = reliquary_archiver::export::database::get_database();
-        let (kind, id) = match self {
-            Art::Portrait(id) if db.is_light_cone(id) => ("image/light_cone_portrait", id),
-            Art::Portrait(id) => ("image/character_portrait", id),
-            Art::Preview(id) if db.is_light_cone(id) => ("image/light_cone_preview", id),
-            Art::Preview(id) => ("image/character_preview", id),
-            Art::Item(id) => ("icon/item", id),
-            Art::Icon(id) if db.is_light_cone(id) => ("icon/light_cone", id),
-            Art::Icon(id) => ("icon/avatar", id),
-            Art::Layer(id, layer) => return format!("layer/{id}/{layer:?}.png"),
-            Art::Ticket(ticket, selected) => {
-                return format!("ticket/{ticket:?}{}.png", if selected { "-selected" } else { "" });
+    /// Its file in the art, as the manifest has it
+    fn file(self, manifest: &Manifest) -> Option<&str> {
+        let own = |id: u32| manifest.own.get(&id);
+        let file = match self {
+            Art::Portrait(id) => own(id)?.portrait.as_ref(),
+            Art::Preview(id) => own(id)?.preview.as_ref(),
+            Art::Icon(id) => own(id)?.icon.as_ref(),
+            Art::Item(id) => manifest.items.get(&id),
+            Art::Layer(item, layer) => Some(&manifest.banners.get(&item)?.layer(layer)?.file),
+            Art::Ticket(Ticket::Banner(item), selected) => {
+                let layer = if selected { Layer::TabSelected } else { Layer::Tab };
+                Some(&manifest.banners.get(&item)?.layer(layer)?.file)
             }
-            Art::Pattern(id) => return format!("pattern/{id}.png"),
+            Art::Ticket(ticket, selected) => manifest.tickets.get(&ticket)?[usize::from(selected)].as_ref(),
+            Art::Pattern(item) => Some(&manifest.banners.get(&item)?.surface.as_ref()?.pattern.as_ref()?.file),
         };
-        format!("{kind}/{id}.png")
+        file.map(String::as_str)
     }
 
-    /// The name of its file in the cache folder
-    fn file_name(self, build: &str) -> String {
-        let path = self.path().replace('/', "-");
-        match self {
-            Art::Portrait(_) => path.replace(".png", &format!("-{PORTRAIT_HEIGHT}.qoi")),
-            Art::Layer(..) => format!("warp-{build}-{}", path.replace(".png", "-full.qoi")),
-            Art::Ticket(..) | Art::Pattern(_) => format!("warp-{build}-{}", path.replace(['(', ')'], "")),
-            _ => path,
-        }
+    /// The name `file` is kept under in the cache folder, decoded: with its version, so a new one
+    /// is fetched rather than the old one read
+    fn cache_name(self, file: &str, version: &str) -> String {
+        // Both come from the manifest: nothing in them may reach outside the cache folder
+        let safe = |s: &str| s.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "-");
+        let (stem, version) = (safe(file.rsplit_once('.').map_or(file, |(stem, _)| stem)), safe(version));
+        // Portraits are kept scaled down to this
+        let height = if matches!(self, Art::Portrait(_)) { format!("-{PORTRAIT_HEIGHT}") } else { String::new() };
+        format!("warp-{version}-{stem}{height}.qoi")
     }
+}
 
-    /// Scaled down and kept decoded, rather than kept as downloaded
-    fn scaled(self) -> bool {
-        matches!(self, Art::Portrait(_) | Art::Layer(..))
-    }
+/// A character's or light cone's own art, not a banner's
+#[derive(Clone, Debug, Default, PartialEq)]
+struct OwnArt {
+    portrait: Option<String>,
+    preview: Option<String>,
+    icon: Option<String>,
 }
 
 /// A banner's art as the game lays it out
@@ -218,16 +219,29 @@ impl BannerArt {
     }
 }
 
-/// What the warp banner art has, by featured item
+/// What the art has
 #[derive(Debug, Default)]
 struct Manifest {
     build: String,
+    /// By featured item
     banners: HashMap<u32, BannerArt>,
     /// The standard and departure warps' tickets, plain and selected
     tickets: HashMap<Ticket, [Option<String>; 2]>,
+    /// Every character's and light cone's own art, by id
+    own: HashMap<u32, OwnArt>,
+    /// Items' icons, by id
+    items: HashMap<u32, String>,
+    /// Each file's SHA-256
+    hashes: HashMap<String, String>,
 }
 
 impl Manifest {
+    /// What a file's copy in the cache is kept as: a short form of its hash, or without one the
+    /// game build the art is from
+    fn version(&self, file: &str) -> &str {
+        self.hashes.get(file).map_or(&self.build, |hash| hash.get(..16).unwrap_or(hash))
+    }
+
     fn parse(bytes: &[u8]) -> Option<Manifest> {
         let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
         let build = json["game"]["build"].as_str().unwrap_or("0").to_string();
@@ -292,7 +306,38 @@ impl Manifest {
                 tickets.insert(ticket, [file("tab"), file("tab_selected")]);
             }
         }
-        Some(Manifest { build, banners, tickets })
+        let mut own = HashMap::new();
+        for kind in ["character", "light_cone"] {
+            for (id, slots) in json["art"][kind].as_object().into_iter().flatten() {
+                let Ok(id) = id.parse::<u32>() else { continue };
+                let file = |slot: &str| slots[slot].as_str().map(str::to_string);
+                own.insert(id, OwnArt {
+                    portrait: file("portrait"),
+                    preview: file("preview"),
+                    icon: file("icon"),
+                });
+            }
+        }
+        let items = json["art"]["item"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(id, slots)| Some((id.parse::<u32>().ok()?, slots["icon"].as_str()?.to_string())))
+            .collect();
+        let hashes = json["files"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter_map(|(file, about)| Some((file.clone(), about["sha256"].as_str()?.to_string())))
+            .collect();
+        Some(Manifest {
+            build,
+            banners,
+            tickets,
+            own,
+            items,
+            hashes,
+        })
     }
 }
 
@@ -358,9 +403,11 @@ enum Slot {
     Missing,
 }
 
-enum Fetched {
-    Encoded(Vec<u8>),
-    Rgba(u32, u32, Vec<u8>),
+/// Decoded art
+struct Fetched {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
 }
 
 struct Done {
@@ -483,24 +530,10 @@ impl ArtCache {
                 None => {}
             }
         }
-        // Layers and tickets come from where the manifest says, under the banner art's base
-        let source = match art {
-            Art::Layer(..) | Art::Ticket(..) | Art::Pattern(_) => {
-                let manifest = self.manifest()?;
-                let file = match art {
-                    Art::Layer(item, layer) => manifest.banners.get(&item)?.layer(layer)?.file.clone(),
-                    Art::Ticket(Ticket::Banner(item), selected) => {
-                        let layer = if selected { Layer::TabSelected } else { Layer::Tab };
-                        manifest.banners.get(&item)?.layer(layer)?.file.clone()
-                    }
-                    Art::Ticket(ticket, selected) => manifest.tickets.get(&ticket)?[usize::from(selected)].clone()?,
-                    Art::Pattern(item) => manifest.banners.get(&item)?.surface.as_ref()?.pattern.as_ref()?.file.clone(),
-                    _ => return None,
-                };
-                format!("{}\n{}\n{file}", manifest.build, warp_art_base()?)
-            }
-            _ => String::new(),
-        };
+        // From where the manifest says, under the art's base
+        let manifest = self.manifest()?;
+        let file = art.file(&manifest)?;
+        let source = format!("{}\n{}\n{file}", manifest.version(file), warp_art_base());
         let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
         match &self.jobs {
             Some(jobs) => {
@@ -560,11 +593,8 @@ impl ArtCache {
         true
     }
 
-    fn install(&self, fetched: Fetched) -> Image {
-        match fetched {
-            Fetched::Encoded(bytes) => self.images.load(bytes),
-            Fetched::Rgba(width, height, rgba) => self.images.rgba(width, height, rgba),
-        }
+    fn install(&self, Fetched { width, height, rgba }: Fetched) -> Image {
+        self.images.rgba(width, height, rgba)
     }
 }
 
@@ -579,12 +609,12 @@ fn color(rgb: [f32; 3]) -> Color {
     rune::oklch(0.7, chroma.clamp(0.1, 0.17), bb.atan2(a).to_degrees())
 }
 
-/// Where the warp banner art is, when it's set
-fn warp_art_base() -> Option<String> {
+/// Where the art is: `RQA_WARP_ART` when it's set, else GitHub
+fn warp_art_base() -> String {
     std::env::var(WARP_ART_ENV)
         .ok()
         .filter(|base| !base.trim().is_empty())
-        .map(|base| base.trim().trim_end_matches(['/', '\\']).to_string())
+        .map_or(WARP_ART_URL.to_string(), |base| base.trim().trim_end_matches(['/', '\\']).to_string())
 }
 
 fn agent() -> ureq::Agent {
@@ -615,7 +645,7 @@ fn read_warp_art(agent: &ureq::Agent, base: &str, file: &str) -> Option<Vec<u8>>
 /// The warp banner art's manifest, fresh, or as kept last time when it can't be had
 fn fetch_manifest(agent: &ureq::Agent) -> Option<Manifest> {
     let kept = cache_dir().map(|dir| dir.join("warp-index.json"));
-    let fresh = warp_art_base().and_then(|base| read_warp_art(agent, &base, "index.json"));
+    let fresh = read_warp_art(agent, &warp_art_base(), "index.json");
     let bytes = match fresh {
         Some(bytes) => {
             if let Some(path) = &kept {
@@ -629,66 +659,79 @@ fn fetch_manifest(agent: &ureq::Agent) -> Option<Manifest> {
 }
 
 /// The art from the cache folder, or downloaded into it, and for a banner's backdrop its color.
-/// `source` is, for a banner layer, the manifest's build, the base and the file, a line each
+/// `source` is the file's version, the art's base and the file, a line each
 fn fetch(agent: &ureq::Agent, art: Art, source: &str) -> (Option<Fetched>, Option<[f32; 3]>) {
     let mut lines = source.lines();
-    let build = lines.next().unwrap_or("0");
-    let cached = cache_dir().map(|dir| dir.join(art.file_name(build)));
+    let (Some(version), Some(base), Some(file)) = (lines.next(), lines.next(), lines.next()) else {
+        return (None, None);
+    };
+    let cached = cache_dir().map(|dir| dir.join(art.cache_name(file, version)));
     let backdrop = matches!(art, Art::Layer(_, Layer::Backdrop));
     if let Some(path) = &cached
         && let Ok(bytes) = std::fs::read(path)
+        && let Ok(image) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Qoi)
     {
-        if !art.scaled() {
-            return (Some(Fetched::Encoded(bytes)), None);
-        }
-        if let Ok(image) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Qoi) {
-            let tint = backdrop.then(|| mean_color(&image));
-            return (Some(rgba(image)), tint);
-        }
+        let tint = backdrop.then(|| mean_color(&image));
+        return (Some(rgba(image)), tint);
     }
 
-    let bytes = match art {
-        Art::Layer(..) | Art::Ticket(..) | Art::Pattern(_) => {
-            let (Some(base), Some(file)) = (lines.next(), lines.next()) else {
-                return (None, None);
-            };
-            read_warp_art(agent, base, file)
-        }
-        _ => download(agent, &format!("{BASE_URL}/{}", art.path())),
-    };
-    let Some(bytes) = bytes else {
+    let Some(image) = read_warp_art(agent, base, file).and_then(|bytes| decode(&bytes)) else {
         return (None, None);
     };
-
-    let (fetched, keep_bytes, tint) = if art.scaled() {
-        let Ok(image) = image::load_from_memory(&bytes) else {
-            return (None, None);
-        };
-        // Banner layers are drawn as large as the window, they're kept as the game has them
-        let scale = match art {
-            Art::Layer(..) => 1.0,
-            _ => (PORTRAIT_HEIGHT as f32 / image.height() as f32).min(1.0),
-        };
-        let image = if scale < 1.0 {
-            let w = (image.width() as f32 * scale).round().max(1.0) as u32;
-            let h = (image.height() as f32 * scale).round().max(1.0) as u32;
-            image.thumbnail_exact(w, h)
-        } else {
-            image
-        };
-        let tint = backdrop.then(|| mean_color(&image));
-        let mut qoi = Vec::new();
-        let _ = image.write_to(&mut std::io::Cursor::new(&mut qoi), image::ImageFormat::Qoi);
-        (rgba(image), qoi, tint)
-    } else {
-        (Fetched::Encoded(bytes.clone()), bytes, None)
+    // Portraits are scaled down to a height the screen can use; the rest are kept as the game has
+    // them, banner layers since they're drawn as large as the window
+    let scale = match art {
+        Art::Portrait(_) => (PORTRAIT_HEIGHT as f32 / image.height() as f32).min(1.0),
+        _ => 1.0,
     };
-    if let Some(path) = cached
-        && !keep_bytes.is_empty()
-    {
-        keep(&path, &keep_bytes);
+    let image = if scale < 1.0 {
+        let w = (image.width() as f32 * scale).round().max(1.0) as u32;
+        let h = (image.height() as f32 * scale).round().max(1.0) as u32;
+        image.thumbnail_exact(w, h)
+    } else {
+        image
+    };
+    let tint = backdrop.then(|| mean_color(&image));
+    if let Some(path) = cached {
+        let mut qoi = Vec::new();
+        if image.write_to(&mut std::io::Cursor::new(&mut qoi), image::ImageFormat::Qoi).is_ok() {
+            keep(&path, &qoi);
+        }
     }
-    (Some(fetched), tint)
+    (Some(rgba(image)), tint)
+}
+
+/// A picture from the art: JPEG XL, or anything else the image crate reads
+fn decode(bytes: &[u8]) -> Option<DynamicImage> {
+    // A bare codestream, or one in its container
+    let jxl = bytes.starts_with(&[0xff, 0x0a]) || bytes.starts_with(b"\0\0\0\x0cJXL \r\n\x87\n");
+    if !jxl {
+        return image::load_from_memory(bytes)
+            .inspect_err(|e| tracing::debug!(%e, "couldn't decode art"))
+            .ok();
+    }
+    let mut image = jxl_oxide::JxlImage::builder()
+        .read(bytes)
+        .inspect_err(|e| tracing::debug!(%e, "couldn't read art"))
+        .ok()?;
+    // Lossy art is kept in the XYB color space, it's turned back into what the screen shows
+    image.request_color_encoding(jxl_oxide::EnumColourEncoding::srgb(jxl_oxide::RenderingIntent::Relative));
+    let render = image
+        .render_frame(0)
+        .inspect_err(|e| tracing::debug!(%e, "couldn't decode art"))
+        .ok()?;
+    let mut stream = render.stream();
+    let (width, height, channels) = (stream.width(), stream.height(), stream.channels() as usize);
+    let mut samples = vec![0u8; width as usize * height as usize * channels];
+    stream.write_to_buffer(&mut samples);
+    let rgba = match channels {
+        4 => samples,
+        3 => samples.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
+        2 => samples.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        1 => samples.iter().flat_map(|&v| [v, v, v, 255]).collect(),
+        _ => return None,
+    };
+    image::RgbaImage::from_raw(width, height, rgba).map(DynamicImage::ImageRgba8)
 }
 
 /// Writes beside the file and moves it in place, so a half written file is never read
@@ -723,7 +766,11 @@ fn mean_color(image: &DynamicImage) -> [f32; 3] {
 
 fn rgba(image: DynamicImage) -> Fetched {
     let rgba = image.into_rgba8();
-    Fetched::Rgba(rgba.width(), rgba.height(), rgba.into_raw())
+    Fetched {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+    }
 }
 
 /// The app's cache folder: under the local app data folder on Windows, Caches on macOS, the XDG
@@ -747,44 +794,74 @@ fn cache_dir() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
+    const MANIFEST: &[u8] = br#"{"game":{"build":"b"},"banners":{"character":{"1511":{"layers":[
+            {"layer":"backdrop","file":"characters/1511/backdrop.jxl"},
+            {"layer":"avatar","file":"characters/1511/avatar.jxl","canvas":[2048,2048],"rect":[2,191,1958,1715],"canvas_on_screen":[585.8,-161.2,1382.4,1382.4]},
+            {"layer":"tab_selected","file":"characters/1511/tab_selected.jxl"}
+        ],"panel":{"fill":{"color":[0.16,0.11,0.41,1],"gradient":{"colors":[[0.75,0.01,0,1],[0.2,0,0,1]],"angle":-110}},
+            "fade":{"color":[0.06,0.94,1,1]},
+            "pattern":{"color":[0.06,0.04,0.16,0.05],"pattern":"patterns/decopatternpixeleater.jxl","tile":[69.33,61.33]}},
+          "frame_pattern":{"color":[0,0,0,0.035],"pattern":"patterns/decopatternpixeleatersingle.jxl","tile":[26.67,55.76]}}},
+        "light_cone":{"23048":{"layers":[{"layer":"bg","file":"light_cones/23048/bg.jxl"},
+            {"layer":"tab","file":"light_cones/23048/tab.jxl"}],
+          "frame_pattern":{"color":[0,0,0,0.035],"pattern":"patterns/decopatterncross.jxl","tile":[20,20]}},
+          "23049":{"layers":[{"layer":"bg","file":"light_cones/23049/bg.jxl"}]}}},
+        "tabs":{"standard":{"tab":"tabs/standard_tab.jxl","tab_selected":"tabs/standard_tab_selected.jxl"}},
+        "art":{"character":{"1511":{"portrait":"characters/1511/portrait.jxl","preview":"characters/1511/preview.jxl","icon":"characters/1511/icon.jxl"}},
+            "light_cone":{"23048":{"portrait":"light_cones/23048/portrait.jxl","preview":"light_cones/23048/preview.jxl","icon":"light_cones/23048/icon.jxl"}},
+            "item":{"102":{"icon":"items/102.jxl"}}},
+        "files":{"characters/1511/portrait.jxl":{"bytes":1,"sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"},
+            "items/102.jxl":{"bytes":1,"sha256":"../../evil"}}}"#;
+
     #[test]
-    fn art_comes_from_the_folder_for_its_kind() {
-        assert_eq!(Art::Portrait(1506).path(), "image/character_portrait/1506.png");
-        assert_eq!(Art::Preview(23048).path(), "image/light_cone_preview/23048.png");
-        assert_eq!(Art::Item(102).path(), "icon/item/102.png");
-        assert_eq!(Art::Icon(1001).path(), "icon/avatar/1001.png");
-        assert_eq!(Art::Icon(23048).path(), "icon/light_cone/23048.png");
-        assert_eq!(Art::Portrait(1506).file_name("1"), "image-character_portrait-1506-2048.qoi");
-        assert_eq!(
-            Art::Layer(1511, Layer::Main).file_name("20261029-0524"),
-            "warp-20261029-0524-layer-1511-Main-full.qoi"
-        );
+    fn art_comes_from_where_the_manifest_says() {
+        let manifest = Manifest::parse(MANIFEST).unwrap();
+        let file = |art: Art| art.file(&manifest);
+        assert_eq!(file(Art::Portrait(1511)), Some("characters/1511/portrait.jxl"));
+        assert_eq!(file(Art::Preview(23048)), Some("light_cones/23048/preview.jxl"));
+        assert_eq!(file(Art::Icon(1511)), Some("characters/1511/icon.jxl"));
+        assert_eq!(file(Art::Icon(23048)), Some("light_cones/23048/icon.jxl"));
+        assert_eq!(file(Art::Item(102)), Some("items/102.jxl"));
+        assert_eq!(file(Art::Item(101)), None);
+        assert_eq!(file(Art::Layer(1511, Layer::Main)), Some("characters/1511/avatar.jxl"));
+        assert_eq!(file(Art::Ticket(Ticket::Banner(1511), true)), Some("characters/1511/tab_selected.jxl"));
+        assert_eq!(file(Art::Ticket(Ticket::Standard, false)), Some("tabs/standard_tab.jxl"));
+        assert_eq!(file(Art::Pattern(1511)), Some("patterns/decopatternpixeleater.jxl"));
     }
 
     #[test]
-    fn tickets_are_kept_as_they_come() {
-        assert_eq!(
-            Art::Ticket(Ticket::Banner(1511), true).file_name("b"),
-            "warp-b-ticket-Banner1511-selected.png"
-        );
-        assert_eq!(Art::Ticket(Ticket::Standard, false).file_name("b"), "warp-b-ticket-Standard.png");
+    fn art_is_cached_by_its_hash() {
+        let manifest = Manifest::parse(MANIFEST).unwrap();
+        let name = |art: Art| {
+            let file = art.file(&manifest).unwrap();
+            art.cache_name(file, manifest.version(file))
+        };
+        assert_eq!(name(Art::Portrait(1511)), "warp-0123456789abcdef-characters-1511-portrait-2048.qoi");
+        // Without a hash, by the game build
+        assert_eq!(name(Art::Layer(1511, Layer::Main)), "warp-b-characters-1511-avatar.qoi");
+        // Nothing from the manifest reaches outside the cache folder
+        assert_eq!(name(Art::Item(102)), "warp-------evil-items-102.qoi");
+    }
+
+    #[test]
+    fn jpeg_xl_decodes() {
+        // 2x2, lossless: red, half transparent green, transparent, white
+        const TINY: &[u8] = &[
+            0xff, 0x0a, 0x08, 0x10, 0xb0, 0x12, 0x08, 0x00, 0x10, 0x00, 0x74, 0x00, 0x4b, 0x18, 0x8b, 0x15, 0xc2, 0x09,
+            0xaa, 0xb7, 0x1f, 0x34, 0x17, 0x90, 0x01, 0x60, 0xfc, 0x47, 0x44, 0x3f, 0x9e, 0xde, 0x6d, 0x22, 0xc1, 0x8a,
+            0xbd, 0x77, 0x98, 0x2a, 0x03,
+        ];
+        let image = decode(TINY).unwrap().into_rgba8();
+        assert_eq!(image.dimensions(), (2, 2));
+        assert_eq!(image.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(image.get_pixel(1, 0).0, [0, 255, 0, 128]);
+        assert_eq!(image.get_pixel(0, 1).0[3], 0);
+        assert_eq!(image.get_pixel(1, 1).0, [255, 255, 255, 255]);
     }
 
     #[test]
     fn the_banner_art_manifest_reads() {
-        let json = br#"{"game":{"build":"b"},"banners":{"character":{"1511":{"layers":[
-            {"layer":"backdrop","file":"characters/1511/backdrop.png"},
-            {"layer":"avatar","file":"characters/1511/avatar.png","canvas":[2048,2048],"rect":[2,191,1958,1715],"canvas_on_screen":[585.8,-161.2,1382.4,1382.4]}
-        ],"panel":{"fill":{"color":[0.16,0.11,0.41,1],"gradient":{"colors":[[0.75,0.01,0,1],[0.2,0,0,1]],"angle":-110}},
-            "fade":{"color":[0.06,0.94,1,1]},
-            "pattern":{"color":[0.06,0.04,0.16,0.05],"pattern":"patterns/decopatternpixeleater.png","tile":[69.33,61.33]}},
-          "frame_pattern":{"color":[0,0,0,0.035],"pattern":"patterns/decopatternpixeleatersingle.png","tile":[26.67,55.76]}}},
-        "light_cone":{"23048":{"layers":[{"layer":"bg","file":"light_cones/23048/bg.png"},
-            {"layer":"tab","file":"light_cones/23048/tab.png"}],
-          "frame_pattern":{"color":[0,0,0,0.035],"pattern":"patterns/decopatterncross.png","tile":[20,20]}},
-          "23049":{"layers":[{"layer":"bg","file":"light_cones/23049/bg.png"}]}}},
-        "tabs":{"standard":{"tab":"tabs/standard_tab.png","tab_selected":"tabs/standard_tab_selected.png"}}}"#;
-        let manifest = Manifest::parse(json).unwrap();
+        let manifest = Manifest::parse(MANIFEST).unwrap();
         let banner = &manifest.banners[&1511];
         assert_eq!(banner.layer(Layer::Main).unwrap().rect, [2.0, 191.0, 1958.0, 1715.0]);
         assert!(banner.layer(Layer::Backdrop).unwrap().on_screen.is_none());
@@ -799,7 +876,7 @@ mod tests {
         assert!((fill.start.r - 0.522).abs() < 0.01 && (fill.end.r - 0.033).abs() < 0.01, "{fill:?}");
         let fade = panel.fade.unwrap();
         assert_eq!(fade.start, fade.end);
-        assert_eq!(panel.pattern.as_ref().unwrap().file, "patterns/decopatternpixeleater.png");
+        assert_eq!(panel.pattern.as_ref().unwrap().file, "patterns/decopatternpixeleater.jxl");
         assert_eq!(panel.pattern.as_ref().unwrap().tile, [69.33, 61.33]);
         // A light cone's has only the frame's motif; a banner with neither has none, and with
         // nothing else of use isn't kept
@@ -808,7 +885,7 @@ mod tests {
         assert!(!manifest.banners.contains_key(&23049));
         assert_eq!(
             manifest.tickets[&Ticket::Standard][1].as_deref(),
-            Some("tabs/standard_tab_selected.png")
+            Some("tabs/standard_tab_selected.jxl")
         );
     }
 }

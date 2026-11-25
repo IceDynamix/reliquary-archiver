@@ -54,6 +54,8 @@ rune-kit = { optional = true, path = "../rune/crates/rune-kit" }
 png = { optional = true, version = "0.18" }
 # Decodes custom backgrounds (Rune decodes with it too); QOI keeps their scaled copies
 image = { optional = true, version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "qoi"] }
+# Decodes the warp art, which hsr-warp-art keeps as JPEG XL
+jxl-oxide = { optional = true, version = "0.12", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 self_update = { version = "0.44.0", features = ['ureq', 'rustls'], default-features = false }
@@ -80,7 +82,8 @@ winres = "0.1.12"
 overflow-checks = false
 
 # Image decoding unoptimized is slow enough to notice: a large background took over ten seconds
-# to show in a debug build. The codecs, and Rune for its mip maps, are optimized even there
+# to show in a debug build. The codecs (JPEG XL decoding a portrait took twelve seconds), and Rune
+# for its mip maps, are optimized even there
 [profile.dev.package.image]
 opt-level = 3
 [profile.dev.package.zune-jpeg]
@@ -96,6 +99,22 @@ opt-level = 3
 [profile.dev.package.qoi]
 opt-level = 3
 [profile.dev.package.rune]
+opt-level = 3
+[profile.dev.package.jxl-bitstream]
+opt-level = 3
+[profile.dev.package.jxl-coding]
+opt-level = 3
+[profile.dev.package.jxl-color]
+opt-level = 3
+[profile.dev.package.jxl-frame]
+opt-level = 3
+[profile.dev.package.jxl-grid]
+opt-level = 3
+[profile.dev.package.jxl-modular]
+opt-level = 3
+[profile.dev.package.jxl-render]
+opt-level = 3
+[profile.dev.package.jxl-vardct]
 opt-level = 3
 
 [profile.release]
@@ -120,6 +139,22 @@ opt-level = 3
 opt-level = 3
 [profile.release.package.rune]
 opt-level = 3
+[profile.release.package.jxl-bitstream]
+opt-level = 3
+[profile.release.package.jxl-coding]
+opt-level = 3
+[profile.release.package.jxl-color]
+opt-level = 3
+[profile.release.package.jxl-frame]
+opt-level = 3
+[profile.release.package.jxl-grid]
+opt-level = 3
+[profile.release.package.jxl-modular]
+opt-level = 3
+[profile.release.package.jxl-render]
+opt-level = 3
+[profile.release.package.jxl-vardct]
+opt-level = 3
 
 [features]
 default = ["pcap", "stream"]
@@ -129,6 +164,7 @@ gui = [
     "dep:rune-kit",
     "dep:png",
     "dep:image",
+    "dep:jxl-oxide",
     "dep:rfd",
     "dep:rusqlite",
     "dep:lz-str",
