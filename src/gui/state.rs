@@ -104,12 +104,17 @@ pub struct Warps {
     pub busy: Option<String>,
     /// The pool the warp screen shows
     pub pool: Pool,
-    /// The warp screen's view of it: its banner, or scrolled down to its history
+    /// The warp screen's view of it: its banner, or scrolled down to its history, or further to
+    /// where the history comes from
     pub page: WarpPage,
     /// Wheel and trackpad scrolls on their way to turning the warp screen's page
     pub snap: Snap,
     /// Where each page's own scroll is, by [`WarpPage`]: its offset and the most it scrolls
-    pub page_scroll: [rune::Live<[f32; 2]>; 2],
+    pub page_scroll: [rune::Live<[f32; 2]>; WarpPage::ALL.len()],
+    /// Where the history's cards, which scroll themselves beside each other on a wide page, are
+    /// scrolled to: its 5 stars, and its latest pulls. Each the offset and the most it scrolls
+    pub fives_scroll: rune::Live<[f32; 2]>,
+    pub latest_scroll: rune::Live<[f32; 2]>,
     /// A link to the warp history, pasted in
     pub link_edit: TextEdit,
     /// A backup with several profiles waiting for the user to pick one
@@ -125,13 +130,29 @@ pub struct Warps {
     pub picked: Option<(Pool, Instant)>,
 }
 
-/// The warp screen's two views of a warp, one over the other: what its banner is and what the
-/// warps in hand buy, and below it the whole history
+/// The warp screen's views of a warp, one over the other: what its banner is and what the warps in
+/// hand buy, below it the whole history, and below that where the history comes from
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WarpPage {
     #[default]
     Banner,
     History,
+    Sources,
+}
+
+impl WarpPage {
+    /// Top to bottom
+    pub const ALL: [WarpPage; 3] = [WarpPage::Banner, WarpPage::History, WarpPage::Sources];
+
+    /// The page under this one
+    pub fn next(self) -> Option<WarpPage> {
+        WarpPage::ALL.get(self as usize + 1).copied()
+    }
+
+    /// The page over this one
+    pub fn prev(self) -> Option<WarpPage> {
+        (self as usize).checked_sub(1).map(|i| WarpPage::ALL[i])
+    }
 }
 
 /// How far a scroll pulls past a page's end before the page turns, in points
@@ -151,6 +172,17 @@ pub struct Snap {
     /// When the last scroll came and the page last turned, on Rune's clock ([`Tx::clock`])
     last: Option<f64>,
     turned: Option<f64>,
+    /// The scroll under way is over a list in the page that still scrolls its way, which it's
+    /// left to (see [`leave_wheel`])
+    inner: bool,
+}
+
+/// Leaves the wheel scroll under way to a list within the page that scrolls itself, when it still
+/// scrolls that way, rather than turning the page. Call it from the list's own `on_wheel`, which
+/// hears the scroll before the page's; `scroll` is where the list stands. Never takes the scroll
+pub fn leave_wheel(s: &mut Ui, dy: f32, scroll: PageScroll) -> bool {
+    s.warps.snap.inner = if dy < 0.0 { !scroll.at_bottom } else { !scroll.at_top };
+    false
 }
 
 /// Where a page's own scroll stands, for whether a scroll past it turns the page
@@ -175,6 +207,7 @@ impl PageScroll {
 /// False lets the page scroll itself. `now` is Rune's clock, in seconds
 pub fn snap_wheel(s: &mut Ui, dy: f32, notch: bool, momentum: bool, scroll: PageScroll, now: f64) -> bool {
     let snap = &mut s.warps.snap;
+    let inner = std::mem::take(&mut snap.inner);
     if snap.turned.is_some_and(|at| now - at < SNAP_SETTLE) {
         return true;
     }
@@ -182,14 +215,15 @@ pub fn snap_wheel(s: &mut Ui, dy: f32, notch: bool, momentum: bool, scroll: Page
         return false;
     }
     let (down, page) = (dy < 0.0, s.warps.page);
-    let past_end = match page {
-        WarpPage::Banner => down && scroll.at_bottom,
-        WarpPage::History => !down && scroll.at_top,
+    let to = if down {
+        page.next().filter(|_| scroll.at_bottom)
+    } else {
+        page.prev().filter(|_| scroll.at_top)
     };
-    if !past_end || momentum {
+    let Some(to) = to.filter(|_| !momentum && !inner) else {
         snap.pull = 0.0;
         return false;
-    }
+    };
     if snap.last.is_none_or(|at| now - at > SNAP_PAUSE) || snap.pull.signum() != dy.signum() {
         snap.pull = 0.0;
     }
@@ -201,16 +235,17 @@ pub fn snap_wheel(s: &mut Ui, dy: f32, notch: bool, momentum: bool, scroll: Page
             turned: Some(now),
             ..Snap::default()
         };
-        turn_page(s);
+        s.warps.page = to;
     }
     true
 }
 
-/// Shows the warp screen's other page
+/// Shows the warp screen's history from its banner, and its banner from anywhere else: what the
+/// header's button and the warp card's history do
 pub fn turn_page(s: &mut Ui) {
     s.warps.page = match s.warps.page {
         WarpPage::Banner => WarpPage::History,
-        WarpPage::History => WarpPage::Banner,
+        WarpPage::History | WarpPage::Sources => WarpPage::Banner,
     };
 }
 
@@ -260,7 +295,9 @@ impl Default for Warps {
             pool: Pool::Character,
             page: WarpPage::Banner,
             snap: Snap::default(),
-            page_scroll: [rune::Live::new([0.0; 2]), rune::Live::new([0.0; 2])],
+            page_scroll: std::array::from_fn(|_| rune::Live::new([0.0; 2])),
+            fives_scroll: rune::Live::new([0.0; 2]),
+            latest_scroll: rune::Live::new([0.0; 2]),
             featured: HashMap::new(),
             rosters: HashMap::new(),
             session_start: chrono::Utc::now().timestamp(),
@@ -706,9 +743,9 @@ impl Ui {
             WarpUpdate::Notice { title, detail, error } => self.notify(title, detail, error, None, tx),
             WarpUpdate::ChooseProfile { path, uid, profiles } => {
                 self.warps.choose = Some(ProfilePick { path, uid, profiles });
-                // The pick is on the warp screen's history page, under where backups are imported
+                // The pick is on the warp screen's sources page, under where backups are imported
                 self.screen = Screen::Warps;
-                self.warps.page = WarpPage::History;
+                self.warps.page = WarpPage::Sources;
             }
         }
     }
@@ -1375,6 +1412,40 @@ mod tests {
         // The rest of the gesture is held, it doesn't turn the page straight back
         assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 1.2));
         assert_eq!(s.warps.page, WarpPage::History);
+        assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 2.0));
+        assert_eq!(s.warps.page, WarpPage::Banner);
+    }
+
+    #[test]
+    fn the_sources_are_under_the_history_and_nothing_under_them() {
+        let mut s = ui();
+        s.warps.page = WarpPage::History;
+        assert!(snap_wheel(&mut s, -100.0, true, false, BOTH, 1.0));
+        assert_eq!(s.warps.page, WarpPage::Sources);
+        assert!(!snap_wheel(&mut s, -100.0, true, false, BOTH, 2.0), "the last page scrolls nowhere");
+        assert_eq!(s.warps.page, WarpPage::Sources);
+        assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 3.0));
+        assert_eq!(s.warps.page, WarpPage::History);
+        // The header's button goes back to the banner from either
+        s.warps.page = WarpPage::Sources;
+        turn_page(&mut s);
+        assert_eq!(s.warps.page, WarpPage::Banner);
+    }
+
+    #[test]
+    fn a_list_in_the_history_scrolls_up_before_the_page_turns() {
+        let mut s = ui();
+        s.warps.page = WarpPage::History;
+        // The latest pulls scrolled partway down, the page at its top: the list scrolls back up
+        let partway = PageScroll {
+            at_top: false,
+            at_bottom: false,
+        };
+        assert!(!leave_wheel(&mut s, 100.0, partway));
+        assert!(!snap_wheel(&mut s, 100.0, true, false, BOTH, 1.0));
+        assert_eq!(s.warps.page, WarpPage::History);
+        // Back at its top, the next scroll up turns the page
+        assert!(!leave_wheel(&mut s, 100.0, AT_TOP));
         assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 2.0));
         assert_eq!(s.warps.page, WarpPage::Banner);
     }

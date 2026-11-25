@@ -294,11 +294,12 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
         art,
     };
 
-    // The history page sits under the banner's: turning to it moves the banner, its art and its
-    // name up and out, and the history up into its place. The rail stays
-    let turned = s.warps.page == WarpPage::History;
+    // The history page sits under the banner's, and the sources under it: turning to them moves
+    // the banner, its art and its name up and out, and the page turned to up into its place. The
+    // rail stays
+    let turned = s.warps.page != WarpPage::Banner;
     let pager_height = cx.layout_size("warp-pager").map_or((height - 140.0).max(1.0), |[_, h]| h);
-    let shift = if turned { -pager_height } else { 0.0 };
+    let shift = -pager_height * s.warps.page as usize as f32;
 
     let mut page = el().key("warp-screen").w_full().h_full().fill(t.bg).clip_rounded(0.0);
     page = page.child(backdrop(s, &view, t));
@@ -341,7 +342,16 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             .gap(GAP)
             .items_start()
             .child(rail(s, summary, pool, fit, t))
-            .child(pager(s, banner, history::page(s, &view, pages_width, cx, t), pager_height, shift));
+            .child(pager(
+                s,
+                [
+                    banner,
+                    history::page(s, &view, pages_width, pager_height - PAGE_HEADROOM, cx, t),
+                    history::sources_page(s, &view, cx, t),
+                ],
+                pager_height,
+                shift,
+            ));
         col()
             .key("warp-content")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
@@ -375,7 +385,10 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
                     .child(banner_card(s, &view, &running, width - 32.0, cx, t).w_full())
                     .children(session_row(s, &view, t)),
             );
-        let history = history::page(s, &view, width - 32.0, cx, t).px(16.0).pt(4.0);
+        let history = history::page(s, &view, width - 32.0, pager_height - PAGE_HEADROOM, cx, t)
+            .px(16.0)
+            .pt(4.0);
+        let sources = history::sources_page(s, &view, cx, t).px(16.0).pt(4.0);
         col()
             .key("warp-content-narrow")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
@@ -383,7 +396,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             .gap(18.0)
             .child(header(s, Some(pool), accent, t).px(16.0))
             .child(rail(s, summary, pool, fit, t))
-            .child(pager(s, banner, history, pager_height, shift))
+            .child(pager(s, [banner, history, sources], pager_height, shift))
     };
     page.child(content)
 }
@@ -396,10 +409,10 @@ fn page_spring() -> Spring {
     Spring::smooth(0.5, 0.0)
 }
 
-/// The banner's page over the history's, showing the one turned to. Each scrolls itself when it's
-/// taller than the room, and a scroll that runs on past its end turns the page (see
-/// [`snap_wheel`])
-fn pager(s: &Ui, banner: El, history: El, height: f32, shift: f32) -> El {
+/// The banner's page over the history's over the sources', each [`WarpPage`] in `pages`, showing
+/// the one turned to. Each scrolls itself when it's taller than the room, and a scroll that runs
+/// on past its end turns the page (see [`snap_wheel`])
+fn pager(s: &Ui, pages: [El; WarpPage::ALL.len()], height: f32, shift: f32) -> El {
     let page = |which: WarpPage, content: El| {
         let scroll = s.warps.page_scroll[which as usize].clone();
         let reported = scroll.clone();
@@ -407,6 +420,7 @@ fn pager(s: &Ui, banner: El, history: El, height: f32, shift: f32) -> El {
             .key(match which {
                 WarpPage::Banner => "warp-page-banner",
                 WarpPage::History => "warp-page-history",
+                WarpPage::Sources => "warp-page-sources",
             })
             .w_full()
             .h(height)
@@ -439,8 +453,7 @@ fn pager(s: &Ui, banner: El, history: El, height: f32, shift: f32) -> El {
                 .pin(Some(0.0), Some(0.0), Some(0.0), None)
                 .offset(0.0, shift)
                 .offset_motion(page_spring())
-                .child(page(WarpPage::Banner, banner))
-                .child(page(WarpPage::History, history)),
+                .children(WarpPage::ALL.into_iter().zip(pages).map(|(which, content)| page(which, content))),
         )
 }
 
@@ -694,7 +707,7 @@ fn header(s: &Ui, selected: Option<Pool>, accent: Color, t: &Theme) -> El {
         .children(selected.map(|_| {
             let (words, glyph) = match s.warps.page {
                 WarpPage::Banner => ("History", &icons::LIST),
-                WarpPage::History => ("Banner", &icons::WARP),
+                WarpPage::History | WarpPage::Sources => ("Banner", &icons::WARP),
             };
             pill(
                 "warp-history",

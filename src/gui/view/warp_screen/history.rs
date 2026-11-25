@@ -1,10 +1,11 @@
 //! The warp screen's second page, under the banner: one warp's whole history. Its numbers across
-//! the top, every 5 star as a medallion with the pity it came at, ringed by its 50/50, the latest
-//! pulls, and where the history comes from (the game's history page, Star Rail Station backups),
-//! with what may be missing from it.
+//! the top, every 5 star as a medallion with the pity it came at, ringed by its 50/50, and the
+//! latest pulls. And its third, under that: where the history comes from (the game's history page,
+//! Star Rail Station backups), with what may be missing from it.
 //!
-//! It's a page rather than a sheet over the screen: the rail stays beside it, so picking another
-//! warp shows that warp's history, and scrolling back up past its top returns to the banner.
+//! They're pages rather than sheets over the screen: the rail stays beside them, so picking
+//! another warp shows that warp's history, and scrolling back up past their top returns to the
+//! page over them.
 
 use rune::{Color, Cx, El, Icon, SurfaceFit, Tx, col, el, icon, row, text};
 use rune_kit::TextInput;
@@ -12,56 +13,85 @@ use rune_kit::TextInput;
 use super::{COUNT, GAP, View, figure, label, outcome_color, outcome_words, rise};
 use crate::gui::art::Art;
 use crate::gui::icons;
-use crate::gui::state::Ui;
+use crate::gui::state::{PageScroll, Ui, WarpPage, leave_wheel};
 use crate::gui::theme::{self, Theme};
 use crate::gui::view::parts::{Pill, kicker, pill, rule, tab, ticket_on};
 use crate::gui::view::warps::{ago, clock, grouped};
 use crate::warps::service::Summary;
 use crate::warps::stats::{Highlight, Outcome};
 
-/// From this wide the page has two columns: the 5 stars, and the latest pulls with the sources
+/// From this wide the page has two columns: the 5 stars, and beside them the latest pulls, both as
+/// tall as the page's room and scrolling themselves
 const TWO_COLUMNS: f32 = 820.0;
+/// The least the columns are tall, in a short window
+const COLUMN_MIN_H: f32 = 360.0;
+/// Room under the page's last card
+const PAGE_FOOT: f32 = 28.0;
+/// Between the heading and the cards
+const HEADING_GAP: f32 = 22.0;
+/// The sources page's card is no wider, its rows read badly stretched
+const SOURCES_MAX_W: f32 = 760.0;
 /// A 5 star's medallion, and the room each takes in the grid
 const MEDALLION: f32 = 54.0;
 const CELL: f32 = 74.0;
 /// How many of the latest pulls are listed
 const LATEST: usize = 40;
+/// And how many when the list scrolls itself
+const LATEST_SCROLLED: usize = 150;
 
-/// The page, `width` wide. The warp screen scrolls it
-pub(super) fn page(s: &Ui, view: &View, width: f32, cx: &Cx<Ui>, t: &Theme) -> El {
+/// The page, `width` wide, in a view `room` tall. The warp screen scrolls it
+pub(super) fn page(s: &Ui, view: &View, width: f32, room: f32, cx: &Cx<Ui>, t: &Theme) -> El {
     let two_columns = width >= TWO_COLUMNS;
     let side = (width * 0.36).clamp(320.0, 400.0);
 
-    let sources_card = sources_card(s, view.summary, cx, t);
-    let fives = fives_card(s, view, cx, t);
-    let latest = latest_card(view, cx, t);
-
-    // A backup's profile to pick waits in the sources, which then come first
-    let waiting = s.warps.choose.is_some();
     let body = if two_columns {
-        let side_column = if waiting {
-            col().w(side).gap(GAP).child(sources_card).child(latest)
-        } else {
-            col().w(side).gap(GAP).child(latest).child(sources_card)
-        };
+        // The cards fill what the view has under the heading, and each scrolls itself, so the
+        // page ends with them and scrolling one leaves the other where it is
+        let heading = cx.layout_size("history-heading").map_or(100.0, |[_, h]| h);
+        let tall = (room - heading - HEADING_GAP - PAGE_FOOT).max(COLUMN_MIN_H);
         row()
             .w_full()
+            .h(tall)
             .gap(GAP)
-            .items_start()
-            .child(col().grow(1.0).min_w(0.0).child(fives))
-            .child(side_column)
-    } else if waiting {
-        col().w_full().gap(GAP).child(sources_card).child(fives).child(latest)
+            .child(fives_card(s, view, true, cx, t).grow(1.0).min_w(0.0))
+            .child(latest_card(s, view, true, cx, t).w(side))
     } else {
-        col().w_full().gap(GAP).child(fives).child(latest).child(sources_card)
+        col()
+            .w_full()
+            .gap(GAP)
+            .child(fives_card(s, view, false, cx, t))
+            .child(latest_card(s, view, false, cx, t))
     };
     col()
         .key(format!("history-{}", view.pool.gacha_type()))
         .w_full()
-        .pb(28.0)
-        .gap(22.0)
+        .pb(PAGE_FOOT)
+        .gap(HEADING_GAP)
         .child(rise(heading(view, t), 0.0))
         .child(rise(body, 0.08))
+}
+
+/// The page under the history: where it comes from, the game's history page and Star Rail Station
+/// backups, with what may be missing, and the pick of a backup's profile when one waits. It's the
+/// account's, the same whichever warp is picked
+pub(super) fn sources_page(s: &Ui, view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
+    let heading = row()
+        .gap(10.0)
+        .w_full()
+        .center_y()
+        .child(kicker("Warp history", view.accent))
+        .child(el().size(3.0, 3.0).radius(1.5).fill(t.faint))
+        .child(kicker("Sources", t.muted))
+        .child(el().grow(1.0))
+        .child(page_link("sources-to-history", "History", Some(&icons::LIST), WarpPage::History, t));
+    col()
+        .key("history-sources-page")
+        .w_full()
+        .max_w(SOURCES_MAX_W)
+        .pb(PAGE_FOOT)
+        .gap(HEADING_GAP)
+        .child(rise(heading, 0.0))
+        .child(rise(sources_card(s, view.summary, cx, t), 0.08))
 }
 
 /// For an account with no warps kept yet: how the history fills in, and where from
@@ -127,31 +157,64 @@ fn heading(view: &View, t: &Theme) -> El {
         .gap(14.0)
         .child(
             row()
+                .w_full()
                 .gap(10.0)
                 .center_y()
                 .child(kicker(&format!("{} warp", label(view.pool)), view.accent))
                 .child(el().size(3.0, 3.0).radius(1.5).fill(t.faint))
-                .child(kicker("History", t.muted)),
+                .child(kicker("History", t.muted))
+                .child(el().grow(1.0))
+                .child(sources_link(view.summary, t)),
         )
         .child(row().w_full().gap(30.0).flex_wrap().children(figures))
 }
 
+/// A button down to the sources page from the history's heading. How syncing stands is in the
+/// header already, so it only warns, with its icon, when requests are missing from the history
+fn sources_link(summary: &Summary, t: &Theme) -> El {
+    match summary.missing_requests().filter(|&n| n > 0) {
+        Some(n) => page_link("history-to-sources", "Sources", Some(&icons::ALERT), WarpPage::Sources, t).help(format!(
+            "{} {} missing from the history. Where it comes from, and how to fill it in",
+            grouped(n),
+            if n == 1 { "request" } else { "requests" }
+        )),
+        None => page_link("history-to-sources", "Sources", None, WarpPage::Sources, t).help("Where the history comes from"),
+    }
+}
+
+/// A quiet button in a page's heading to the page `to`, no taller than the heading's line
+fn page_link(key: &str, label: &str, glyph: Option<&'static Icon>, to: WarpPage, t: &Theme) -> El {
+    pill(key, label, glyph, Pill::Quiet, true, t, move |s: &mut Ui, _| s.warps.page = to)
+        .h(28.0)
+        .my(-6.0)
+}
+
 /// Every 5 star, newest first, as a medallion: the character or light cone, ringed by how its
-/// 50/50 went, with the pity it came at under it
-fn fives_card(s: &Ui, view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
+/// 50/50 went, with the pity it came at under it. When it `scrolls` the card fills the column it's
+/// in and the medallions scroll within it, the legend staying under them
+fn fives_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El {
     let stats = view.stats;
-    let body = if stats.fives.is_empty() {
-        col().w_full().child(text("No 5-stars here yet.").font(theme::BODY).color(t.muted))
-    } else {
-        let keys = super::super::warps::five_keys(&stats.fives);
-        let medallions = stats.fives.iter().zip(keys).map(|(five, key)| medallion(s, view, five, key, t));
-        col()
+    let card = card("history-fives-card", "5-stars", view.accent, cx, t);
+    if stats.fives.is_empty() {
+        let none = text("No 5-stars here yet.").font(theme::BODY).color(t.muted);
+        return card.child(col().w_full().px(22.0).pt(16.0).pb(20.0).child(none));
+    }
+    let keys = super::super::warps::five_keys(&stats.fives);
+    let medallions = stats.fives.iter().zip(keys).map(|(five, key)| medallion(s, view, five, key, t));
+    let grid = row().key("history-fives").w_full().flex_wrap().children(medallions);
+    let legend = view.pool.has_rate_up().then(|| legend(t).px(22.0).pb(20.0));
+    if !scrolls {
+        let grid = col()
             .w_full()
-            .gap(16.0)
-            .child(row().key("history-fives").w_full().flex_wrap().children(medallions))
-            .children(view.pool.has_rate_up().then(|| legend(t)))
-    };
-    card("history-fives-card", "5-stars", view.accent, cx, t).child(body.px(22.0).pt(16.0).pb(20.0))
+            .px(22.0)
+            .pt(16.0)
+            .pb(if legend.is_some() { 16.0 } else { 20.0 })
+            .child(grid);
+        return card.child(grid).children(legend);
+    }
+    let grid = col().w_full().px(22.0).pt(16.0).pb(4.0).child(grid);
+    let grid = own_scroll("history-fives-scroll", grid, &s.warps.fives_scroll).grow(1.0).min_h(0.0);
+    card.min_h(0.0).child(grid).children(legend.map(|legend| legend.pt(12.0)))
 }
 
 fn medallion(s: &Ui, view: &View, five: &Highlight, key: String, t: &Theme) -> El {
@@ -217,11 +280,13 @@ fn legend(t: &Theme) -> El {
         .child(entry("Lost the 50/50", Outcome::Lost))
 }
 
-/// The latest pulls, newest first, with the pity the 5 stars came at
-fn latest_card(view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
+/// The latest pulls, newest first, with the pity the 5 stars came at. When it `scrolls` the card
+/// fills the column it's in and the list scrolls within it, before the page turns
+fn latest_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El {
     let now = chrono::Utc::now().timestamp();
     let stats = view.stats;
-    let rows = stats.recent.iter().take(LATEST).enumerate().map(|(i, (pull, pity, outcome))| {
+    let shown = if scrolls { LATEST_SCROLLED } else { LATEST };
+    let rows = stats.recent.iter().take(shown).enumerate().map(|(i, (pull, pity, outcome))| {
         let tint = match pull.rarity {
             5 => outcome_color(*outcome, t),
             4 => rune::oklch(0.68, 0.13, 300.0),
@@ -273,7 +338,30 @@ fn latest_card(view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
     } else {
         col().key("latest-rows").w_full().children(rows)
     };
-    card("history-latest-card", "Latest pulls", t.secondary, cx, t).child(body.px(22.0).pt(12.0).pb(16.0))
+    let body = body.px(22.0).pt(12.0).pb(16.0);
+    let card = card("history-latest-card", "Latest pulls", t.secondary, cx, t);
+    if !scrolls {
+        return card.child(body);
+    }
+    let list = own_scroll("latest-scroll", body, &s.warps.latest_scroll).grow(1.0).min_h(0.0);
+    card.min_h(0.0).child(list)
+}
+
+/// `content` in a column of the history that scrolls itself, with `scroll` kept up with where
+/// it's scrolled to. A wheel over it scrolls it until its end before the page turns
+fn own_scroll(key: &str, content: El, scroll: &rune::Live<[f32; 2]>) -> El {
+    let reported = scroll.clone();
+    let scroll = scroll.clone();
+    col()
+        .key(key)
+        .w_full()
+        .child(content)
+        .scroll(rune::ScrollSpec { stick_bottom: false })
+        .scroll_edge_fade(16.0)
+        .on_scroll_offset(move |at: rune::ScrollPos| {
+            reported.set([at.offset[1], at.max[1]]);
+        })
+        .on_wheel(move |s: &mut Ui, wheel: rune::WheelEvent, _: &mut Tx| leave_wheel(s, wheel.dy, PageScroll::of(scroll.get())))
 }
 
 /// Where the history comes from: the game's history page, and Star Rail Station backups

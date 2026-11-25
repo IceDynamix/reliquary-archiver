@@ -214,6 +214,15 @@ pub const SCENES: &[Scene] = &[
         s.warps.page = crate::gui::state::WarpPage::History;
         s.warps.pool = crate::warps::Pool::LightCone;
     }),
+    // Turned further, to where the history comes from
+    ("warp-sources", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        warps(s, true);
+        roster(s);
+        s.screen = Screen::Warps;
+        s.warps.page = crate::gui::state::WarpPage::Sources;
+    }),
     // An account with no warps kept yet
     ("warps-new", |s| {
         running(s, 0);
@@ -311,7 +320,7 @@ pub const SCENES: &[Scene] = &[
         logged_in(s, UID, Some(INVENTORY));
         warps(s, false);
         s.screen = Screen::Warps;
-        s.warps.page = crate::gui::state::WarpPage::History;
+        s.warps.page = crate::gui::state::WarpPage::Sources;
         s.warps.choose = Some(crate::gui::state::ProfilePick {
             path: "starrailstation-backup.dat".into(),
             uid: UID,
