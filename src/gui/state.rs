@@ -1236,7 +1236,15 @@ fn warp_art_order(summary: &Summary, first: Pool, has: impl Fn(u32) -> (Vec<supe
             .running(pool)
             .next()
             .and_then(|banner| banner.fives.first().copied())
-            .or_else(|| summary.pools.iter().find(|s| s.pool == pool)?.fives.first().map(|five| five.item_id))
+            .or_else(|| {
+                summary
+                    .pools
+                    .iter()
+                    .find(|s| s.pool == pool)?
+                    .fives
+                    .first()
+                    .map(|five| five.item_id)
+            })
     };
     let running = |pool: Pool| summary.running(pool).flat_map(|banner| banner.fives.iter().copied());
 
@@ -1315,7 +1323,12 @@ mod tests {
             _ => (Vec::new(), false),
         };
         let order = warp_art_order(&summary, Pool::Character, has);
-        let at = |art: Art| order.iter().position(|a| *a == art).unwrap_or_else(|| panic!("{art:?} not asked for"));
+        let at = |art: Art| {
+            order
+                .iter()
+                .position(|a| *a == art)
+                .unwrap_or_else(|| panic!("{art:?} not asked for"))
+        };
         // Every character banner's art and tickets before anything of the light cone warp's
         let last_character = [
             at(Art::Preview(1415)),
@@ -1326,7 +1339,10 @@ mod tests {
         let first_light_cone = [at(Art::Ticket(Ticket::Banner(23053), false)), at(Art::Portrait(23053))];
         assert!(last_character.iter().max() < first_light_cone.iter().min(), "{order:?}");
         // The banner the warp opens on first of all, its tickets, then its art
-        assert_eq!(order[..2], [Art::Ticket(Ticket::Banner(1511), false), Art::Ticket(Ticket::Banner(1511), true)]);
+        assert_eq!(order[..2], [
+            Art::Ticket(Ticket::Banner(1511), false),
+            Art::Ticket(Ticket::Banner(1511), true)
+        ]);
         assert!(at(Art::Pattern(1511)) < at(Art::Layer(1511, Layer::Back)));
         // Nothing twice, and the passes last
         assert_eq!(order.iter().filter(|a| **a == Art::Preview(1511)).count(), 1);
