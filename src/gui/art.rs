@@ -2,7 +2,7 @@
 //! light cone's portrait, preview and icon, the passes' icons, and each limited banner's art as
 //! the game draws it, in layers cut from one canvas (backdrop, back, character, front), with where
 //! the game places each. Its `index.json` says what's there, and each file's SHA-256. It's read
-//! from GitHub, or from wherever `RQA_WARP_ART` points: a folder or a URL.
+//! from its R2 bucket, or from wherever `RQA_WARP_ART` points: a folder or a URL.
 //!
 //! Art is downloaded the first time it's shown and kept in the app's cache folder, so it isn't
 //! shipped with the app and is only fetched again when its hash changes. It comes as JPEG XL and is
@@ -20,8 +20,8 @@ use std::time::Duration;
 use image::DynamicImage;
 use rune::{Color, Image, ImageCache};
 
-/// Where the art is
-const WARP_ART_URL: &str = "https://raw.githubusercontent.com/emmachase/hsr-warp-art/main";
+/// Where the art is: hsr-warp-art's files, in an R2 bucket behind Cloudflare's cache
+const WARP_ART_URL: &str = "https://sparxie.anemew.me";
 /// Where to read the art from instead, for trying a new extraction: a folder or a URL
 const WARP_ART_ENV: &str = "RQA_WARP_ART";
 /// Portraits taller than this are scaled down to it. Their source is 2048, which a high density
@@ -609,7 +609,7 @@ fn color(rgb: [f32; 3]) -> Color {
     rune::oklch(0.7, chroma.clamp(0.1, 0.17), bb.atan2(a).to_degrees())
 }
 
-/// Where the art is: `RQA_WARP_ART` when it's set, else GitHub
+/// Where the art is: `RQA_WARP_ART` when it's set, else its R2 bucket
 fn warp_art_base() -> String {
     std::env::var(WARP_ART_ENV)
         .ok()
