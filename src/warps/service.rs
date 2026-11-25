@@ -116,7 +116,7 @@ pub struct Summary {
     pub next_look: Option<i64>,
     /// Names of the items the summary mentions
     pub names: HashMap<u32, String>,
-    /// The banners running now, newest first
+    /// The banners running now, each warp's featured one first ([`featured_first`])
     pub banners: Vec<RunningBanner>,
 }
 
@@ -128,7 +128,8 @@ pub struct RunningBanner {
     /// Its featured 5 and 4 stars
     pub fives: Vec<u32>,
     pub fours: Vec<u32>,
-    /// When it ends, in Unix seconds, none when it doesn't
+    /// When it started and when it ends, in Unix seconds; none when it doesn't end
+    pub begin: i64,
     pub end: Option<i64>,
 }
 
@@ -144,13 +145,27 @@ impl Summary {
         self.pools.iter().find(|p| p.pool == pool)
     }
 
-    /// The banners of a pool running now, newest first
+    /// The banners of a pool running now, the featured one first
     pub fn running(&self, pool: Pool) -> impl Iterator<Item = &RunningBanner> {
         self.banners.iter().filter(move |b| b.pool == pool)
     }
 
     pub fn name(&self, item_id: u32) -> String {
         self.names.get(&item_id).cloned().unwrap_or_else(|| format!("#{item_id}"))
+    }
+}
+
+/// The order running banners are shown in, each warp's featured one first. The game's own list
+/// doesn't say which that is. A version's headline banner runs the whole version while each half's
+/// reruns end with their half, and among those ending together it has the lowest id: so the one
+/// ending last, then the lowest id. Banners that don't end, the collaborations', by the newest
+/// collaboration, then the lowest id, as the game lists them
+pub fn featured_first(a: &RunningBanner, b: &RunningBanner) -> std::cmp::Ordering {
+    match (a.end, b.end) {
+        (Some(x), Some(y)) => y.cmp(&x).then(a.gacha_id.cmp(&b.gacha_id)),
+        (None, None) => b.begin.cmp(&a.begin).then(a.gacha_id.cmp(&b.gacha_id)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
     }
 }
 
@@ -638,12 +653,13 @@ impl Worker {
                     pool,
                     fives: rarity(5).collect(),
                     fours: rarity(4).collect(),
+                    begin: banner.begin,
                     end: (banner.end > 0 && banner.end < 4_000_000_000).then_some(banner.end),
                 })
             })
             .filter(|banner| !banner.fives.is_empty())
             .collect();
-        banners.sort_by_key(|b| std::cmp::Reverse(b.gacha_id));
+        banners.sort_by(featured_first);
         for item in banners.iter().flat_map(|b| b.fives.iter().chain(&b.fours)) {
             names
                 .entry(*item)
@@ -722,6 +738,53 @@ fn now() -> i64 {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn the_version_headline_is_featured_through_both_halves() {
+        use super::{RunningBanner, featured_first};
+        use crate::warps::Pool;
+        // 4.7 as the game describes it: Aeon Aha (2142) for the whole version, three reruns each
+        // half, and the collaborations', which don't end
+        let (half, version) = (Some(1_796_230_740), Some(1_797_969_600));
+        let (first, second, collab, collab2) = (1_794_349_800, 1_796_230_800, 1_752_253_200, 1_784_912_400);
+        let banner = |gacha_id, pool, five, begin, end| RunningBanner {
+            gacha_id,
+            pool,
+            fives: vec![five],
+            fours: Vec::new(),
+            begin,
+            end,
+        };
+        let featured = |mut banners: Vec<RunningBanner>, pool| {
+            banners.sort_by(featured_first);
+            banners.into_iter().find(|b| b.pool == pool).map(|b| b.gacha_id)
+        };
+        let first_half = vec![
+            banner(2145, Pool::Character, 1502, first, half),
+            banner(2144, Pool::Character, 1501, first, half),
+            banner(2143, Pool::Character, 1506, first, half),
+            banner(2142, Pool::Character, 1511, first, version),
+            banner(3145, Pool::LightCone, 23054, first, half),
+            banner(3142, Pool::LightCone, 23065, first, version),
+        ];
+        assert_eq!(featured(first_half.clone(), Pool::Character), Some(2142));
+        assert_eq!(featured(first_half, Pool::LightCone), Some(3142));
+        let second_half = vec![
+            banner(2142, Pool::Character, 1511, first, version),
+            banner(2146, Pool::Character, 1308, second, version),
+            banner(2147, Pool::Character, 1213, second, version),
+            banner(2148, Pool::Character, 1204, second, version),
+        ];
+        assert_eq!(featured(second_half, Pool::Character), Some(2142));
+        let collaborations = vec![
+            banner(5001, Pool::CollabCharacter, 1014, collab, None),
+            banner(5002, Pool::CollabCharacter, 1015, collab, None),
+            banner(5004, Pool::CollabCharacter, 1509, collab2, None),
+            banner(5003, Pool::CollabCharacter, 1508, collab2, None),
+        ];
+        // The newest collaboration's, as the game lists them: Rin Tohsaka before Gilgamesh
+        assert_eq!(featured(collaborations, Pool::CollabCharacter), Some(5003));
+    }
 
     #[test]
     fn live_pulls_are_looked_for_once_their_hour_is_published() {

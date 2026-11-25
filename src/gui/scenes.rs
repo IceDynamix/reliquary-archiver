@@ -564,6 +564,7 @@ fn running_banners(now: i64) -> Vec<crate::warps::service::RunningBanner> {
         pool,
         fives: vec![five],
         fours: fours.to_vec(),
+        begin: now - 14 * 86400,
         end: Some(now + 30 * 86400 + 23 * 3600),
     };
     vec![

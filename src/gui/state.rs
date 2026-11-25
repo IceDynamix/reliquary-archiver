@@ -1266,6 +1266,7 @@ mod tests {
             pool,
             fives: vec![five],
             fours: Vec::new(),
+            begin: 0,
             end: None,
         };
         let summary = Summary {
