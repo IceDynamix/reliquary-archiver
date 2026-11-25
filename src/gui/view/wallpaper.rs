@@ -4,7 +4,7 @@
 //!
 //! [`background::place`]: crate::gui::background::place
 
-use rune::{Color, El, Pixels, Wrap, el};
+use rune::{Color, El, Pixels, PixelsWrap, el};
 
 use crate::gui::settings::BackgroundFill;
 
@@ -84,14 +84,14 @@ impl Wallpaper<'_> {
                     .child(block([x, 0.0, w, y], top))
                     .child(block([x, y + h, w, wh - y - h], bottom))
             }
-            BackgroundFill::Extend => layer.child(self.wrapped(Wrap::Extend, [0.0, 0.0], 0.0)),
-            BackgroundFill::Mirror => layer.child(self.wrapped(Wrap::Mirror, [0.0, 0.0], 0.0)),
-            BackgroundFill::Repeat => layer.child(self.wrapped(Wrap::Repeat, [0.0, 0.0], 0.0)),
+            BackgroundFill::Extend => layer.child(self.wrapped(PixelsWrap::Extend, [0.0, 0.0], 0.0)),
+            BackgroundFill::Mirror => layer.child(self.wrapped(PixelsWrap::Mirror, [0.0, 0.0], 0.0)),
+            BackgroundFill::Repeat => layer.child(self.wrapped(PixelsWrap::Repeat, [0.0, 0.0], 0.0)),
             BackgroundFill::MirrorBlur => {
                 // The blurriest reflections over the whole window, then sharper ones in bands
                 // nearer the image, each fading out towards its own edge so the blur grows
                 // smoothly with the distance from the image
-                let mut layer = layer.child(self.wrapped(Wrap::Mirror, [0.0, 0.0], MIRROR_FAR * k));
+                let mut layer = layer.child(self.wrapped(PixelsWrap::Mirror, [0.0, 0.0], MIRROR_FAR * k));
                 let [x, y, w, h] = self.rect;
                 for (reach, blur) in MIRROR_BANDS {
                     let reach = reach * self.reach;
@@ -101,7 +101,7 @@ impl Wallpaper<'_> {
                         el().pin(Some(band[0]), Some(band[1]), None, None)
                             .size(band[2], band[3])
                             .clip_fade(fade, fade, fade, fade)
-                            .child(self.wrapped(Wrap::Mirror, [band[0], band[1]], blur * k)),
+                            .child(self.wrapped(PixelsWrap::Mirror, [band[0], band[1]], blur * k)),
                     );
                 }
                 layer
@@ -109,10 +109,10 @@ impl Wallpaper<'_> {
         }
     }
 
-    /// The image wrapped across the window (`El::pixels_wrap`, our Rune patch: anomalyco/rune#1432), in an element whose parent starts at `origin` in the
-    /// window, blurred by `blur` (and reaching past the window by three blurs, so its edges don't
-    /// fade to clear)
-    fn wrapped(&self, wrap: Wrap, origin: [f32; 2], blur: f32) -> El {
+    /// The image wrapped across the window (`El::pixels_wrap`), in an element whose parent starts
+    /// at `origin` in the window, blurred by `blur` (and reaching past the window by three blurs,
+    /// so its edges don't fade to clear)
+    fn wrapped(&self, wrap: PixelsWrap, origin: [f32; 2], blur: f32) -> El {
         let over = 3.0 * blur;
         let [x, y, w, h] = self.rect;
         let [ww, wh] = self.window;
