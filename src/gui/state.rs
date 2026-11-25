@@ -601,15 +601,8 @@ impl Ui {
         self.screen = Screen::Warps;
         self.panel = None;
         self.warps.page = WarpPage::Banner;
-        // Opens on the pool pulled on last
-        if let Some(summary) = self.warps_summary()
-            && let Some(latest) = summary
-                .pools
-                .iter()
-                .filter_map(|p| p.recent.first().map(|(pull, _, _)| (pull.sort_key(), p.pool)))
-                .max()
-        {
-            self.warps.pool = latest.1;
+        if let Some(pool) = self.warps_summary().and_then(opening_pool) {
+            self.warps.pool = pool;
         }
     }
 
@@ -641,70 +634,36 @@ impl Ui {
     }
 
     /// Asks for everything the warp screen shows, as soon as the warps and the banner art's manifest
-    /// are in, so the screen opens with it ready. In the order it's seen: every warp's tickets, plain
-    /// and selected; each warp's own art (its banner's layers, or a portrait) and preview; then the
-    /// other banners that can be picked, and the pass icons. Asking for art that's here or on its
-    /// way is free, so this runs again whenever something arrives
+    /// are in, so the screen opens with it ready, in [`warp_art_order`]: the warp it opens on first.
+    /// Asking for art that's here or on its way is free, so this runs again whenever something
+    /// arrives
     pub fn preload_warp_art(&self) {
-        use super::art::{Art, Layer, Ticket};
+        use super::art::Layer;
         let (Some(art), Some(summary)) = (self.art.as_ref(), self.warps_summary()) else {
             return;
         };
-        // Every warp's ticket, and every running banner's, which the pick switches between
-        let tickets = summary
-            .pools
-            .iter()
-            .filter_map(|stats| Ticket::of(summary, stats.pool, None))
-            .chain(
-                summary
-                    .banners
-                    .iter()
-                    .flat_map(|b| b.fives.iter().map(|&item| Ticket::Banner(item))),
-            );
-        for ticket in tickets {
-            for selected in [false, true] {
-                let _ = art.get(Art::Ticket(ticket, selected));
-            }
-        }
-        let shown = |item: u32| {
-            if art
-                .banner(item)
-                .is_some_and(|banner| banner.surface.as_ref().is_some_and(|s| s.pattern.is_some()))
-            {
-                let _ = art.get(Art::Pattern(item));
-            }
-            match art.banner(item).filter(|banner| banner.placed()) {
-                Some(banner) => {
-                    for layer in [Layer::Backdrop, Layer::Back, Layer::Main, Layer::Front, Layer::Front2] {
-                        if banner.layer(layer).is_some() {
-                            let _ = art.get(Art::Layer(item, layer));
-                        }
-                    }
-                }
-                None => {
-                    let _ = art.get(Art::Portrait(item));
-                }
-            }
-            let _ = art.get(Art::Preview(item));
+        // The warp it shows when it's open, else the one it will open on
+        let first = match self.screen {
+            Screen::Warps => self.warps.pool,
+            _ => opening_pool(summary).unwrap_or(self.warps.pool),
         };
-        // Each warp's own: what its newest banner features, or its last 5 star
-        for stats in &summary.pools {
-            let own = summary
-                .running(stats.pool)
-                .next()
-                .and_then(|banner| banner.fives.first().copied())
-                .or_else(|| stats.fives.first().map(|five| five.item_id));
-            if let Some(item) = own {
-                shown(item);
-            }
-        }
-        for banner in &summary.banners {
-            for &item in &banner.fives {
-                shown(item);
-            }
-        }
-        for pass in [101, 102] {
-            let _ = art.get(Art::Item(pass));
+        let has = |item: u32| {
+            let banner = art.banner(item);
+            let layers = banner
+                .as_ref()
+                .filter(|banner| banner.placed())
+                .map(|banner| {
+                    [Layer::Backdrop, Layer::Back, Layer::Main, Layer::Front, Layer::Front2]
+                        .into_iter()
+                        .filter(|&layer| banner.layer(layer).is_some())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let pattern = banner.is_some_and(|banner| banner.surface.as_ref().is_some_and(|s| s.pattern.is_some()));
+            (layers, pattern)
+        };
+        for wanted in warp_art_order(summary, first, has) {
+            let _ = art.get(wanted);
         }
     }
 
@@ -1211,9 +1170,154 @@ impl Ui {
     }
 }
 
+/// The warp the warp screen opens on: the one pulled on last. `None` with no pulls
+fn opening_pool(summary: &Summary) -> Option<Pool> {
+    summary
+        .pools
+        .iter()
+        .filter_map(|p| p.recent.first().map(|(pull, _, _)| (pull.sort_key(), p.pool)))
+        .max()
+        .map(|(_, pool)| pool)
+}
+
+/// The art the warp screen shows, in the order it's best had. First everything of `first`, the
+/// warp the screen opens on: its ticket and each of its running banners', and each of their art
+/// (the layers, or a portrait) and preview, since its pick switches between them. Then every
+/// other warp's ticket, which the rail shows from the start; each warp's own art; every other
+/// running banner's; and the pass icons. `has` tells, for an item, the banner art's placed layers
+/// (none to show its portrait) and whether its panel tiles a pattern
+fn warp_art_order(summary: &Summary, first: Pool, has: impl Fn(u32) -> (Vec<super::art::Layer>, bool)) -> Vec<super::art::Art> {
+    use super::art::{Art, Ticket};
+    let mut order: Vec<Art> = Vec::new();
+    let push = |order: &mut Vec<Art>, art: Art| {
+        if !order.contains(&art) {
+            order.push(art);
+        }
+    };
+    let ticket = |order: &mut Vec<Art>, ticket: Ticket| {
+        for selected in [false, true] {
+            push(order, Art::Ticket(ticket, selected));
+        }
+    };
+    let shown = |order: &mut Vec<Art>, item: u32| {
+        let (layers, pattern) = has(item);
+        if pattern {
+            push(order, Art::Pattern(item));
+        }
+        if layers.is_empty() {
+            push(order, Art::Portrait(item));
+        }
+        for layer in layers {
+            push(order, Art::Layer(item, layer));
+        }
+        push(order, Art::Preview(item));
+    };
+    // A warp's own: what its newest banner features, or its last 5 star
+    let own = |pool: Pool| {
+        summary
+            .running(pool)
+            .next()
+            .and_then(|banner| banner.fives.first().copied())
+            .or_else(|| summary.pools.iter().find(|s| s.pool == pool)?.fives.first().map(|five| five.item_id))
+    };
+    let running = |pool: Pool| summary.running(pool).flat_map(|banner| banner.fives.iter().copied());
+
+    if let Some(own_ticket) = Ticket::of(summary, first, None) {
+        ticket(&mut order, own_ticket);
+    }
+    for item in running(first) {
+        ticket(&mut order, Ticket::Banner(item));
+    }
+    for item in own(first).into_iter().chain(running(first)) {
+        shown(&mut order, item);
+    }
+
+    for stats in &summary.pools {
+        if let Some(own_ticket) = Ticket::of(summary, stats.pool, None) {
+            ticket(&mut order, own_ticket);
+        }
+    }
+    for item in summary.banners.iter().flat_map(|banner| banner.fives.iter().copied()) {
+        ticket(&mut order, Ticket::Banner(item));
+    }
+    for item in summary.pools.iter().filter_map(|stats| own(stats.pool)) {
+        shown(&mut order, item);
+    }
+    for item in summary.banners.iter().flat_map(|banner| banner.fives.iter().copied()) {
+        shown(&mut order, item);
+    }
+    for pass in [101, 102] {
+        push(&mut order, Art::Item(pass));
+    }
+    order
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_warp_it_opens_on_is_preloaded_first() {
+        use super::super::art::{Art, Layer, Ticket};
+        use crate::warps::service::RunningBanner;
+        use crate::warps::stats::{RateUps, pool_stats};
+        let banner = |pool, five| RunningBanner {
+            gacha_id: 0,
+            pool,
+            fives: vec![five],
+            fours: Vec::new(),
+            end: None,
+        };
+        let summary = Summary {
+            uid: 1,
+            pools: [Pool::Character, Pool::LightCone, Pool::Standard]
+                .into_iter()
+                .map(|pool| pool_stats(pool, &[], &RateUps::new()))
+                .collect(),
+            total: 0,
+            unconfirmed: 0,
+            requests: 0,
+            request_counter: None,
+            key: None,
+            last_sync: None,
+            last_error: None,
+            next_look: None,
+            names: HashMap::new(),
+            // Newest first: a light cone banner between the two character ones
+            banners: vec![
+                banner(Pool::Character, 1511),
+                banner(Pool::LightCone, 23053),
+                banner(Pool::Character, 1415),
+            ],
+        };
+        // 1511's banner art is placed in layers; the others show portraits
+        let has = |item| match item {
+            1511 => (vec![Layer::Back, Layer::Main], true),
+            _ => (Vec::new(), false),
+        };
+        let order = warp_art_order(&summary, Pool::Character, has);
+        let at = |art: Art| order.iter().position(|a| *a == art).unwrap_or_else(|| panic!("{art:?} not asked for"));
+        // Every character banner's art and tickets before anything of the light cone warp's
+        let last_character = [
+            at(Art::Preview(1415)),
+            at(Art::Portrait(1415)),
+            at(Art::Ticket(Ticket::Banner(1415), true)),
+            at(Art::Layer(1511, Layer::Main)),
+        ];
+        let first_light_cone = [at(Art::Ticket(Ticket::Banner(23053), false)), at(Art::Portrait(23053))];
+        assert!(last_character.iter().max() < first_light_cone.iter().min(), "{order:?}");
+        // The banner the warp opens on first of all, its tickets, then its art
+        assert_eq!(order[..2], [Art::Ticket(Ticket::Banner(1511), false), Art::Ticket(Ticket::Banner(1511), true)]);
+        assert!(at(Art::Pattern(1511)) < at(Art::Layer(1511, Layer::Back)));
+        // Nothing twice, and the passes last
+        assert_eq!(order.iter().filter(|a| **a == Art::Preview(1511)).count(), 1);
+        assert_eq!(order[order.len() - 2..], [Art::Item(101), Art::Item(102)]);
+
+        // Opening on the light cone warp turns it around
+        let order = warp_art_order(&summary, Pool::LightCone, has);
+        let at = |art: Art| order.iter().position(|a| *a == art).unwrap();
+        assert!(at(Art::Preview(23053)) < at(Art::Ticket(Ticket::Banner(1511), false)));
+    }
 
     const AT_TOP: PageScroll = PageScroll {
         at_top: true,
