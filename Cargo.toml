@@ -156,8 +156,10 @@ pktmon = [
 # winit and sctk-adwaita go together
 [patch.crates-io]
 wgpu-hal = { path = "../rune/vendor/wgpu-hal" }
+naga = { path = "../rune/vendor/naga" }
 winit = { path = "../rune/vendor/winit" }
 sctk-adwaita = { path = "../rune/vendor/sctk-adwaita" }
 parley_engine = { path = "../rune/vendor/parley_engine" }
 accesskit_windows = { path = "../rune/vendor/accesskit_windows" }
+accesskit_atspi_common = { path = "../rune/vendor/accesskit_atspi_common" }
 accesskit_macos = { path = "../rune/vendor/accesskit_macos" }

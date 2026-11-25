@@ -87,18 +87,13 @@ pub fn ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t:
         .linear_gradient(std::f32::consts::PI, [(0.0, sheen(t)), (0.35, sheen(t).alpha(0.0))])
         .border(1.0, Color::WHITE.alpha(if t.dark { 0.05 } else { 0.35 }));
     let surface = surface.map(|surface| {
-        let mut layer = el()
-            .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+        el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
             .clip_corners(CORNERS)
-            .child(surface.w_full().h_full());
-        for &hole in &holes {
-            layer = layer.cutout_circle(hole, NOTCH - 0.5, NOTCH);
-        }
-        layer.inert()
+            .child(surface.w_full().h_full())
+            .cutout_circles(holes.iter().map(|&hole| (hole, NOTCH - 0.5, NOTCH)))
+            .inert()
     });
-    for hole in holes {
-        tint = tint.cutout_circle(hole, NOTCH - 0.5, NOTCH);
-    }
+    tint = tint.cutout_circles(holes.iter().map(|&hole| (hole, NOTCH - 0.5, NOTCH)));
 
     col()
         .key(key)

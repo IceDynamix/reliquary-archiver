@@ -14,8 +14,6 @@ dependencies = [
 [[package]]
 name = "accesskit_atspi_common"
 version = "0.21.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "24f5baf62e34a4a6c30e3d697e4782f821a7337049c44c3b40576a27dfbb580d"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
@@ -4193,6 +4191,7 @@ dependencies = [
  "blake3",
  "image",
  "js-sys",
+ "moxcms",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
  "resvg",
@@ -6814,3 +6813,7 @@ dependencies = [
  "syn 3.0.10",
  "winnow",
 ]
+
+[[patch.unused]]
+name = "naga"
+version = "30.0.1"

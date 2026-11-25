@@ -797,7 +797,7 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
                     // band wide, the white inside it the whole ticket
                     let slide = |to: f32| LoopSpec {
                         delay: 0.06,
-                        ..LoopSpec::slide(SWEEP, [0.0, 0.0], [to, 0.0]).easing(Easing::LINEAR).times(1)
+                        ..LoopSpec::slide(SWEEP, [0.0, 0.0], [to, 0.0]).easing(Easing::LINEAR)
                     };
                     // Layout changes land at once inside it: the window and the white in it are placed
                     // apart, and on their own springs they'd part for a few frames
@@ -814,6 +814,7 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
                                 .clip_fade(band * 0.18, 0.0, band * 0.18, 0.0)
                                 .transition(Transition::none())
                                 .looping(slide(travel / band))
+                                .loop_times(1)
                                 .child(
                                     el().pin(Some(reach + band), Some(reach), None, None)
                                         .size(w, h)
@@ -822,7 +823,8 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
                                         .pixels_tint(Color::WHITE)
                                         .opacity(0.7)
                                         .transition(Transition::none())
-                                        .looping(slide(-travel / w)),
+                                        .looping(slide(-travel / w))
+                                        .loop_times(1),
                                 ),
                         )
                 });
@@ -851,8 +853,7 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
                 let mut face = row()
                     .size(ticket_w, h)
                     .fill(fill)
-                    .cutout_circle([stub, 0.0], 4.5, 5.0)
-                    .cutout_circle([stub, h], 4.5, 5.0);
+                    .cutout_circles([([stub, 0.0], 4.5, 5.0), ([stub, h], 4.5, 5.0)]);
                 if let Some(image) = art {
                     face = face.child(
                         el().pin(Some(stub), Some(0.0), Some(0.0), Some(0.0))
