@@ -499,10 +499,11 @@ fn placement(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
         })
         .child(icon(&icons::LINK, 15.0).color(if linked { t.accent } else { t.muted }));
 
-    let caption = |kicker_text: &'static str, words: String, width: f32| {
-        col()
-            .w(width)
-            .gap(1.0)
+    // The window's caption lines up with the window's right edge, as the image's does with its left
+    let caption = |kicker_text: &'static str, words: String, width: f32, end: bool| {
+        let caption = col().w(width).gap(1.0);
+        let caption = if end { caption.items_end() } else { caption };
+        caption
             .child(kicker(kicker_text, t.muted))
             .child(text(words).font(theme::SMALL).color(t.faint).truncate())
     };
@@ -522,13 +523,24 @@ fn placement(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
             false,
             t,
         )))
-        .child(row().gap(GAP).center_y().child(picture).child(link).child(preview))
+        // The image at the left edge, the window at the right, the link centered between them
         .child(
             row()
+                .w_full()
                 .gap(GAP)
-                .child(caption("Image", percent(anchor), picture_size[0]))
-                .child(el().w(LINK))
-                .child(caption("Window", goes, frame[0].max(120.0))),
+                .center_y()
+                .justify_between()
+                .child(picture)
+                .child(link)
+                .child(preview),
+        )
+        .child(
+            row()
+                .w_full()
+                .gap(GAP)
+                .justify_between()
+                .child(caption("Image", percent(anchor), picture_size[0], false))
+                .child(caption("Window", goes, frame[0].max(120.0), true)),
         );
     if s.settings.image_fit == ImageFit::Fill {
         block = block.opacity(0.45).child(note(
