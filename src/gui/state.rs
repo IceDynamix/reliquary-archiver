@@ -790,6 +790,42 @@ impl Ui {
         });
     }
 
+    /// Asks where to save the warp history of the account the tracker shows, as CSV, then writes it
+    pub fn export_warps_csv(&mut self, tx: &mut Tx) {
+        let Some(uid) = self.warps_uid() else {
+            return;
+        };
+        let options = FileDialogOptions {
+            title: "Export the warp history".into(),
+            file_name: Some(chrono::Local::now().format(&format!("warps-{uid}-%Y-%m-%d.csv")).to_string()),
+            ..Default::default()
+        }
+        .filter("CSV files", &["csv"]);
+        tx.save_file(options, move |s: &mut Ui, result, tx| {
+            if let Some(path) = s.dialog_path(result, tx) {
+                s.warp_command(WarpCommand::ExportCsv { path, uid });
+            }
+        });
+    }
+
+    /// Asks for a CSV of warps, as the export writes them, then imports it into the account the
+    /// tracker shows
+    pub fn import_warps_csv(&mut self, tx: &mut Tx) {
+        let Some(uid) = self.warps_uid() else {
+            return;
+        };
+        let options = FileDialogOptions {
+            title: "Import a warp history".into(),
+            ..Default::default()
+        }
+        .filter("CSV files", &["csv"]);
+        tx.open_file(options, move |s: &mut Ui, result, tx| {
+            if let Some(path) = s.dialog_path(result, tx) {
+                s.warp_command(WarpCommand::ImportCsv { path, uid });
+            }
+        });
+    }
+
     pub fn choose_profile(&mut self, key: Option<String>) {
         let Some(pick) = self.warps.choose.take() else {
             return;

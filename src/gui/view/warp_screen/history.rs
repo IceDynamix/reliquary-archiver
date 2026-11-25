@@ -486,6 +486,39 @@ fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
             t,
         ))
         .child(el().w_full().pt(6.0).child(rule(t)))
+        .child(option_row(
+            "warps-csv",
+            &icons::DOWNLOAD,
+            "CSV",
+            text("Export the whole history to a spreadsheet or another tool, or import one exported before")
+                .font(theme::SMALL)
+                .color(t.muted)
+                .wrap(),
+            Some(
+                row()
+                    .gap(8.0)
+                    .child(pill(
+                        "import-csv-file",
+                        "Import…",
+                        None,
+                        Pill::Secondary,
+                        !busy,
+                        t,
+                        |s: &mut Ui, tx: &mut Tx| s.import_warps_csv(tx),
+                    ))
+                    .child(pill(
+                        "export-csv-file",
+                        "Export…",
+                        None,
+                        Pill::Secondary,
+                        !busy,
+                        t,
+                        |s: &mut Ui, tx: &mut Tx| s.export_warps_csv(tx),
+                    )),
+            ),
+            t,
+        ))
+        .child(el().w_full().pt(6.0).child(rule(t)))
         .child(text(completeness.join("  ·  ")).font(theme::SMALL).color(t.muted).wrap());
     if let Some((note, color)) = gap_note {
         section = section.child(text(note).key("gap-note").font(theme::SMALL).color(color).wrap());

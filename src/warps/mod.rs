@@ -26,6 +26,8 @@ pub mod api;
 #[cfg(feature = "gui")]
 pub mod authkey;
 #[cfg(feature = "gui")]
+pub mod csv;
+#[cfg(feature = "gui")]
 pub mod odds;
 #[cfg(feature = "gui")]
 pub mod reconcile;
@@ -125,6 +127,8 @@ pub mod source {
     pub const API: u8 = 1;
     pub const SRS: u8 = 2;
     pub const LIVE: u8 = 4;
+    /// A CSV the user imported
+    pub const CSV: u8 = 8;
 }
 
 /// One pull

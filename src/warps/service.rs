@@ -17,7 +17,7 @@ use super::reconcile::group_requests;
 use super::srs::{self, Profile};
 use super::stats::{PoolStats, pool_stats};
 use super::store::{Store, StoredKey};
-use super::{Pool, Pull, WarpEvent, source};
+use super::{Pool, Pull, WarpEvent, csv, source};
 
 /// The game's history is filled in an hour at a time, the hour a pull's id names: its pulls show
 /// up once that hour is over and the batch that publishes it ran. This is how long after the hour
@@ -57,6 +57,16 @@ pub enum Command {
         path: PathBuf,
         uid: u32,
         profile: Option<String>,
+    },
+    /// Write the account's whole history to a CSV file
+    ExportCsv {
+        path: PathBuf,
+        uid: u32,
+    },
+    /// Import the pulls in a CSV file into the account
+    ImportCsv {
+        path: PathBuf,
+        uid: u32,
     },
     /// Report the account
     Show(u32),
@@ -320,6 +330,8 @@ impl Worker {
                 ),
             },
             Command::ImportSrs { path, uid, profile } => self.import_srs(path, uid, profile),
+            Command::ExportCsv { path, uid } => self.export_csv(&path, uid),
+            Command::ImportCsv { path, uid } => self.import_csv(&path, uid),
             Command::Show(uid) => self.show(uid),
         }
     }
@@ -593,6 +605,74 @@ impl Worker {
                 self.notice("Imported from Star Rail Station", Some(detail), false);
             }
             Err(e) => self.notice("Couldn't import the backup", Some(e.to_string()), true),
+        }
+        self.report_accounts();
+        self.show(uid);
+    }
+
+    fn export_csv(&mut self, path: &std::path::Path, uid: u32) {
+        let mut pulls = match self.store.pulls(uid) {
+            Ok(pulls) => pulls,
+            Err(e) => return self.notice("Couldn't read the warps to export", Some(e.to_string()), true),
+        };
+        pulls.sort_by_key(Pull::sort_key);
+        let db = get_database();
+        let text = csv::write(&pulls, |item| db.warp_item_name(item));
+        match std::fs::write(path, text) {
+            Ok(()) => {
+                info!(uid, pulls = pulls.len(), "exported the warps as CSV");
+                let detail = format!("{} pulls to {}", pulls.len(), path.display());
+                self.notice("Exported the warp history", Some(detail), false);
+            }
+            Err(e) => self.notice("Couldn't write the CSV", Some(format!("{}: {e}", path.display())), true),
+        }
+    }
+
+    fn import_csv(&mut self, path: &std::path::Path, uid: u32) {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(e) => return self.notice("Couldn't import that file", Some(format!("{}: {e}", path.display())), true),
+        };
+        let db = get_database();
+        let read = match csv::read(&text, |item| db.warp_item_rarity(item)) {
+            Ok(read) => read,
+            Err(e) => return self.notice("Couldn't import that file", Some(format!("It isn't a warp history: {e}")), true),
+        };
+        if read.pulls.is_empty() {
+            return self.notice("The file has no warps with ids in it", None, true);
+        }
+        // Ids end in the account's last two digits, a file of another account's pulls is turned away
+        if let Some(pull) = read.pulls.iter().find(|p| !super::id_belongs_to(p.id.unwrap_or_default(), uid)) {
+            let detail = format!(
+                "Pull {} doesn't end in {:02}, the last digits of UID {uid}",
+                pull.id.unwrap_or_default(),
+                uid % 100
+            );
+            return self.notice("Those are another account's warps", Some(detail), true);
+        }
+        let pulls: Vec<Pull> = read
+            .pulls
+            .into_iter()
+            .map(|p| Pull {
+                uid,
+                sources: source::CSV,
+                ..p
+            })
+            .collect();
+        match self.store.merge_history(uid, &pulls, source::CSV) {
+            Ok(merged) => {
+                let known = pulls.len() - merged.added - merged.confirmed;
+                let mut detail = format!("{} new pulls, {known} already kept", merged.added + merged.confirmed);
+                if read.without_id > 0 {
+                    detail.push_str(&format!(
+                        ", {} without an id skipped (the game's history fills those in)",
+                        read.without_id
+                    ));
+                }
+                info!(uid, added = merged.added, "imported warps from a CSV");
+                self.notice("Imported the warp history", Some(detail), false);
+            }
+            Err(e) => self.notice("Couldn't import the CSV", Some(e.to_string()), true),
         }
         self.report_accounts();
         self.show(uid);
@@ -889,5 +969,78 @@ mod tests {
         assert_eq!(synced.request_counter, Some(1581));
         let character = synced.pool(Pool::Character).unwrap();
         assert!(character.pity5 < 90, "the gap left by the missing pulls is filled");
+    }
+
+    #[test]
+    fn an_exported_csv_imports_into_another_database_and_again_adds_nothing() {
+        const UID: u32 = 801234567;
+        let notices = Arc::new(Mutex::new(Vec::new()));
+        let worker = |notices: &Arc<Mutex<Vec<(String, bool)>>>| {
+            let heard = notices.clone();
+            Worker::new(
+                Store::open_in_memory().unwrap(),
+                Box::new(move |update| {
+                    if let Update::Notice { title, detail, error } = update {
+                        heard
+                            .lock()
+                            .unwrap()
+                            .push((format!("{title}: {}", detail.unwrap_or_default()), error));
+                    }
+                }),
+            )
+        };
+        let pull = |n: i64, item_id: u32, rarity: u8| Pull {
+            id: Some(1_700_000_000_000_000_067 + n * 100),
+            uid: UID,
+            pool: Pool::Character,
+            gacha_id: 2142,
+            item_id,
+            rarity,
+            time: 1_700_000_000 + n,
+            request_no: None,
+            batch_index: 0,
+            sources: source::API,
+        };
+        let mut from = worker(&notices);
+        from.store
+            .merge_history(UID, &[pull(0, 20000, 3), pull(1, 1006, 5)], source::API)
+            .unwrap();
+        let path = std::env::temp_dir().join(format!("rqa-warps-{}.csv", std::process::id()));
+        from.handle(Command::ExportCsv {
+            path: path.clone(),
+            uid: UID,
+        });
+
+        let mut into = worker(&notices);
+        into.handle(Command::ImportCsv {
+            path: path.clone(),
+            uid: UID,
+        });
+        into.handle(Command::ImportCsv {
+            path: path.clone(),
+            uid: UID,
+        });
+        // Another account's warps are turned away
+        into.handle(Command::ImportCsv {
+            path: path.clone(),
+            uid: UID + 1,
+        });
+        let _ = std::fs::remove_file(&path);
+
+        let mut kept = into.store.pulls(UID).unwrap();
+        kept.sort_by_key(Pull::sort_key);
+        assert_eq!(kept.iter().map(|p| (p.id, p.item_id, p.rarity, p.time)).collect::<Vec<_>>(), [
+            (pull(0, 0, 0).id, 20000, 3, 1_700_000_000),
+            (pull(1, 0, 0).id, 1006, 5, 1_700_000_001)
+        ]);
+        assert!(kept.iter().all(|p| p.sources == source::CSV));
+        let notices = notices.lock().unwrap();
+        let said: Vec<&str> = notices.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(said[0].starts_with("Exported the warp history: 2 pulls to "));
+        assert_eq!(said[1..3], [
+            "Imported the warp history: 2 new pulls, 0 already kept",
+            "Imported the warp history: 0 new pulls, 2 already kept"
+        ]);
+        assert!(notices[3].1 && notices[3].0.starts_with("Those are another account's warps"));
     }
 }
