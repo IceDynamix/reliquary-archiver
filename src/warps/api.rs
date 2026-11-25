@@ -6,7 +6,6 @@
 
 use std::time::Duration;
 
-use chrono::NaiveDateTime;
 use serde::Deserialize;
 use tracing::{debug, info};
 
@@ -215,7 +214,11 @@ fn to_pull(record: &Record, time_zone: i32) -> Result<Pull, ApiError> {
     let number = |text: &str, what: &str| text.parse::<i64>().map_err(|_| bad(what));
     let gacha_type = number(&record.gacha_type, "warp type")? as u32;
     let pool = Pool::from_gacha_type(gacha_type).ok_or_else(|| bad("warp type"))?;
-    let local = NaiveDateTime::parse_from_str(&record.time, "%Y-%m-%d %H:%M:%S").map_err(|_| bad("time"))?;
+    // The server's own time of day, `time_zone` hours ahead of UTC
+    let local = jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", &record.time)
+        .ok()
+        .and_then(|t| t.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok())
+        .ok_or_else(|| bad("time"))?;
     Ok(Pull {
         id: Some(number(&record.id, "id")?),
         uid: number(&record.uid, "uid")? as u32,
@@ -223,7 +226,7 @@ fn to_pull(record: &Record, time_zone: i32) -> Result<Pull, ApiError> {
         gacha_id: number(&record.gacha_id, "banner")? as u32,
         item_id: number(&record.item_id, "item")? as u32,
         rarity: number(&record.rank_type, "rarity")? as u8,
-        time: local.and_utc().timestamp() - i64::from(time_zone) * 3600,
+        time: local.timestamp().as_second() - i64::from(time_zone) * 3600,
         request_no: None,
         batch_index: 0,
         sources: source::API,

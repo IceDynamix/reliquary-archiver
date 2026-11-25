@@ -812,7 +812,7 @@ fn key_state(key: &StoredKey) -> KeyState {
 }
 
 fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    jiff::Timestamp::now().as_second()
 }
 
 #[cfg(test)]

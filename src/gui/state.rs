@@ -300,7 +300,7 @@ impl Default for Warps {
             latest_scroll: rune::Live::new([0.0; 2]),
             featured: HashMap::new(),
             rosters: HashMap::new(),
-            session_start: chrono::Utc::now().timestamp(),
+            session_start: jiff::Timestamp::now().as_second(),
             picked: None,
             link_edit: TextEdit::new(""),
             choose: None,
@@ -797,7 +797,11 @@ impl Ui {
         };
         let options = FileDialogOptions {
             title: "Export the warp history".into(),
-            file_name: Some(chrono::Local::now().format(&format!("warps-{uid}-%Y-%m-%d.csv")).to_string()),
+            file_name: Some(
+                jiff::ZonedDateTime::now()
+                    .strftime(&format!("warps-{uid}-%Y-%m-%d.csv"))
+                    .to_string(),
+            ),
             ..Default::default()
         }
         .filter("CSV files", &["csv"]);

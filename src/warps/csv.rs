@@ -31,8 +31,8 @@ pub fn write(pulls: &[Pull], name: impl Fn(u32) -> Option<String>) -> String {
     let mut out = COLUMNS.join(",");
     out.push('\n');
     for pull in pulls {
-        let time = chrono::DateTime::from_timestamp(pull.time, 0)
-            .map_or_else(|| pull.time.to_string(), |t| t.format("%Y-%m-%dT%H:%M:%SZ").to_string());
+        let time = jiff::Timestamp::from_second(pull.time)
+            .map_or_else(|_| pull.time.to_string(), |t| t.strftime("%Y-%m-%dT%H:%M:%SZ").to_string());
         let fields = [
             pull.id.map_or_else(String::new, |id| id.to_string()),
             pull.uid.to_string(),
@@ -132,11 +132,11 @@ pub fn read(text: &str, rarity: impl Fn(u32) -> Option<u8>) -> Result<Read, Stri
 
 /// A time as RFC 3339, as `YYYY-MM-DD HH:MM:SS` in UTC, or as Unix seconds
 fn parse_time(text: &str) -> Option<i64> {
-    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(text) {
-        return Some(t.timestamp());
+    if let Ok(t) = text.parse::<jiff::Timestamp>() {
+        return Some(t.as_second());
     }
-    if let Ok(t) = chrono::NaiveDateTime::parse_from_str(text, "%Y-%m-%d %H:%M:%S") {
-        return Some(t.and_utc().timestamp());
+    if let Ok(t) = jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", text) {
+        return t.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok().map(|t| t.timestamp().as_second());
     }
     text.parse().ok()
 }

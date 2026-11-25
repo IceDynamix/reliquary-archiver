@@ -141,7 +141,7 @@ pub fn start(path: PathBuf) -> Option<(Vec<SavedSession>, mpsc::Sender<SavedSess
 }
 
 fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+    jiff::Timestamp::now().as_second()
 }
 
 #[cfg(test)]

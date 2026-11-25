@@ -390,7 +390,7 @@ impl CaptureSession {
                     gacha_id: result.gacha_id,
                     request_no,
                     items: result.gacha_item_list.iter().map(|item| item.gacha_item.item_id).collect(),
-                    captured_at: chrono::Utc::now().timestamp_millis(),
+                    captured_at: jiff::Timestamp::now().as_millisecond(),
                 }))
             }
             command_id::GetAuthkeyScRsp => {

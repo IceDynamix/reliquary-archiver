@@ -434,7 +434,7 @@ fn warps(s: &mut Ui, synced: bool) {
     use crate::warps::stats::{Featured, RateUps, pool_stats};
     use crate::warps::{Pool, Pull, source};
 
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     // (pool, banner, featured 5 star, standard 5 star, pulls, 5 star pity in order)
     let plans: [(Pool, u32, u32, u32, &[u32]); 5] = [
         (Pool::Character, 2142, 1506, 1003, &[78, 64, 81, 23, 76, 90, 71, 58, 49]),

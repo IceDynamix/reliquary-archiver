@@ -1517,8 +1517,7 @@ fn history_strip(view: &View, width: f32, t: &Theme) -> El {
     let stagger = Stagger::new(0.012).from(StaggerFrom::Last);
     let keys = super::warps::five_keys(shown.iter().copied());
     let bars = shown.iter().zip(keys).rev().enumerate().map(|(i, (five, key))| {
-        let when = chrono::DateTime::from_timestamp(five.time, 0)
-            .map_or(String::new(), |d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string());
+        let when = super::warps::local(five.time, "%Y-%m-%d");
         let outcome = match outcome_words(five.outcome) {
             "" => String::new(),
             w => format!(", {w}"),
@@ -1667,7 +1666,7 @@ fn percent(p: f64) -> String {
 }
 
 fn time_left(end: i64) -> String {
-    let left = (end - chrono::Utc::now().timestamp()).max(0);
+    let left = (end - jiff::Timestamp::now().as_second()).max(0);
     let (days, hours) = (left / 86400, left % 86400 / 3600);
     if days > 0 {
         format!("{days}d {hours}h left")

@@ -103,7 +103,7 @@ pub fn status_line(s: &Ui, t: &Theme) -> El {
 /// Where syncing stands, in words, and its color: faint when there's nothing to say, good when
 /// synced, warn when pulls wait, bad when warps can't be kept
 pub fn status(s: &Ui, t: &Theme) -> (String, rune::Color) {
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     if let Some(error) = &s.warps.unavailable {
         (format!("Warps can't be kept: {error}"), t.bad)
     } else if let Some(busy) = &s.warps.busy {
@@ -172,7 +172,20 @@ pub(super) fn grouped(n: usize) -> String {
 
 /// A Unix time as the local time of day
 pub(super) fn clock(at: i64) -> String {
-    chrono::DateTime::from_timestamp(at, 0).map_or(String::new(), |d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
+    local(at, "%H:%M")
+}
+
+/// A Unix time in the system's time zone, as `format` (strftime) writes it; empty when it's out of
+/// range
+pub(super) fn local(at: i64, format: &str) -> String {
+    jiff::Timestamp::from_second(at).map_or(String::new(), |t| {
+        t.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime(format).to_string()
+    })
+}
+
+/// A Unix time in UTC, as `format` (strftime) writes it; empty when it's out of range
+pub(super) fn utc(at: i64, format: &str) -> String {
+    jiff::Timestamp::from_second(at).map_or(String::new(), |t| t.strftime(format).to_string())
 }
 
 /// How long ago a Unix time was, roughly
@@ -183,7 +196,7 @@ pub(super) fn ago(now: i64, then: i64) -> String {
         60..3600 => format!("{} min ago", seconds / 60),
         3600..86400 => format!("{} h ago", seconds / 3600),
         86400..604800 => format!("{} days ago", seconds / 86400),
-        _ => chrono::DateTime::from_timestamp(then, 0).map_or(String::new(), |d| d.format("%Y-%m-%d").to_string()),
+        _ => utc(then, "%Y-%m-%d"),
     }
 }
 

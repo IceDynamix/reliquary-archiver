@@ -16,7 +16,7 @@ use crate::gui::icons;
 use crate::gui::state::{PageScroll, Ui, WarpPage, leave_wheel};
 use crate::gui::theme::{self, Theme};
 use crate::gui::view::parts::{Pill, kicker, pill, rule, tab, ticket_on};
-use crate::gui::view::warps::{ago, clock, grouped};
+use crate::gui::view::warps::{ago, clock, grouped, local, utc};
 use crate::warps::service::Summary;
 use crate::warps::stats::{Highlight, Outcome};
 
@@ -220,8 +220,7 @@ fn fives_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El 
 fn medallion(s: &Ui, view: &View, five: &Highlight, key: String, t: &Theme) -> El {
     let name = view.summary.name(five.item_id);
     let ring = outcome_color(five.outcome, t);
-    let when = chrono::DateTime::from_timestamp(five.time, 0)
-        .map_or(String::new(), |d| d.with_timezone(&chrono::Local).format("%Y-%m-%d").to_string());
+    let when = local(five.time, "%Y-%m-%d");
     let outcome = match outcome_words(five.outcome) {
         "" => String::new(),
         words => format!(", {words}"),
@@ -283,7 +282,7 @@ fn legend(t: &Theme) -> El {
 /// The latest pulls, newest first, with the pity the 5 stars came at. When it `scrolls` the card
 /// fills the column it's in and the list scrolls within it, before the page turns
 fn latest_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El {
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     let stats = view.stats;
     let shown = if scrolls { LATEST_SCROLLED } else { LATEST };
     let rows = stats.recent.iter().take(shown).enumerate().map(|(i, (pull, pity, outcome))| {
@@ -366,7 +365,7 @@ fn own_scroll(key: &str, content: El, scroll: &rune::Live<[f32; 2]>) -> El {
 
 /// Where the history comes from: the game's history page, and Star Rail Station backups
 fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
-    let now = chrono::Utc::now().timestamp();
+    let now = jiff::Timestamp::now().as_second();
     let busy = s.warps.busy.is_some();
     let usable = summary.key.as_ref().is_some_and(|key| key.usable(now));
 
@@ -529,9 +528,9 @@ fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
 /// Asks which profile of a backup is the account
 fn profile_picker(pick: &crate::gui::state::ProfilePick, t: &Theme) -> El {
     let rows = pick.profiles.iter().map(|profile| {
-        let latest = profile.latest.map_or(String::new(), |at| {
-            chrono::DateTime::from_timestamp(at, 0).map_or(String::new(), |d| format!(" · latest {}", d.format("%Y-%m-%d")))
-        });
+        let latest = profile
+            .latest
+            .map_or(String::new(), |at| format!(" · latest {}", utc(at, "%Y-%m-%d")));
         let fits = if profile.fits { "" } else { " · another account's" };
         let key = profile.key.clone();
         row()

@@ -40,7 +40,11 @@ pub struct Services {
 pub fn export_dialog() -> FileDialogOptions {
     FileDialogOptions {
         title: "Save export".into(),
-        file_name: Some(chrono::Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string()),
+        file_name: Some(
+            jiff::ZonedDateTime::now()
+                .strftime("archive_output-%Y-%m-%dT%H-%M-%S.json")
+                .to_string(),
+        ),
         ..Default::default()
     }
     .filter("JSON files", &["json"])
