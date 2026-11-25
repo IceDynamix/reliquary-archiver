@@ -9,12 +9,13 @@
 //! kept decoded (as QOI) at the size the game has it, since the warp screen draws it about as large.
 //!
 //! The view asks with [`ArtCache::get`], which answers at once: the image if it's there, `None`
-//! while it's on its way. A worker thread downloads and decodes, then wakes the window, and
+//! while it's on its way. Worker threads download, several at once, and decode, a few at once, then
+//! wake the window, and
 //! [`ArtCache::take_done`] (called from `poll`) hands the result to Rune.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, mpsc};
 use std::time::Duration;
 
 use image::DynamicImage;
@@ -24,6 +25,9 @@ use rune::{Color, Image, ImageCache};
 const WARP_ART_URL: &str = "https://sparxie.anemew.me";
 /// Where to read the art from instead, for trying a new extraction: a folder or a URL
 const WARP_ART_ENV: &str = "RQA_WARP_ART";
+/// Downloads at once. They mostly wait on the network, and the art's edge cache answers quickly,
+/// so several run side by side; decoding what they bring is limited apart (`DECODING`)
+const DOWNLOADS: usize = 12;
 /// Portraits taller than this are scaled down to it. Their source is 2048, which a high density
 /// screen shows nearly at full size, so it's kept
 const PORTRAIT_HEIGHT: u32 = 2048;
@@ -440,34 +444,42 @@ pub struct ArtCache {
 }
 
 impl ArtCache {
-    /// Fetches on a thread of its own, and wakes the window with `waker` when art arrives
+    /// Fetches on threads of its own, `DOWNLOADS` at once and decoding a few of those at a time
+    /// (`DECODING`), and wakes the window with `waker` when art arrives
     pub fn new(waker: rune::Waker) -> Self {
         let (jobs, requests) = mpsc::channel::<Job>();
+        let requests = Arc::new(Mutex::new(requests));
         let done: Arc<Mutex<Vec<Done>>> = Arc::default();
         let manifest_done: Arc<Mutex<Option<Option<Manifest>>>> = Arc::default();
-        let (finished, manifest_finished) = (done.clone(), manifest_done.clone());
-        let wake = waker.clone();
-        std::thread::Builder::new()
-            .name("warp-art".into())
-            .spawn(move || {
-                let agent = agent();
-                while let Ok(job) = requests.recv() {
-                    match job {
-                        Job::Manifest => {
-                            *manifest_finished.lock().unwrap_or_else(PoisonError::into_inner) = Some(fetch_manifest(&agent));
+        let agent = agent();
+        for n in 0..DOWNLOADS {
+            let (requests, finished, manifest_finished) = (requests.clone(), done.clone(), manifest_done.clone());
+            let (wake, agent) = (waker.clone(), agent.clone());
+            std::thread::Builder::new()
+                .name(format!("warp-art-{n}"))
+                .spawn(move || {
+                    loop {
+                        // The queue is held only while taking from it, so the others wait for
+                        // work, not for this one's download. Jobs start in the order they're asked
+                        let job = requests.lock().unwrap_or_else(PoisonError::into_inner).recv();
+                        let Ok(job) = job else { break };
+                        match job {
+                            Job::Manifest => {
+                                *manifest_finished.lock().unwrap_or_else(PoisonError::into_inner) = Some(fetch_manifest(&agent));
+                            }
+                            Job::Art(art, source) => {
+                                let (fetched, tint) = fetch(&agent, art, &source);
+                                finished
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner)
+                                    .push(Done { art, fetched, tint });
+                            }
                         }
-                        Job::Art(art, source) => {
-                            let (fetched, tint) = fetch(&agent, art, &source);
-                            finished
-                                .lock()
-                                .unwrap_or_else(PoisonError::into_inner)
-                                .push(Done { art, fetched, tint });
-                        }
+                        wake();
                     }
-                    wake();
-                }
-            })
-            .expect("couldn't start the art thread");
+                })
+                .expect("couldn't start an art thread");
+        }
         Self::with(waker, Some(jobs), done, manifest_done)
     }
 
@@ -675,17 +687,25 @@ fn fetch(agent: &ureq::Agent, art: Art, source: &str) -> (Option<Fetched>, Optio
     let backdrop = matches!(art, Art::Layer(_, Layer::Backdrop));
     if let Some(path) = &cached
         && let Ok(bytes) = std::fs::read(path)
-        && let Ok(image) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Qoi)
     {
-        let tint = backdrop.then(|| mean_color(&image));
-        return (Some(rgba(image)), tint);
+        let _slot = DECODING.take();
+        if let Ok(image) = image::load_from_memory_with_format(&bytes, image::ImageFormat::Qoi) {
+            let tint = backdrop.then(|| mean_color(&image));
+            return (Some(rgba(image)), tint);
+        }
     }
 
     // The version is a hash or a build: hex and dashes, safe in a query
     let version = version.chars().all(|c| c.is_ascii_alphanumeric() || c == '-').then_some(version);
-    let Some(image) = read_warp_art(agent, base, file, version).and_then(|bytes| decode(&bytes)) else {
+    let Some(bytes) = read_warp_art(agent, base, file, version) else {
         return (None, None);
     };
+    // Downloads run side by side freely; from here on it's held until the decoded copy is kept
+    let _slot = DECODING.take();
+    let Some(image) = decode(&bytes) else {
+        return (None, None);
+    };
+    drop(bytes);
     // Portraits are scaled down to a height the screen can use; the rest are kept as the game has
     // them, banner layers since they're drawn as large as the window
     let scale = match art {
@@ -707,6 +727,58 @@ fn fetch(agent: &ureq::Agent, art: Art, source: &str) -> (Option<Fetched>, Optio
         }
     }
     (Some(rgba(image)), tint)
+}
+
+/// Decodes at once, all art threads together. A banner layer being decoded holds its pixels and
+/// the decoder's working copies, tens of MB, and each takes a core: a few at a time, one fewer
+/// than the cores so the window keeps one, keeps a cold start's memory and the UI in check
+static DECODING: DecodeSlots = DecodeSlots::new();
+
+/// A count of slots taken, up to `decode_slots`
+struct DecodeSlots {
+    taken: Mutex<usize>,
+    freed: Condvar,
+}
+
+impl DecodeSlots {
+    const fn new() -> Self {
+        Self {
+            taken: Mutex::new(0),
+            freed: Condvar::new(),
+        }
+    }
+
+    /// Waits for a free slot and holds it until the returned guard is dropped
+    fn take(&'static self) -> DecodeSlot {
+        self.take_of(decode_slots())
+    }
+
+    fn take_of(&'static self, limit: usize) -> DecodeSlot {
+        let mut taken = self.taken.lock().unwrap_or_else(PoisonError::into_inner);
+        while *taken >= limit {
+            taken = self.freed.wait(taken).unwrap_or_else(PoisonError::into_inner);
+        }
+        *taken += 1;
+        DecodeSlot(self)
+    }
+}
+
+struct DecodeSlot(&'static DecodeSlots);
+
+impl Drop for DecodeSlot {
+    fn drop(&mut self) {
+        *self.0.taken.lock().unwrap_or_else(PoisonError::into_inner) -= 1;
+        self.0.freed.notify_one();
+    }
+}
+
+fn decode_slots() -> usize {
+    static SLOTS: OnceLock<usize> = OnceLock::new();
+    *SLOTS.get_or_init(|| {
+        std::thread::available_parallelism()
+            .map_or(2, |cores| cores.get().saturating_sub(1))
+            .clamp(2, 8)
+    })
 }
 
 /// A picture from the art: JPEG XL, or anything else the image crate reads
@@ -849,6 +921,33 @@ mod tests {
         assert_eq!(name(Art::Layer(1511, Layer::Main)), "warp-b-characters-1511-avatar.qoi");
         // Nothing from the manifest reaches outside the cache folder
         assert_eq!(name(Art::Item(102)), "warp-------evil-items-102.qoi");
+    }
+
+    #[test]
+    fn decodes_wait_for_a_free_slot() {
+        static SLOTS: DecodeSlots = DecodeSlots::new();
+        let (now, most) = (Arc::new(Mutex::new(0usize)), Arc::new(Mutex::new(0usize)));
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let (now, most) = (now.clone(), most.clone());
+                std::thread::spawn(move || {
+                    let _slot = SLOTS.take_of(2);
+                    let mut n = now.lock().unwrap();
+                    *n += 1;
+                    let mut m = most.lock().unwrap();
+                    *m = (*m).max(*n);
+                    drop((n, m));
+                    std::thread::sleep(Duration::from_millis(20));
+                    *now.lock().unwrap() -= 1;
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().unwrap();
+        }
+        assert_eq!(*most.lock().unwrap(), 2);
+        assert_eq!(*SLOTS.taken.lock().unwrap(), 0);
+        assert!((2..=8).contains(&decode_slots()));
     }
 
     #[test]
