@@ -6,7 +6,7 @@ use parts::{Pill, pill, plate, ring_button};
 use rune::{Cx, El, Tx, col, el, icon, row, text};
 
 use super::settings::{ImageFit, ThemeMode};
-use super::state::{LiveSync, Notice, Panel, Screen, Ui, Update};
+use super::state::{Notice, Panel, Screen, Ui, Update};
 use super::theme::{self, Theme};
 use super::{background, icons};
 
@@ -189,33 +189,8 @@ fn header(s: &Ui, t: &Theme) -> El {
         .center_y()
         .gap(8.0)
         .child(logotype)
-        .child(sync_counter(s, t))
         .child(panel_button("open-logs", &icons::LOGS, "Logs", Panel::Logs))
         .child(panel_button("open-settings", &icons::SETTINGS, "Settings", Panel::Settings))
-}
-
-/// How many optimizers listen, in a counter like the game's top bar
-fn sync_counter(s: &Ui, t: &Theme) -> El {
-    let (label, tint) = match &s.sync {
-        LiveSync::Running { clients: 0, .. } => ("Not linked".to_string(), t.faint),
-        LiveSync::Running { clients, .. } => (format!("{clients} linked"), t.good),
-        LiveSync::Starting => ("Starting".to_string(), t.faint),
-        LiveSync::Failed(_) => ("Sync off".to_string(), t.bad),
-        LiveSync::Closed => ("Paused".to_string(), t.faint),
-    };
-    row()
-        .key("sync-counter")
-        .h(28.0)
-        .px(12.0)
-        .gap(8.0)
-        .center_y()
-        .radius(14.0)
-        .fill(t.well)
-        .border(1.0, t.line)
-        .mr(4.0)
-        .help("Optimizers receiving live sync")
-        .child(el().size(6.0, 6.0).radius(3.0).fill(tint))
-        .child(text(label).font(theme::LABEL).color(if tint == t.faint { t.muted } else { tint }))
 }
 
 fn update_banner(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
