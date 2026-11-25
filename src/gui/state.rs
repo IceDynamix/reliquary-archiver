@@ -74,6 +74,9 @@ pub struct Ui {
     pub images: Option<ImageCache>,
     /// The background image and the path it was loaded from
     pub background: Option<(String, Image)>,
+    /// The background image is still decoding: until it's done its size isn't known, so the view
+    /// is built again when it is (see [`Ui::background_ready`])
+    pub background_decoding: bool,
     /// The average color along each edge of the background image (top, right, bottom, left), for
     /// [`BackgroundFill::EdgeColor`]; none for vector images
     pub background_edges: Option<[rune::Color; 4]>,
@@ -412,6 +415,7 @@ impl Ui {
             services: None,
             images: None,
             background: None,
+            background_decoding: false,
             background_loader: None,
             background_edges: None,
             background_sample: None,
@@ -983,6 +987,7 @@ impl Ui {
             self.background_edges = None;
             self.background_sample = None;
             self.background_dropper = false;
+            self.background_decoding = true;
             self.background = Some((path, image));
         }
     }
@@ -1017,8 +1022,20 @@ impl Ui {
         self.background = Some((path, image));
     }
 
-    /// Takes a background the loader finished. True when that changed anything
+    /// Takes a background the loader finished, or notices the image it handed over finished
+    /// decoding (it wakes the window then, but the view has to be built again to see its size).
+    /// True when that changed anything
     pub fn background_ready(&mut self) -> bool {
+        let taken = self.take_background();
+        let decoded = self.background_decoding && self.background.as_ref().is_none_or(|(_, image)| image.is_ready());
+        if decoded {
+            self.background_decoding = false;
+        }
+        taken || decoded
+    }
+
+    /// Takes a background the loader finished. True when that changed anything
+    fn take_background(&mut self) -> bool {
         let Some((path, prepared)) = self.background_loader.as_ref().and_then(|loader| loader.take()) else {
             return false;
         };
@@ -1035,6 +1052,7 @@ impl Ui {
                     self.background_edges = Some(prepared.edges);
                     self.background_sample = Some(prepared.sample.clone());
                     self.background = Some((path, images.rgba(prepared.width, prepared.height, prepared.rgba)));
+                    self.background_decoding = true;
                 }
             }
             Err(e) => {
