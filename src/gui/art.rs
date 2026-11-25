@@ -631,10 +631,15 @@ fn download(agent: &ureq::Agent, url: &str) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// A file under the warp banner art's base, which is a folder or a URL
-fn read_warp_art(agent: &ureq::Agent, base: &str, file: &str) -> Option<Vec<u8>> {
+/// A file under the art's base, which is a folder or a URL. From a URL it's asked for with its
+/// `version`, when it has one: the bucket's edge cache keeps files a year, and a new version is
+/// then a new address rather than a stale copy
+fn read_warp_art(agent: &ureq::Agent, base: &str, file: &str, version: Option<&str>) -> Option<Vec<u8>> {
     if base.starts_with("http://") || base.starts_with("https://") {
-        download(agent, &format!("{base}/{file}"))
+        match version {
+            Some(version) => download(agent, &format!("{base}/{file}?v={version}")),
+            None => download(agent, &format!("{base}/{file}")),
+        }
     } else {
         std::fs::read(PathBuf::from(base).join(file))
             .inspect_err(|e| tracing::debug!(%e, file, "no art"))
@@ -645,7 +650,8 @@ fn read_warp_art(agent: &ureq::Agent, base: &str, file: &str) -> Option<Vec<u8>>
 /// The warp banner art's manifest, fresh, or as kept last time when it can't be had
 fn fetch_manifest(agent: &ureq::Agent) -> Option<Manifest> {
     let kept = cache_dir().map(|dir| dir.join("warp-index.json"));
-    let fresh = read_warp_art(agent, &warp_art_base(), "index.json");
+    // Never cached at the edge, it's how a new version is found out
+    let fresh = read_warp_art(agent, &warp_art_base(), "index.json", None);
     let bytes = match fresh {
         Some(bytes) => {
             if let Some(path) = &kept {
@@ -675,7 +681,9 @@ fn fetch(agent: &ureq::Agent, art: Art, source: &str) -> (Option<Fetched>, Optio
         return (Some(rgba(image)), tint);
     }
 
-    let Some(image) = read_warp_art(agent, base, file).and_then(|bytes| decode(&bytes)) else {
+    // The version is a hash or a build: hex and dashes, safe in a query
+    let version = version.chars().all(|c| c.is_ascii_alphanumeric() || c == '-').then_some(version);
+    let Some(image) = read_warp_art(agent, base, file, version).and_then(|bytes| decode(&bytes)) else {
         return (None, None);
     };
     // Portraits are scaled down to a height the screen can use; the rest are kept as the game has
