@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Not;
 
 use serde::{Deserialize, Serialize};
@@ -136,6 +137,9 @@ pub struct Material {
 /// borrow from what it reads, which would keep relics from being read back from kept state
 pub type SlotName = &'static str;
 
+/// The trailblazer as the exporter names it, an alias for the same reason as [`SlotName`]
+pub type TrailblazerName = &'static str;
+
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Relic {
@@ -243,28 +247,41 @@ impl Memosprite {
     }
 }
 
-/// What an exporter has captured, in its own terms rather than the game's: kept between runs, a
-/// new game version changes the commands but not this. Change [`ExporterState::VERSION`] along
-/// with anything here that older states wouldn't read right.
+/// What an exporter has captured, in its own terms rather than the game's. The exporter works on
+/// it directly, and it's also what's kept between runs: a new game version changes the commands
+/// but not this. Change [`ExporterState::VERSION`] along with anything here that older states
+/// wouldn't read right.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct ExporterData {
+    pub(super) initialized: bool,
+    pub(super) uid: Option<u32>,
+    #[serde(default, deserialize_with = "super::utils::deserialize_trailblazer")]
+    pub(super) trailblazer: Option<TrailblazerName>,
+    pub(super) banners: HashMap<u32, BannerInfo>,
+    pub(super) gacha: GachaFunds,
+    pub(super) materials: BTreeMap<u32, Material>,
+    pub(super) light_cones: BTreeMap<u32, LightCone>,
+    pub(super) relics: BTreeMap<u32, Relic>,
+    /// relic recon relics keep a stable id throughout the event
+    pub(super) recon_relics: Vec<u32>,
+    /// All known characters. Level and ascension are only filled in once the base avatar is known
+    pub(super) characters: BTreeMap<u32, Character>,
+    /// The level and ascension of each base avatar, which multipath characters take theirs from
+    pub(super) multipath_base_avatars: HashMap<u32, BaseAvatar>,
+    /// Characters in `characters` that are still waiting for their base avatar
+    pub(super) unresolved_multipath_characters: HashSet<u32>,
+}
+
+/// An exporter's [`ExporterData`] as it's kept between runs, with the version it was kept at
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ExporterState {
     pub version: u32,
-    pub initialized: bool,
-    pub uid: Option<u32>,
-    pub trailblazer: Option<String>,
-    pub banners: std::collections::HashMap<u32, BannerInfo>,
-    pub gacha: GachaFunds,
-    pub materials: Vec<Material>,
-    pub light_cones: Vec<LightCone>,
-    pub relics: Vec<Relic>,
-    pub recon_relics: Vec<u32>,
-    pub characters: Vec<Character>,
-    pub base_avatars: std::collections::HashMap<u32, BaseAvatar>,
-    pub unresolved_multipath_characters: Vec<u32>,
+    pub data: ExporterData,
 }
 
 impl ExporterState {
-    pub const VERSION: u32 = 1;
+    /// 2: the data is kept as the exporter holds it, its collections keyed by id
+    pub const VERSION: u32 = 2;
 }
 
 /// What multipath characters take from their base avatar

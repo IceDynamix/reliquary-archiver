@@ -145,7 +145,7 @@ fn character_gets_its_level_once_the_base_avatar_is_known() {
     let mut exporter = OptimizerExporter::new();
 
     assert!(exporter.ingest_multipath_character(&path_data(MARCH_7TH)).is_none());
-    assert_eq!(exporter.characters[&MARCH_7TH].level, 0);
+    assert_eq!(exporter.data.characters[&MARCH_7TH].level, 0);
 
     exporter.ingest_character(&base_avatar(MARCH_7TH, 80, 6));
 
@@ -198,14 +198,14 @@ fn player_sync_updates_and_deletes_relics() {
         ..Default::default()
     });
     assert!(matches!(events.as_slice(), [OptimizerEvent::UpdateRelics(relics)] if relics.len() == 2));
-    assert_eq!(exporter.relics.len(), 2);
+    assert_eq!(exporter.data.relics.len(), 2);
 
     let events = exporter.handle_player_sync(PlayerSyncScNotify {
         del_relic_list: vec![1],
         ..Default::default()
     });
     assert!(matches!(events.as_slice(), [OptimizerEvent::DeleteRelics(ids)] if ids == &[1]));
-    assert_eq!(exporter.relics.keys().copied().collect::<Vec<_>>(), vec![2]);
+    assert_eq!(exporter.data.relics.keys().copied().collect::<Vec<_>>(), vec![2]);
 }
 
 #[test]
@@ -256,7 +256,10 @@ fn banner_without_prizes_does_not_panic() {
         }],
         ..Default::default()
     });
-    assert!(matches!(exporter.banners[&CHARACTER_BANNER].banner_type, BannerType::Character));
+    assert!(matches!(
+        exporter.data.banners[&CHARACTER_BANNER].banner_type,
+        BannerType::Character
+    ));
 }
 
 #[test]
@@ -287,7 +290,7 @@ fn kept_state_restores_the_same_export_and_carries_on() {
 fn kept_state_of_another_version_is_left_alone() {
     let mut state = OptimizerExporter::new().state();
     state.version += 1;
-    state.uid = Some(1);
+    state.data.uid = Some(1);
     let mut exporter = OptimizerExporter::new();
     assert!(!exporter.restore(state));
     assert_eq!(exporter.uid(), None);

@@ -22,12 +22,12 @@ use crate::export::fribbels::models::*;
 
 impl OptimizerExporter {
     pub(super) fn handle_token(&mut self, token: PlayerGetTokenScRsp) {
-        self.uid = Some(token.uid);
+        self.data.uid = Some(token.uid);
     }
 
     pub(super) fn handle_login(&mut self, login: PlayerLoginScRsp) {
-        self.gacha.oneric_shards = login.basic_info.oneric_shard_count;
-        self.gacha.stellar_jade = login.basic_info.stellar_jade_count;
+        self.data.gacha.oneric_shards = login.basic_info.oneric_shard_count;
+        self.data.gacha.stellar_jade = login.basic_info.stellar_jade_count;
     }
 
     /// Converts the items and stores them, returning what was stored
@@ -39,7 +39,7 @@ impl OptimizerExporter {
     ) -> (Vec<Relic>, Vec<LightCone>, Vec<Material>) {
         let relics: Vec<Relic> = relics.iter().filter_map(|r| export_proto_relic(self.database, r)).collect();
         for relic in &relics {
-            self.relics.insert(relic._uid, relic.clone());
+            self.data.relics.insert(relic._uid, relic.clone());
         }
 
         let light_cones: Vec<LightCone> = light_cones
@@ -47,12 +47,12 @@ impl OptimizerExporter {
             .filter_map(|equip| export_proto_light_cone(self.database, equip))
             .collect();
         for light_cone in &light_cones {
-            self.light_cones.insert(light_cone._uid, light_cone.clone());
+            self.data.light_cones.insert(light_cone._uid, light_cone.clone());
         }
 
         let materials: Vec<Material> = materials.iter().filter_map(|m| export_proto_material(self.database, m)).collect();
         for material in &materials {
-            self.materials.insert(material.id, material.clone());
+            self.data.materials.insert(material.id, material.clone());
         }
 
         (relics, light_cones, materials)
@@ -67,13 +67,13 @@ impl OptimizerExporter {
     }
 
     pub(super) fn ingest_character(&mut self, proto_character: &ProtoCharacter) {
-        self.multipath_base_avatars.insert(proto_character.base_avatar_id, BaseAvatar {
+        self.data.multipath_base_avatars.insert(proto_character.base_avatar_id, BaseAvatar {
             level: proto_character.level,
             ascension: proto_character.promotion,
         });
 
         // Try to resolve any multipath characters that have this as their base avatar.
-        for unresolved_avatar_id in self.unresolved_multipath_characters.clone().iter() {
+        for unresolved_avatar_id in self.data.unresolved_multipath_characters.clone().iter() {
             self.resolve_multipath_character(*unresolved_avatar_id);
         }
     }
@@ -91,15 +91,15 @@ impl OptimizerExporter {
 
         // If it's the trailblazer, determine the gender
         if character.name == "Trailblazer" {
-            self.trailblazer = Some(if character_id % 2 == 0 { "Stelle" } else { "Caelus" });
+            self.data.trailblazer = Some(if character_id % 2 == 0 { "Stelle" } else { "Caelus" });
         }
 
-        self.characters.insert(character_id, character);
+        self.data.characters.insert(character_id, character);
 
         let resolved = self.resolve_multipath_character(character_id);
         if resolved.is_none() {
             debug!(uid = &character_id, "multipath character not resolved");
-            self.unresolved_multipath_characters.insert(character_id);
+            self.data.unresolved_multipath_characters.insert(character_id);
         }
 
         resolved
@@ -128,16 +128,16 @@ impl OptimizerExporter {
     /// Fills in the level and ascension of a character, which are stored in its base avatar
     pub(super) fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
         let base_avatar_id = self.get_multipath_base_id(character_id);
-        let Some(character) = self.characters.get_mut(&character_id) else {
+        let Some(character) = self.data.characters.get_mut(&character_id) else {
             warn!(uid = &character_id, "multipath character not found");
             return None;
         };
 
-        let base_avatar = self.multipath_base_avatars.get(&base_avatar_id)?;
+        let base_avatar = self.data.multipath_base_avatars.get(&base_avatar_id)?;
         character.level = base_avatar.level;
         character.ascension = base_avatar.ascension;
 
-        self.unresolved_multipath_characters.remove(&character_id);
+        self.data.unresolved_multipath_characters.remove(&character_id);
 
         Some(character.clone())
     }
@@ -163,16 +163,16 @@ impl OptimizerExporter {
         }
 
         if let Some(basic_info) = sync.basic_info.into_option() {
-            self.gacha.oneric_shards = basic_info.oneric_shard_count;
-            self.gacha.stellar_jade = basic_info.stellar_jade_count;
+            self.data.gacha.oneric_shards = basic_info.oneric_shard_count;
+            self.data.gacha.stellar_jade = basic_info.stellar_jade_count;
 
-            events.push(OptimizerEvent::UpdateGachaFunds(self.gacha));
+            events.push(OptimizerEvent::UpdateGachaFunds(self.data.gacha));
         }
 
         if !sync.del_relic_list.is_empty() {
             info!(num = sync.del_relic_list.len(), "found deleted relics");
             for del_relic in sync.del_relic_list.iter() {
-                if self.relics.remove(del_relic).is_none() {
+                if self.data.relics.remove(del_relic).is_none() {
                     warn!(uid = &del_relic, "del_relic not found");
                 }
             }
@@ -183,7 +183,7 @@ impl OptimizerExporter {
         if !sync.del_equipment_list.is_empty() {
             info!(num = sync.del_equipment_list.len(), "found deleted light cones");
             for del_light_cone in sync.del_equipment_list.iter() {
-                if self.light_cones.remove(del_light_cone).is_none() {
+                if self.data.light_cones.remove(del_light_cone).is_none() {
                     warn!(uid = &del_light_cone, "del_light_cone not found");
                 }
             }
@@ -216,7 +216,7 @@ impl OptimizerExporter {
     }
 
     pub(super) fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> Option<OptimizerEvent> {
-        let Some(character) = self.characters.get_mut(&set_avatar_enhanced.growth_avatar_id) else {
+        let Some(character) = self.data.characters.get_mut(&set_avatar_enhanced.growth_avatar_id) else {
             warn!(
                 uid = &set_avatar_enhanced.growth_avatar_id,
                 "character not found when setting enhanced id, skipping"
@@ -257,7 +257,7 @@ impl OptimizerExporter {
                 _ => BannerType::Character,
             };
 
-            self.banners.insert(banner.gacha_id, BannerInfo {
+            self.data.banners.insert(banner.gacha_id, BannerInfo {
                 rate_up_item_list: banner.item_detail_list,
                 banner_type,
             });
@@ -265,7 +265,7 @@ impl OptimizerExporter {
     }
 
     pub(super) fn handle_gacha(&mut self, gacha: DoGachaScRsp) -> Option<OptimizerEvent> {
-        let Some(banner) = self.banners.get(&gacha.gacha_id) else {
+        let Some(banner) = self.data.banners.get(&gacha.gacha_id) else {
             warn!(gacha_id = &gacha.gacha_id, "gacha info not found");
             return None;
         };
@@ -314,7 +314,7 @@ impl OptimizerExporter {
         let ids = data.relic_id_list.clone();
         ids.into_iter()
             .map(|id| {
-                self.recon_relics.push(id);
+                self.data.recon_relics.push(id);
                 OptimizerEvent::RelicBox(RelicBoxEvent::Add { relic_id: id })
             })
             .collect()
@@ -328,7 +328,7 @@ impl OptimizerExporter {
             };
             Some(OptimizerEvent::RelicBox(RelicBoxEvent::Open { relic }))
         } else {
-            self.recon_relics.push(relic_box.relic_id);
+            self.data.recon_relics.push(relic_box.relic_id);
             Some(OptimizerEvent::RelicBox(RelicBoxEvent::Add {
                 relic_id: relic_box.relic_id,
             }))
