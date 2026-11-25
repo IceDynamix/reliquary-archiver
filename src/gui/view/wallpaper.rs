@@ -38,11 +38,13 @@ pub struct Wallpaper<'a> {
 }
 
 impl Wallpaper<'_> {
-    /// The image and its fill over the whole of a window-sized element
+    /// The image and its fill over the whole of a window-sized element. It lands where it goes at
+    /// once: springing from one fit to the next, or from the window's first guessed size to its
+    /// real one, slides and stretches the image and its fill apart
     pub fn build(self) -> El {
         let [x, y, w, h] = self.rect;
         let [ww, wh] = self.window;
-        let mut layer = el().w(ww).h(wh).clip_rounded(0.0);
+        let mut layer = el().w(ww).h(wh).clip_rounded(0.0).motion(rune::Spring::NONE);
         // Nothing to fill when the image reaches every edge
         let covers = x <= 0.5 && y <= 0.5 && x + w >= ww - 0.5 && y + h >= wh - 0.5;
         if !covers {
