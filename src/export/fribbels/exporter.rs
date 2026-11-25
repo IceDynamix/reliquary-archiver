@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::ops::{Deref, DerefMut};
 
 use reliquary::network::command::{GameCommand, command_id};
 #[cfg(feature = "stream")]
@@ -12,10 +13,38 @@ use crate::export::fribbels::models::*;
 pub struct OptimizerExporter {
     pub(super) database: &'static Database,
     /// Everything captured, which is also what's kept between runs
-    pub(super) data: ExporterData,
+    pub(super) data: Tracked<ExporterData>,
 
     #[cfg(feature = "stream")]
     pub(super) event_channel: broadcast::Sender<OptimizerEvent>,
+}
+
+/// A value that counts the times it was borrowed to be written to, see
+/// [`OptimizerExporter::generation`]. Reading through it leaves the count alone.
+pub(super) struct Tracked<T> {
+    value: T,
+    generation: u64,
+}
+
+impl<T> Tracked<T> {
+    fn new(value: T) -> Self {
+        Self { value, generation: 0 }
+    }
+}
+
+impl<T> Deref for Tracked<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.value
+    }
+}
+
+impl<T> DerefMut for Tracked<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.generation += 1;
+        &mut self.value
+    }
 }
 
 impl Default for OptimizerExporter {
@@ -28,7 +57,7 @@ impl OptimizerExporter {
     pub fn new() -> OptimizerExporter {
         OptimizerExporter {
             database: get_database(),
-            data: ExporterData::default(),
+            data: Tracked::new(ExporterData::default()),
 
             #[cfg(feature = "stream")]
             event_channel: broadcast::channel(16).0,
@@ -39,7 +68,7 @@ impl OptimizerExporter {
     pub fn state(&self) -> ExporterState {
         ExporterState {
             version: ExporterState::VERSION,
-            data: self.data.clone(),
+            data: (*self.data).clone(),
         }
     }
 
@@ -55,7 +84,7 @@ impl OptimizerExporter {
             );
             return false;
         }
-        self.data = state.data;
+        *self.data = state.data;
 
         #[cfg(feature = "stream")]
         if self.data.initialized {
@@ -64,23 +93,12 @@ impl OptimizerExporter {
         true
     }
 
-    /// Whether [`read_command`](Exporter::read_command) does anything with commands of this id,
-    /// so whether its [`state`](Self::state) may have changed. Keep in step with it.
-    pub fn reads(command_id: u16) -> bool {
-        matches!(
-            command_id,
-            command_id::PlayerGetTokenScRsp
-                | command_id::PlayerLoginScRsp
-                | command_id::GetBagScRsp
-                | command_id::GetAvatarDataScRsp
-                | command_id::SetAvatarEnhancedIdScRsp
-                | command_id::GetGachaInfoScRsp
-                | command_id::DoGachaScRsp
-                | command_id::PlayerSyncScNotify
-                | command_id::GetRelicBoxDataScRsp
-                | command_id::OpenRelicBoxScRsp
-                | command_id::ConfirmRelicBoxScRsp
-        )
+    /// Goes up whenever what the exporter captured may have changed, so whatever keeps its
+    /// [`state`](Self::state) can tell whether it needs to again by comparing with the
+    /// generation it last kept. It can go up without anything having changed, never the
+    /// other way round.
+    pub fn generation(&self) -> u64 {
+        self.data.generation
     }
 
     /// The uid of the account, once it is known

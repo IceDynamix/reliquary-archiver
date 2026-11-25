@@ -128,16 +128,18 @@ impl OptimizerExporter {
     /// Fills in the level and ascension of a character, which are stored in its base avatar
     pub(super) fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
         let base_avatar_id = self.get_multipath_base_id(character_id);
-        let Some(character) = self.data.characters.get_mut(&character_id) else {
+        // Borrowed once, so its fields can be borrowed apart
+        let data = &mut *self.data;
+        let Some(character) = data.characters.get_mut(&character_id) else {
             warn!(uid = &character_id, "multipath character not found");
             return None;
         };
 
-        let base_avatar = self.data.multipath_base_avatars.get(&base_avatar_id)?;
+        let base_avatar = data.multipath_base_avatars.get(&base_avatar_id)?;
         character.level = base_avatar.level;
         character.ascension = base_avatar.ascension;
 
-        self.data.unresolved_multipath_characters.remove(&character_id);
+        data.unresolved_multipath_characters.remove(&character_id);
 
         Some(character.clone())
     }

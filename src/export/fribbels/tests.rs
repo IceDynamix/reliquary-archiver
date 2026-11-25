@@ -295,3 +295,28 @@ fn kept_state_of_another_version_is_left_alone() {
     assert!(!exporter.restore(state));
     assert_eq!(exporter.uid(), None);
 }
+
+#[test]
+fn generation_goes_up_with_what_is_captured_but_not_with_reading_it() {
+    let mut exporter = exporter_with_banner(HIMEKO);
+    let start = exporter.generation();
+
+    let _ = (
+        exporter.state(),
+        exporter.export(),
+        exporter.relics().len(),
+        exporter.is_initialized(),
+    );
+    assert_eq!(exporter.generation(), start, "reading leaves it alone");
+
+    exporter.handle_player_sync(PlayerSyncScNotify {
+        relic_list: vec![relic(7, 1)],
+        ..Default::default()
+    });
+    assert!(exporter.generation() > start, "a captured relic counts");
+
+    let mut restored = OptimizerExporter::new();
+    let before = restored.generation();
+    assert!(restored.restore(exporter.state()));
+    assert!(restored.generation() > before, "restoring counts too");
+}

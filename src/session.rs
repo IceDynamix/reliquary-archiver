@@ -49,8 +49,9 @@ struct Resume {
     /// By conversation, until traffic of theirs decodes
     saved: HashMap<u32, SavedSession>,
     keep: Box<dyn Fn(SavedSession) + Send + Sync>,
-    /// Conversations whose exporter changed since they were last kept
-    changed: HashSet<u32>,
+    /// The [generation](OptimizerExporter::generation) each conversation's exporter was last
+    /// kept at
+    kept: HashMap<u32, u64>,
     last_kept: Instant,
 }
 
@@ -143,7 +144,7 @@ impl CaptureSession {
         self.resume = Some(Resume {
             saved,
             keep: Box::new(keep),
-            changed: HashSet::new(),
+            kept: HashMap::new(),
             last_kept: Instant::now(),
         });
     }
@@ -161,21 +162,27 @@ impl CaptureSession {
         events
     }
 
-    /// Hands the sessions that changed to be kept, if it's been long enough
+    /// Hands the sessions whose exporter changed to be kept, if it's been long enough. Whatever
+    /// changed them, a command or anything else, shows in the exporter's generation.
     async fn keep_changed(&mut self) {
         let Some(resume) = self.resume.as_mut() else { return };
-        if resume.changed.is_empty() || resume.last_kept.elapsed() < KEEP_EVERY {
+        if resume.last_kept.elapsed() < KEEP_EVERY {
             return;
         }
         resume.last_kept = Instant::now();
-        for conv_id in std::mem::take(&mut resume.changed) {
-            let (Some(&uid), Some(&seed)) = (self.conv_uids.get(&conv_id), self.seeds.get(&conv_id)) else {
-                continue;
-            };
+        for (&conv_id, &uid) in &self.conv_uids {
+            let Some(&seed) = self.seeds.get(&conv_id) else { continue };
             let Some(exporter) = self.manager.lock().await.get_conv_exporter(conv_id) else {
                 continue;
             };
-            let state = exporter.lock().await.state();
+            let exporter = exporter.lock().await;
+            let generation = exporter.generation();
+            if resume.kept.get(&conv_id) == Some(&generation) {
+                continue;
+            }
+            let state = exporter.state();
+            drop(exporter);
+            resume.kept.insert(conv_id, generation);
             (resume.keep)(SavedSession { conv_id, uid, seed, state });
         }
     }
@@ -193,9 +200,13 @@ impl CaptureSession {
         }
 
         let exporter = self.manager.lock().await.get_or_create_exporter(conv_id);
-        if !exporter.lock().await.restore(saved.state) {
+        let mut restoring = exporter.lock().await;
+        if !restoring.restore(saved.state) {
             return;
         }
+        // What was restored is what's kept already
+        resume.kept.insert(conv_id, restoring.generation());
+        drop(restoring);
         info!(conv_id, uid = saved.uid, "picked up the connection from the last run");
         self.seeds.insert(conv_id, saved.seed);
         self.conv_uids.insert(conv_id, saved.uid);
@@ -348,11 +359,6 @@ impl CaptureSession {
             events.push(SessionEvent::Warp(event));
         }
 
-        if let Some(resume) = self.resume.as_mut()
-            && OptimizerExporter::reads(command.command_id)
-        {
-            resume.changed.insert(conv_id);
-        }
         exporter.lock().await.read_command(command);
     }
 
