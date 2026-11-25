@@ -106,15 +106,16 @@ pub(super) fn wallpaper_for<'a>(s: &Ui, image: &'a rune::Image, window: [f32; 2]
     // The image's own size is one image pixel per device pixel; a vector image without one fills
     let own = image.size().map_or(window, |[w, h]| [w as f32 / scale, h as f32 / scale]);
     let settings = &s.settings;
-    let place = |fit| background::place(fit, own, window, settings.background_anchor, settings.background_target);
+    let place = |fit, zoom| background::place(fit, zoom, own, window, settings.background_anchor, settings.background_target);
     // On whole device pixels, so the image isn't softened by sitting between them
-    let rect = place(settings.image_fit);
+    let rect = place(settings.image_fit, settings.background_zoom);
     let snap = |v: f32| (v * scale).round() / scale;
     let rect = [snap(rect[0]), snap(rect[1]), snap(rect[2]), snap(rect[3])];
     Some(wallpaper::Wallpaper {
         pixels: image.pixels(),
         rect,
-        cover: place(ImageFit::Cover),
+        // The blur behind covers the window however the image is zoomed
+        cover: place(ImageFit::Cover, 1.0),
         window,
         fill: settings.background_fill,
         edges: s.background_edges,

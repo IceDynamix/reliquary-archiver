@@ -211,28 +211,34 @@ fn srgb_to_linear(c: f64) -> f64 {
     if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
+/// How far the background image zooms from its fit, smallest and largest
+/// ([`super::settings::Settings::background_zoom`])
+pub const ZOOM: [f32; 2] = [0.5, 4.0];
+
 /// Where the background image goes in a window `window` points large: `[x, y, w, h]` in points.
-/// `image` is its own size in points, which `fit` scales. Then in each direction the image's
-/// `anchor` point (0 to 1 across and down it) goes to the window's `target` point, as near as the
-/// image allows: one larger than the window never pulls away from its edges, one smaller never
-/// slides out of it. Without a target, the anchor goes to the same place in the window as it is in
-/// the image, as CSS's `object-position` puts it
-pub fn place(fit: ImageFit, image: [f32; 2], window: [f32; 2], anchor: [f32; 2], target: Option<[f32; 2]>) -> [f32; 4] {
+/// `image` is its own size in points, which `fit` scales, and then `zoom` (1 for as it fits). Then
+/// in each direction the image's `anchor` point (0 to 1 across and down it) goes to the window's
+/// `target` point, as near as the image allows: one larger than the window never pulls away from
+/// its edges, one smaller never slides out of it. Without a target, the anchor goes to the same
+/// place in the window as it is in the image, as CSS's `object-position` puts it
+pub fn place(fit: ImageFit, zoom: f32, image: [f32; 2], window: [f32; 2], anchor: [f32; 2], target: Option<[f32; 2]>) -> [f32; 4] {
     let [iw, ih] = image;
     let [ww, wh] = window;
-    if iw <= 0.0 || ih <= 0.0 || fit == ImageFit::Fill {
+    if iw <= 0.0 || ih <= 0.0 {
         return [0.0, 0.0, ww, wh];
     }
     let scaled = |k: f32| [iw * k, ih * k];
     let contain = scaled((ww / iw).min(wh / ih));
-    let size = match fit {
-        ImageFit::Fill => [ww, wh],
+    let fitted = match fit {
+        ImageFit::Fill => window,
         ImageFit::Contain => contain,
         ImageFit::Cover => scaled((ww / iw).max(wh / ih)),
         ImageFit::None => image,
         ImageFit::ScaleDown if iw > ww || ih > wh => contain,
         ImageFit::ScaleDown => image,
     };
+    let zoom = zoom.clamp(ZOOM[0], ZOOM[1]);
+    let size = fitted.map(|side| side * zoom);
     let target = target.unwrap_or(anchor);
     let at = |n: usize| {
         let slack = window[n] - size[n];
@@ -304,14 +310,14 @@ mod tests {
     #[test]
     fn centered_it_sits_where_it_always_has() {
         // A wide image covering the window is cut evenly left and right
-        assert_eq!(place(ImageFit::Cover, [1600.0, 600.0], WINDOW, CENTER, Some(CENTER)), [
+        assert_eq!(place(ImageFit::Cover, 1.0, [1600.0, 600.0], WINDOW, CENTER, Some(CENTER)), [
             -400.0, 0.0, 1600.0, 600.0
         ]);
         // Contained, it's centered top to bottom
-        assert_eq!(place(ImageFit::Contain, [1600.0, 600.0], WINDOW, CENTER, Some(CENTER)), [
+        assert_eq!(place(ImageFit::Contain, 1.0, [1600.0, 600.0], WINDOW, CENTER, Some(CENTER)), [
             0.0, 150.0, 800.0, 300.0
         ]);
-        assert_eq!(place(ImageFit::Fill, [1600.0, 600.0], WINDOW, [0.0, 0.0], None), [
+        assert_eq!(place(ImageFit::Fill, 1.0, [1600.0, 600.0], WINDOW, [0.0, 0.0], None), [
             0.0, 0.0, 800.0, 600.0
         ]);
     }
@@ -319,33 +325,53 @@ mod tests {
     #[test]
     fn the_anchor_goes_to_the_target_as_near_as_the_image_allows() {
         // The image's point at 60% (960) at the window's left third (266.7)
-        let [x, ..] = place(ImageFit::Cover, [1600.0, 600.0], WINDOW, [0.6, 0.5], Some([1.0 / 3.0, 0.5]));
+        let [x, ..] = place(ImageFit::Cover, 1.0, [1600.0, 600.0], WINDOW, [0.6, 0.5], Some([1.0 / 3.0, 0.5]));
         assert!((x - (800.0 / 3.0 - 960.0)).abs() < 0.01);
         // At the window's left edge it would pull the image's right edge in: it stops there
-        let [x, ..] = place(ImageFit::Cover, [1600.0, 600.0], WINDOW, [0.9, 0.5], Some([0.0, 0.5]));
+        let [x, ..] = place(ImageFit::Cover, 1.0, [1600.0, 600.0], WINDOW, [0.9, 0.5], Some([0.0, 0.5]));
         assert_eq!(x, -800.0);
         // A smaller image doesn't slide out of the window
-        let [_, y, ..] = place(ImageFit::Contain, [1600.0, 600.0], WINDOW, [0.5, 0.0], Some([0.5, 1.0]));
+        let [_, y, ..] = place(ImageFit::Contain, 1.0, [1600.0, 600.0], WINDOW, [0.5, 0.0], Some([0.5, 1.0]));
         assert_eq!(y, 300.0);
     }
 
     #[test]
     fn without_a_target_the_anchor_lines_up_as_css_does() {
         // object-position 25% 100%: the image's quarter at the window's quarter, bottoms together
-        assert_eq!(place(ImageFit::Cover, [1600.0, 600.0], WINDOW, [0.25, 1.0], None), [
+        assert_eq!(place(ImageFit::Cover, 1.0, [1600.0, 600.0], WINDOW, [0.25, 1.0], None), [
             -200.0, 0.0, 1600.0, 600.0
         ]);
-        assert_eq!(place(ImageFit::None, [200.0, 100.0], WINDOW, [1.0, 1.0], None), [
+        assert_eq!(place(ImageFit::None, 1.0, [200.0, 100.0], WINDOW, [1.0, 1.0], None), [
             600.0, 500.0, 200.0, 100.0
         ]);
     }
 
     #[test]
+    fn zoom_grows_the_fit_about_the_anchor() {
+        // Covering, twice as large: the centers stay together
+        assert_eq!(place(ImageFit::Cover, 2.0, [1600.0, 600.0], WINDOW, CENTER, Some(CENTER)), [
+            -1200.0, -300.0, 3200.0, 1200.0
+        ]);
+        // Zoomed in on the top left corner, it stays in the window's top left
+        assert_eq!(place(ImageFit::Fill, 2.0, [1600.0, 600.0], WINDOW, [0.0, 0.0], None), [
+            0.0, 0.0, 1600.0, 1200.0
+        ]);
+        // Zoomed out, the fit shrinks and the anchor goes where it would
+        assert_eq!(place(ImageFit::Contain, 0.5, [1600.0, 600.0], WINDOW, CENTER, Some(CENTER)), [
+            200.0, 225.0, 400.0, 150.0
+        ]);
+        // Past the range, it stops at its ends
+        assert_eq!(place(ImageFit::Fill, 100.0, [1.0, 1.0], WINDOW, CENTER, None)[2..], [
+            3200.0, 2400.0
+        ]);
+    }
+
+    #[test]
     fn scale_down_shrinks_only_what_is_too_big() {
-        assert_eq!(place(ImageFit::ScaleDown, [200.0, 100.0], WINDOW, CENTER, None)[2..], [
+        assert_eq!(place(ImageFit::ScaleDown, 1.0, [200.0, 100.0], WINDOW, CENTER, None)[2..], [
             200.0, 100.0
         ]);
-        assert_eq!(place(ImageFit::ScaleDown, [1600.0, 600.0], WINDOW, CENTER, None)[2..], [
+        assert_eq!(place(ImageFit::ScaleDown, 1.0, [1600.0, 600.0], WINDOW, CENTER, None)[2..], [
             800.0, 300.0
         ]);
     }

@@ -1184,6 +1184,15 @@ impl Ui {
         }
     }
 
+    pub fn set_background_zoom(&mut self, zoom: f32) {
+        // Whole percents in its range, so dragging doesn't save a new file for every pixel moved
+        let [least, most] = crate::gui::background::ZOOM;
+        let zoom = (zoom.clamp(least, most) * 100.0).round() / 100.0;
+        if zoom != self.settings.background_zoom {
+            self.settings_mut(|s| s.background_zoom = zoom);
+        }
+    }
+
     pub fn set_background_opacity(&mut self, opacity: f32) {
         // Whole percents, so dragging doesn't save a new file for every pixel moved
         let opacity = (opacity.clamp(0.0, 1.0) * 100.0).round() / 100.0;

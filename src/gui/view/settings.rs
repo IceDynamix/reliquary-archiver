@@ -325,6 +325,7 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
     let labels = FITS.map(|(_, label)| label);
     let fit = FITS.iter().position(|(fit, _)| *fit == s.settings.image_fit);
     let opacity = s.settings.background_opacity;
+    let zoom = s.settings.background_zoom;
     section
         .child(
             row()
@@ -340,22 +341,62 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
                         .key("background-fit"),
                 ),
         )
+        .child(slider_row(
+            "zoom",
+            "Zoom",
+            zoom_along(zoom),
+            percent(zoom),
+            |s, along| s.set_background_zoom(zoom_at(along)),
+            // A step is a tenth of the image's fit
+            |s, delta| s.set_background_zoom(s.settings.background_zoom + delta * 0.1),
+            t,
+        ))
         .children(placement(s, cx, t))
         .children(fill_picker(s, t))
-        .child(
-            row()
-                .gap(12.0)
-                .center_y()
-                .child(text("Opacity").font(theme::BODY).color(t.text).w(64.0))
-                .child(slider(opacity, t).grow(1.0))
-                .child(
-                    text(format!("{}%", (opacity * 100.0).round()))
-                        .key("opacity-value")
-                        .font(theme::LABEL)
-                        .color(t.muted)
-                        .w(36.0),
-                ),
-        )
+        .child(slider_row(
+            "opacity",
+            "Opacity",
+            opacity,
+            percent(opacity),
+            |s, along| s.set_background_opacity(along),
+            |s, delta| s.set_background_opacity(s.settings.background_opacity + delta * 0.05),
+            t,
+        ))
+}
+
+/// A setting's name, its [`slider`], and its value
+fn slider_row(
+    key: &str,
+    name: &str,
+    along: f32,
+    value: String,
+    set: impl Fn(&mut Ui, f32) + 'static,
+    step: impl Fn(&mut Ui, f32) + 'static,
+    t: &Theme,
+) -> El {
+    row()
+        .gap(12.0)
+        .center_y()
+        .child(text(name).font(theme::BODY).color(t.text).w(64.0))
+        .child(slider(key, &format!("Background {}", name.to_lowercase()), along, set, step, t).grow(1.0))
+        .child(text(value).key(format!("{key}-value")).font(theme::LABEL).color(t.muted).w(44.0))
+}
+
+fn percent(share: f32) -> String {
+    format!("{}%", (share * 100.0).round())
+}
+
+/// How far along the zoom slider `zoom` is. It's even in doublings, so 50% to 100% takes as
+/// much of it as 100% to 200%
+fn zoom_along(zoom: f32) -> f32 {
+    let [least, most] = crate::gui::background::ZOOM.map(f32::log2);
+    ((zoom.max(f32::MIN_POSITIVE).log2() - least) / (most - least)).clamp(0.0, 1.0)
+}
+
+/// The zoom at `along` of the way along its slider
+fn zoom_at(along: f32) -> f32 {
+    let [least, most] = crate::gui::background::ZOOM.map(f32::log2);
+    (least + along * (most - least)).exp2()
 }
 
 /// The image chosen, as a thumbnail with its name and size, and the buttons to change it
@@ -542,9 +583,10 @@ fn placement(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
                 .child(caption("Image", percent(anchor), picture_size[0], false))
                 .child(caption("Window", goes, frame[0].max(120.0), true)),
         );
-    if s.settings.image_fit == ImageFit::Fill {
+    // Stretched to the window and not zoomed, it's the same wherever it's placed
+    if s.settings.image_fit == ImageFit::Fill && s.settings.background_zoom == 1.0 {
         block = block.opacity(0.45).child(note(
-            "Stretched to the window, the whole image shows wherever it's placed.",
+            "Stretched to the window, the whole image shows wherever it's placed. Zoom in or out to place it.",
             false,
             t,
         ));
@@ -625,7 +667,8 @@ fn fill_picker(s: &Ui, t: &Theme) -> Option<El> {
     const TILE_H: f32 = 58.0;
     let image = s.background_image()?;
     let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
-    let covers = matches!(s.settings.image_fit, ImageFit::Cover | ImageFit::Fill);
+    // Zoomed out, even a covering fit leaves room around the image
+    let covers = matches!(s.settings.image_fit, ImageFit::Cover | ImageFit::Fill) && s.settings.background_zoom >= 1.0;
     let tile_w = (ROOM - GAP * (PER_ROW - 1) as f32) / PER_ROW as f32;
     // In each tile the image small in the middle, so there's room around it to fill
     let inner = (tile_w * 0.56 / iw).min(TILE_H * 0.56 / ih);
@@ -694,7 +737,7 @@ fn fill_picker(s: &Ui, t: &Theme) -> Option<El> {
                 .child(note(
                     if covers {
                         "The image covers the window at this fit, so there's nothing around it. Fit, Shrink and Original \
-                         leave room."
+                         leave room, as does zooming out."
                     } else {
                         "What fills the window where the image doesn't reach."
                     },
@@ -720,18 +763,26 @@ fn fill_picker(s: &Ui, t: &Theme) -> Option<El> {
     Some(block)
 }
 
-/// A horizontal slider over 0 to 1, dragged with the pointer or stepped with the arrow keys
-fn slider(value: f32, t: &Theme) -> El {
+/// A horizontal slider, its knob `value` of the way along (0 to 1), dragged with the pointer, which
+/// hands `set` where it is along it, or stepped with the arrow keys, which hand `step` the step
+fn slider(
+    key: &str,
+    label: &str,
+    value: f32,
+    set: impl Fn(&mut Ui, f32) + 'static,
+    step: impl Fn(&mut Ui, f32) + 'static,
+    t: &Theme,
+) -> El {
     const KNOB: f32 = 14.0;
-    let set = |s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
+    let set = move |s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
         let usable = (drag.w - KNOB).max(1.0);
-        s.set_background_opacity((drag.x - KNOB / 2.0) / usable);
+        set(s, ((drag.x - KNOB / 2.0) / usable).clamp(0.0, 1.0));
     };
     let track = |fill| el().h(4.0).radius(2.0).fill(fill);
     row()
-        .key("opacity-slider")
+        .key(format!("{key}-slider"))
         .role("slider")
-        .label("Background opacity")
+        .label(label)
         .range_value(f64::from(value), 0.0, 1.0)
         .focusable(true)
         .h(24.0)
@@ -743,10 +794,10 @@ fn slider(value: f32, t: &Theme) -> El {
         .center_y()
         .cursor(rune::Cursor::Pointer)
         .on_drag(set)
-        .on_step(move |s: &mut Ui, delta, _| s.set_background_opacity(s.settings.background_opacity + delta as f32 * 0.05))
+        .on_step(move |s: &mut Ui, delta, _| step(s, delta as f32))
         .child(track(t.accent).w_frac(value))
         .child(
-            el().key("opacity-knob")
+            el().key(format!("{key}-knob"))
                 .size(KNOB, KNOB)
                 .radius(KNOB / 2.0)
                 .fill(t.primary)

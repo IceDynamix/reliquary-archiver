@@ -180,6 +180,9 @@ pub struct Settings {
     /// Path to an image drawn behind the window's content, empty for none
     pub background_image: String,
     pub image_fit: ImageFit,
+    /// How much larger or smaller than its fit the background image is drawn, 1 for as it fits
+    /// (see [`super::background::ZOOM`]). It grows and shrinks about its anchor
+    pub background_zoom: f32,
     /// How strongly the background image shows, from 0 to 1
     pub background_opacity: f32,
     /// The point of the background image that matters, from 0 to 1 across and down it
@@ -217,6 +220,7 @@ impl Default for Settings {
         Self {
             background_image: String::new(),
             image_fit: ImageFit::default(),
+            background_zoom: 1.0,
             background_opacity: 0.12,
             background_anchor: [0.5, 0.5],
             background_target: Some([0.5, 0.5]),

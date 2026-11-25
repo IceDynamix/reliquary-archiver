@@ -143,6 +143,17 @@ pub const SCENES: &[Scene] = &[
         s.settings.background_target = Some([0.5, 0.2]);
         s.panel = Some(Panel::Settings);
     }),
+    // The background covering the window, zoomed in on a point to the right of its middle
+    ("background-zoom", |s| {
+        running(s, 1);
+        logged_in(s, UID, Some(INVENTORY));
+        background(s, 0.6);
+        s.settings.image_fit = super::settings::ImageFit::Cover;
+        s.settings.background_zoom = 1.6;
+        s.settings.background_anchor = [0.7, 0.4];
+        s.settings.background_target = None;
+        s.panel = Some(Panel::Settings);
+    }),
     // The color around the background picked in the settings
     ("background-color", |s| {
         running(s, 1);
