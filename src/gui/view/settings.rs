@@ -1,43 +1,86 @@
 //! The settings sheet. Every change applies and saves at once, except the port, which is only
 //! saved once the server could open it.
 
-use rune::{Color, Cx, Drag, El, ScrollSpec, Tx, col, el, icon, row, text};
+use rune::{Color, Cx, Drag, El, ScrollSpec, Tx, col, el, row, text};
 use rune_kit::{ControlSize, SegmentedControl, Switch, TextInput};
 
 use super::parts::{Pill, Sheet, TileLook, kicker, pill, sheet, tile};
-use crate::gui::icons;
 use crate::gui::settings::{Accent, Anchor, BackgroundFill, ImageFit, ThemeMode};
-use crate::gui::state::{Panel, Ui, Update};
+use crate::gui::state::{Grab, Panel, Ui, Update};
 use crate::gui::theme::{self, Theme};
 
 pub fn dialog(s: &Ui, cx: &Cx<Ui>, t: &Theme, layer: &mut Vec<El>) {
     if s.panel != Some(Panel::Settings) {
         return;
     }
-    let mut body = col()
-        .key("settings-body")
-        .w_full()
-        // As tall as the window leaves room for under the sheet's title
-        .max_h(cx.layout_size("page").map_or(440.0, |[_, h]| (h - 170.0).clamp(320.0, 720.0)))
-        .min_h(0.0)
-        .pt(16.0)
-        .child(appearance(s, t))
-        .child(background(s, cx, t))
-        .child(live_sync(s, t))
-        .child(window(s, t));
+    let page = cx.layout_size("page").unwrap_or([460.0, 700.0]);
+    // As tall as the window leaves room for under the sheet's title
+    let tall = (page[1] - 170.0).clamp(320.0, 900.0);
+    let scrolling = |body: El| {
+        body.min_h(0.0)
+            .max_h(tall)
+            .pt(16.0)
+            .scroll(ScrollSpec { stick_bottom: false })
+            .scroll_edge_fade(12.0)
+    };
+    let mut rest = vec![appearance(s, t), live_sync(s, t), window(s, t)];
     if s.updates_supported {
-        body = body.child(updates(s, t));
+        rest.push(updates(s, t));
     }
-    let body = body.scroll(ScrollSpec { stick_bottom: false }).scroll_edge_fade(12.0);
+
+    // A wide window has the background on the right, with room for its preview, and the rest on
+    // the left; a narrow one has them all in one column, the background after the appearance
+    let (width, body) = if page[0] >= WIDE {
+        let width = (page[0] - 36.0).min(1040.0);
+        let room = width - LEFT - 1.0 - 44.0;
+        let left = scrolling(col().key("settings-general").w(LEFT).children(rest));
+        let right = scrolling(
+            col()
+                .key("settings-background")
+                .grow(1.0)
+                .min_w(0.0)
+                .child(background(s, cx, room, t)),
+        );
+        let divider = el().w(1.0).fill(t.line);
+        (
+            width,
+            row()
+                .key("settings-body")
+                .w_full()
+                .items_stretch()
+                .child(left)
+                .child(divider)
+                .child(right),
+        )
+    } else {
+        let mut rest = rest.into_iter();
+        let body = col()
+            .key("settings-body")
+            .w_full()
+            .children(rest.next())
+            .child(background(s, cx, NARROW - 44.0, t))
+            .children(rest);
+        (NARROW, scrolling(body))
+    };
     let spec = Sheet {
         key: "settings",
         kicker: "Archiver",
         title: "Settings",
-        width: 420.0,
-        close: |s| s.panel = None,
+        width,
+        close: |s| {
+            s.panel = None;
+            s.background_trial = None;
+        },
     };
     sheet(spec, body, cx, t, layer);
 }
+
+/// The narrowest window the sheet has the background beside the other settings in
+const WIDE: f32 = 900.0;
+/// The sheet's width in a narrower window
+const NARROW: f32 = 420.0;
+/// The width of the other settings beside the background
+const LEFT: f32 = 400.0;
 
 fn section(key: &'static str, title: &'static str, t: &Theme) -> El {
     col().key(key).w_full().px(22.0).pb(22.0).gap(12.0).child(kicker(title, t.accent))
@@ -300,7 +343,7 @@ fn anchor_picker(current: Anchor, t: &Theme) -> El {
         .children(rows)
 }
 
-fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
+fn background(s: &Ui, cx: &Cx<Ui>, room: f32, t: &Theme) -> El {
     let path = &s.settings.background_image;
     let chosen = !path.is_empty();
     let mut section = section("background-settings", "Background", t).child(image_row(s, t));
@@ -326,7 +369,37 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
     let fit = FITS.iter().position(|(fit, _)| *fit == s.settings.image_fit);
     let opacity = s.settings.background_opacity;
     let zoom = s.settings.background_zoom;
+    let zoom = slider_row(
+        "zoom",
+        "Zoom",
+        zoom_along(zoom),
+        percent(zoom),
+        |s, along| s.set_background_zoom(zoom_at(along)),
+        // A step is a tenth of the image's fit
+        |s, delta| s.set_background_zoom(s.settings.background_zoom + delta * 0.1),
+        t,
+    );
+    let opacity = slider_row(
+        "opacity",
+        "Opacity",
+        opacity,
+        percent(opacity),
+        |s, along| s.set_background_opacity(along),
+        |s, delta| s.set_background_opacity(s.settings.background_opacity + delta * 0.05),
+        t,
+    );
+    // Side by side when there's room for both
+    let sliders = if room >= 520.0 {
+        row()
+            .w_full()
+            .gap(28.0)
+            .child(zoom.grow(1.0).min_w(0.0))
+            .child(opacity.grow(1.0).min_w(0.0))
+    } else {
+        col().w_full().gap(12.0).child(zoom).child(opacity)
+    };
     section
+        .children(placement(s, cx, room, t))
         .child(
             row()
                 .gap(12.0)
@@ -341,27 +414,8 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
                         .key("background-fit"),
                 ),
         )
-        .child(slider_row(
-            "zoom",
-            "Zoom",
-            zoom_along(zoom),
-            percent(zoom),
-            |s, along| s.set_background_zoom(zoom_at(along)),
-            // A step is a tenth of the image's fit
-            |s, delta| s.set_background_zoom(s.settings.background_zoom + delta * 0.1),
-            t,
-        ))
-        .child(slider_row(
-            "opacity",
-            "Opacity",
-            opacity,
-            percent(opacity),
-            |s, along| s.set_background_opacity(along),
-            |s, delta| s.set_background_opacity(s.settings.background_opacity + delta * 0.05),
-            t,
-        ))
-        .children(placement(s, cx, t))
-        .children(fill_picker(s, t))
+        .child(sliders)
+        .children(fill_picker(s, room, t))
 }
 
 /// A setting's name, its [`slider`], and its value
@@ -452,140 +506,413 @@ fn image_row(s: &Ui, t: &Theme) -> El {
     ))
 }
 
-/// The room the background controls have across the settings sheet
-const ROOM: f32 = 376.0;
-/// The tallest the placement pickers stand
-const PICKER_HEIGHT: f32 = 118.0;
-/// How far an arrow key moves a point
+/// How far an arrow key moves the image, as a share of the window
 const POINT_STEP: f32 = 0.05;
+/// How much of the image the preview shows past the window's edges, as a share of the window's
+/// longer side
+const MARGIN: f32 = 0.15;
+/// The shortest and tallest the preview stands
+const STAGE_HEIGHT: [f32; 2] = [200.0, 300.0];
+/// How near a press has to be to the pin or the frame's corner to take it, in points
+const REACH: f32 = 14.0;
 
-/// Where the image sits: the point of it that matters, picked on the image, and where in the
-/// window that point goes, picked on a small window showing the result, fill and all. Between
-/// them a link: linked, the point goes to the same place in the window as it is in the image
-fn placement(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
-    const LINK: f32 = 30.0;
-    const GAP: f32 = 10.0;
-    let image = s.background_image()?;
-    let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
-    let window = cx.layout_size("page").unwrap_or([460.0, 700.0]);
-    let anchor = s.settings.background_anchor;
-    let linked = s.settings.background_target.is_none();
-    let target = s.settings.background_target.unwrap_or(anchor);
+/// The preview of where the image sits: the window drawn small, with the image placed in it and
+/// what fills around it, and the rest of the image dim past its edges
+#[derive(Clone, Copy)]
+struct Stage {
+    size: [f32; 2],
+    /// Preview points to a window point
+    k: f32,
+    /// The window's own size
+    real: [f32; 2],
+    /// The image's own size, in points
+    own: [f32; 2],
+}
 
-    // Both as tall as fits across the sheet with the link between them
-    let (image_aspect, window_aspect) = (iw / ih, window[0] / window[1]);
-    let height = PICKER_HEIGHT.min((ROOM - LINK - 2.0 * GAP) / (image_aspect + window_aspect));
-    let picture_size = [height * image_aspect, height];
-    let frame = [height * window_aspect, height];
-
-    let picture = point_picker(
-        "background-anchor",
-        "The part of the image that matters",
-        picture_size,
-        anchor,
-        false,
-        t,
-        |s: &mut Ui, at| s.set_background_anchor(at),
-        |s: &Ui| s.settings.background_anchor,
-        el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).inert().pixels(image.pixels()),
-    );
-
-    let k = height / window[1];
-    let mut shown = el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).inert().fill(t.bg);
-    if let Some(mut wallpaper) = super::wallpaper_for(s, image, window, cx.env().scale) {
-        let scaled = |r: [f32; 4]| r.map(|v| v * k);
-        wallpaper.rect = scaled(wallpaper.rect);
-        wallpaper.cover = scaled(wallpaper.cover);
-        wallpaper.window = frame;
-        wallpaper.scale = k;
-        wallpaper.reach = k;
-        shown = shown.child(wallpaper.build());
+impl Stage {
+    fn new(room: f32, real: [f32; 2], own: [f32; 2]) -> Self {
+        let margin = real[0].max(real[1]) * MARGIN;
+        let span = real.map(|v| v + 2.0 * margin);
+        let height = (room * span[1] / span[0]).clamp(STAGE_HEIGHT[0], STAGE_HEIGHT[1]);
+        let k = (room / span[0]).min(height / span[1]);
+        Stage {
+            size: [room, height],
+            k,
+            real,
+            own,
+        }
     }
-    let preview = point_picker(
-        "background-target",
-        "Where in the window it goes",
-        frame,
-        target,
-        linked,
-        t,
-        |s: &mut Ui, at| s.set_background_target(Some(at)),
-        |s: &Ui| s.settings.background_target.unwrap_or(s.settings.background_anchor),
-        shown,
-    );
 
-    let link = el()
-        .key("background-link")
-        .size(LINK, LINK)
-        .radius(LINK / 2.0)
-        .center()
-        .role("switch")
-        .label("Put it in the same place in the window as in the image")
-        .help(if linked {
-            "Linked: the point goes to the same place in the window as in the image"
+    /// The window the preview shows: the one tried, else the window's own
+    fn window(&self, s: &Ui) -> [f32; 2] {
+        s.background_trial.unwrap_or(self.real)
+    }
+
+    /// Where the image goes in that window, `[x, y, w, h]` in its points
+    fn rect(&self, s: &Ui) -> [f32; 4] {
+        let settings = &s.settings;
+        crate::gui::background::place(
+            settings.image_fit,
+            settings.background_zoom,
+            self.own,
+            self.window(s),
+            settings.background_anchor,
+            settings.background_target,
+        )
+    }
+
+    /// Where the pin is, 0 to 1 across and down the window
+    fn pin(&self, s: &Ui) -> [f32; 2] {
+        s.settings.background_target.unwrap_or(s.settings.background_anchor)
+    }
+
+    /// Where a window `window` large has its top-left drawn: in the middle of the preview, so a
+    /// size tried grows and shrinks about it
+    fn origin(&self, window: [f32; 2]) -> [f32; 2] {
+        [0, 1].map(|n| (self.size[n] - window[n] * self.k) / 2.0)
+    }
+
+    /// A point on the preview, in the points of a window `window` large
+    fn in_window(&self, window: [f32; 2], at: [f32; 2]) -> [f32; 2] {
+        let origin = self.origin(window);
+        [0, 1].map(|n| (at[n] - origin[n]) / self.k)
+    }
+
+    /// A point in a window `window` large, on the preview
+    fn on_stage(&self, window: [f32; 2], at: [f32; 2]) -> [f32; 2] {
+        let origin = self.origin(window);
+        [0, 1].map(|n| origin[n] + at[n] * self.k)
+    }
+
+    /// What a press at `at` on the preview takes: the pin, the frame's corner, else the image
+    fn grab_at(&self, s: &Ui, at: [f32; 2]) -> Grab {
+        let window = self.window(s);
+        let near = |p: [f32; 2]| {
+            let p = self.on_stage(window, p);
+            (p[0] - at[0]).hypot(p[1] - at[1]) <= REACH
+        };
+        let pin = self.pin(s);
+        let [x, y, ..] = self.rect(s);
+        if near([pin[0] * window[0], pin[1] * window[1]]) {
+            Grab::Pin { from: [x, y], out: None }
+        } else if near(window) {
+            Grab::Resize
         } else {
-            "Link: put the point in the same place in the window as in the image"
-        })
-        .checked(linked)
-        .focusable(true)
-        .cursor(rune::Cursor::Pointer)
-        .fill(if linked { t.accent.alpha(0.2) } else { t.well })
-        .border(1.0, if linked { t.accent } else { t.line })
-        .hover(t.accent.alpha(0.14))
-        .on_press(|s: &mut Ui| {
-            let next = match s.settings.background_target {
-                Some(_) => None,
-                None => Some(s.settings.background_anchor),
-            };
-            s.set_background_target(next)
-        })
-        .child(icon(&icons::LINK, 15.0).color(if linked { t.accent } else { t.muted }));
+            Grab::Pan([x, y])
+        }
+    }
 
-    // The window's caption lines up with the window's right edge, as the image's does with its left
-    let caption = |kicker_text: &'static str, words: String, width: f32, end: bool| {
-        let caption = col().w(width).gap(1.0);
-        let caption = if end { caption.items_end() } else { caption };
-        caption
-            .child(kicker(kicker_text, t.muted))
-            .child(text(words).font(theme::SMALL).color(t.faint).truncate())
-    };
-    let percent = |[x, y]: [f32; 2]| format!("{}% across, {}% down", (x * 100.0).round(), (y * 100.0).round());
-    let goes = if linked {
-        "Same place as in the image".to_string()
-    } else {
-        percent(target)
-    };
+    /// Puts the image `to` from the window's top-left, as near as it goes. With the pin where its
+    /// point is in the image, the point moves; with a pin of its own, the pin moves with the image
+    fn pan(&self, s: &mut Ui, to: [f32; 2]) {
+        let window = self.window(s);
+        let [_, _, w, h] = self.rect(s);
+        let size = [w, h];
+        let anchor = s.settings.background_anchor;
+        if s.settings.background_target.is_some() {
+            let target = [0, 1].map(|n| ((to[n] + anchor[n] * size[n]) / window[n]).clamp(0.0, 1.0));
+            s.set_background_target(Some(target));
+        } else {
+            s.set_background_anchor(follow(anchor, to, window, size));
+        }
+    }
 
-    let mut block = col()
-        .key("background-placement")
-        .w_full()
-        .gap(8.0)
-        .child(col().gap(2.0).child(text("Position").font(theme::BODY).color(t.text)).child(note(
-            "Pick the part of the image to keep in view, then where in the window it goes.",
-            false,
-            t,
-        )))
-        // The image at the left edge, the window at the right, the link centered between them
+    /// Pins the image, `from` the window's top-left, at its point under the preview's point
+    /// `at`, as near as the image has one. Over the window, the image stays exactly where it is:
+    /// the pin goes to a whole percent of the window, as it's kept, and its point on the image is
+    /// worked out from that, unrounded, rather than from where the image is now, so nothing drifts
+    /// as it moves. Past the window's edges, the pin waits there, as handed back, until `released`,
+    /// when it goes to the nearest place in the window and the image moves to keep the point under
+    /// it
+    fn repin(&self, s: &mut Ui, from: [f32; 2], at: [f32; 2], released: bool) -> Option<[f32; 2]> {
+        let window = self.window(s);
+        let [_, _, w, h] = self.rect(s);
+        let size = [w.max(1.0), h.max(1.0)];
+        // Over the image, and the part of it the preview shows
+        let [seen_from, seen_to] = [[0.0, 0.0], self.size].map(|p| self.in_window(window, p));
+        let at = self.in_window(window, at);
+        let at = [0, 1].map(|n| at[n].clamp(from[n].max(seen_from[n]), (from[n] + size[n]).min(seen_to[n])));
+        let inside = (0..2).all(|n| (0.0..=window[n]).contains(&at[n]));
+        if !inside && !released {
+            return Some(at);
+        }
+        let mut target = [0.0; 2];
+        let mut anchor = [0.0; 2];
+        for n in 0..2 {
+            let to = (at[n].clamp(0.0, window[n]) / window[n] * 100.0).round() / 100.0;
+            if inside {
+                // Rounded to where the image still has a point
+                let (least, most) = (from[n].max(0.0), (from[n] + size[n]).min(window[n]));
+                let on = (to * window[n]).clamp(least, most);
+                target[n] = on / window[n];
+                anchor[n] = ((on - from[n]) / size[n]).clamp(0.0, 1.0);
+            } else {
+                target[n] = to;
+                anchor[n] = ((at[n] - from[n]) / size[n]).clamp(0.0, 1.0);
+            }
+        }
+        s.set_background_pin(anchor, Some(target));
+        None
+    }
+
+    /// Puts the pin back where its point is in the image, the image staying where it is
+    fn unpin(&self, s: &mut Ui) {
+        let window = self.window(s);
+        let [x, y, w, h] = self.rect(s);
+        let anchor = follow(s.settings.background_anchor, [x, y], window, [w, h]);
+        s.set_background_pin(anchor, None);
+    }
+
+    /// Tries the window at the size, about the preview's middle, with a corner at its point `at`
+    fn resize(&self, s: &mut Ui, at: [f32; 2]) {
+        s.background_trial = Some([0, 1].map(|n| {
+            let size = 2.0 * (at[n] - self.size[n] / 2.0).abs() / self.k;
+            let most = ((self.size[n] - 8.0) / self.k).max(self.real[n]);
+            size.clamp(self.real[n] * 0.35, most)
+        }));
+    }
+}
+
+/// The point of an image `size` large that puts it `to` from the window's top-left when it goes
+/// to the same place in the window, as CSS's `object-position` has it. Along a side as long as
+/// the window's, where it goes doesn't matter, so that stays as `anchor` has it
+fn follow(anchor: [f32; 2], to: [f32; 2], window: [f32; 2], size: [f32; 2]) -> [f32; 2] {
+    [0, 1].map(|n| {
+        let slack = window[n] - size[n];
+        if slack.abs() < 0.5 {
+            anchor[n]
+        } else {
+            (to[n] / slack).clamp(0.0, 1.0)
+        }
+    })
+}
+
+/// Where the image sits, as a preview to place it on. Dragging the image moves it; dragging the
+/// pin picks the point that holds still when the window resizes, the image staying put; dragging
+/// the frame's corner tries the window at another size; and Ctrl + scroll or a pinch zooms
+fn placement(s: &Ui, cx: &Cx<Ui>, room: f32, t: &Theme) -> Option<El> {
+    const PIN: f32 = 16.0;
+    const HANDLE: f32 = 10.0;
+    let image = s.background_image()?;
+    let scale = cx.env().scale;
+    let [iw, ih] = image.size().map(|[w, h]| [w as f32 / scale, h as f32 / scale])?;
+    let real = cx.layout_size("page").unwrap_or([460.0, 700.0]);
+    let stage = Stage::new(room, real, [iw, ih]);
+    let k = stage.k;
+    let window = stage.window(s);
+    let [ox, oy] = stage.origin(window);
+    let frame = window.map(|v| v * k);
+
+    let mut wallpaper = super::wallpaper_for(s, image, window, scale)?;
+    let scaled = |r: [f32; 4]| r.map(|v| v * k);
+    let rect = scaled(wallpaper.rect);
+    wallpaper.rect = rect;
+    wallpaper.cover = scaled(wallpaper.cover);
+    wallpaper.window = frame;
+    wallpaper.scale = k;
+    wallpaper.reach = k;
+
+    // The whole image, dim, then the window over it as it shows. None of it springs from where it
+    // was, as Rune's elements do, or it would trail behind the image the wallpaper puts at once
+    let beyond = el()
+        .pin(Some(ox + rect[0]), Some(oy + rect[1]), None, None)
+        .size(rect[2], rect[3])
+        .inert()
+        .motion(rune::Spring::NONE)
+        .opacity(0.3)
+        .pixels(image.pixels());
+    // Where the pin is: dragged out past the window's edges, where it's held; else where it's kept
+    let out = match s.background_grab {
+        Some(Grab::Pin { out, .. }) => out,
+        _ => None,
+    };
+    let at = match out {
+        Some(out) => out.map(|v| v * k),
+        None => {
+            let pinned = stage.pin(s);
+            [pinned[0] * frame[0], pinned[1] * frame[1]]
+        }
+    };
+    // The crosshairs at where in the window the pin goes, once it's let go
+    let snap = [at[0].clamp(0.0, frame[0]), at[1].clamp(0.0, frame[1])];
+    // Faint crosshairs across the window through the pin, so it reads against any image
+    let hair = Color::WHITE.alpha(0.35);
+    let shown = el()
+        .pin(Some(ox), Some(oy), None, None)
+        .size(frame[0], frame[1])
+        .inert()
+        .motion(rune::Spring::NONE)
+        .clip_rounded(0.0)
+        .fill(t.bg)
         .child(
-            row()
-                .w_full()
-                .gap(GAP)
-                .center_y()
-                .justify_between()
-                .child(picture)
-                .child(link)
-                .child(preview),
+            el().pin(Some(0.0), Some(0.0), None, None)
+                .motion(rune::Spring::NONE)
+                .child(wallpaper.build()),
         )
         .child(
-            row()
-                .w_full()
-                .gap(GAP)
-                .justify_between()
-                .child(caption("Image", percent(anchor), picture_size[0], false))
-                .child(caption("Window", goes, frame[0].max(120.0), true)),
+            el().pin(Some(snap[0]), Some(0.0), None, Some(0.0))
+                .w(1.0)
+                .fill(hair)
+                .motion(rune::Spring::NONE),
+        )
+        .child(
+            el().pin(Some(0.0), Some(snap[1]), Some(0.0), None)
+                .h(1.0)
+                .fill(hair)
+                .motion(rune::Spring::NONE),
         );
+    let outline = el()
+        .pin(Some(ox - 1.0), Some(oy - 1.0), None, None)
+        .size(frame[0] + 2.0, frame[1] + 2.0)
+        .inert()
+        .motion(rune::Spring::NONE)
+        .radius(2.0)
+        .border(1.5, t.accent);
+    let handle = el()
+        .key("background-trial-handle")
+        .pin(Some(ox + frame[0] - HANDLE / 2.0), Some(oy + frame[1] - HANDLE / 2.0), None, None)
+        .size(HANDLE, HANDLE)
+        .radius(2.0)
+        .inert()
+        .motion(rune::Spring::NONE)
+        .fill(t.accent)
+        .border(1.0, Color::WHITE);
+    // The pin: a ring, with a dot in it once it has a place of its own in the window
+    let mut pin = el()
+        .key("background-pin")
+        .pin(Some(ox + at[0] - PIN / 2.0), Some(oy + at[1] - PIN / 2.0), None, None)
+        .size(PIN, PIN)
+        .radius(PIN / 2.0)
+        .center()
+        .inert()
+        .motion(rune::Spring::NONE)
+        .border(2.0, Color::WHITE)
+        .shadow(0.0, 4.0, Color::BLACK.alpha(0.6));
+    if s.settings.background_target.is_some() {
+        pin = pin.child(el().size(6.0, 6.0).radius(3.0).fill(t.accent));
+    }
+    // The pinned point on the image, when the image's edges keep it from reaching the pin
+    let anchor = s.settings.background_anchor;
+    let point = [ox + rect[0] + anchor[0] * rect[2], oy + rect[1] + anchor[1] * rect[3]];
+    let held = (out.is_none() && (point[0] - ox - at[0]).hypot(point[1] - oy - at[1]) > 3.0).then(|| {
+        el().key("background-point")
+            .pin(Some(point[0] - 4.0), Some(point[1] - 4.0), None, None)
+            .size(8.0, 8.0)
+            .radius(4.0)
+            .inert()
+            .motion(rune::Spring::NONE)
+            .fill(Color::WHITE.alpha(0.8))
+    });
+
+    let surface = el()
+        .key("background-stage")
+        .size(stage.size[0], stage.size[1])
+        .radius(8.0)
+        .clip_rounded(8.0)
+        .fill(t.well)
+        .border(1.0, t.line)
+        .role("slider")
+        .label("Where the image sits in the window")
+        .focusable(true)
+        // What a press would take, as the pointer moves over it, or what the drag has
+        .cursor(match s.background_grab.or(s.background_hover) {
+            Some(Grab::Pan(_)) if s.background_grab.is_some() => rune::Cursor::Grabbing,
+            Some(Grab::Pin { .. }) => rune::Cursor::Pointer,
+            Some(Grab::Resize) => rune::Cursor::ResizeNwse,
+            _ => rune::Cursor::Grab,
+        })
+        .on_pointer_move_local(move |s: &mut Ui, p: rune::PointerEvent, _: &mut Tx| {
+            let hover = Some(stage.grab_at(s, [p.x, p.y]));
+            if s.background_hover != hover {
+                s.background_hover = hover;
+            }
+        })
+        .on_drag(move |s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
+            if drag.phase == rune::Phase::Down {
+                s.background_grab = Some(stage.grab_at(s, [drag.start_x, drag.start_y]));
+            }
+            match s.background_grab {
+                Some(Grab::Pan(from)) => stage.pan(s, [from[0] + drag.dx / k, from[1] + drag.dy / k]),
+                Some(Grab::Pin { from, .. }) => {
+                    let released = drag.phase == rune::Phase::Up;
+                    let out = stage.repin(s, from, [drag.x, drag.y], released);
+                    s.background_grab = Some(Grab::Pin { from, out });
+                }
+                Some(Grab::Resize) => stage.resize(s, [drag.x, drag.y]),
+                None => {}
+            }
+            if drag.phase == rune::Phase::Up {
+                s.background_grab = None;
+            }
+        })
+        .on_magnify(|s: &mut Ui, ev: rune::MagnifyEvent, _: &mut Tx| {
+            let zoom = s.settings.background_zoom;
+            let next = zoom * (1.0 + ev.delta);
+            // A pinch comes in steps too small for a whole percent, so each moves one at least
+            let next = if (next - zoom).abs() < 0.01 {
+                zoom + 0.01f32.copysign(ev.delta)
+            } else {
+                next
+            };
+            s.set_background_zoom(next);
+            true
+        })
+        .on_key(move |s: &mut Ui, ev: &rune::KeyEvent, _: &mut Tx| {
+            let by = match ev.key {
+                rune::Key::Left => [-1.0, 0.0],
+                rune::Key::Right => [1.0, 0.0],
+                rune::Key::Up => [0.0, -1.0],
+                rune::Key::Down => [0.0, 1.0],
+                _ => return false,
+            };
+            let window = stage.window(s);
+            let [x, y, ..] = stage.rect(s);
+            stage.pan(s, [x + by[0] * POINT_STEP * window[0], y + by[1] * POINT_STEP * window[1]]);
+            true
+        })
+        .child(beyond)
+        .child(shown)
+        .child(outline)
+        .children(held)
+        .child(pin)
+        .child(handle);
+
+    let mut actions = row().gap(4.0).center_y();
+    if s.settings.background_target.is_some() {
+        actions = actions.child(pill("background-unpin", "Unpin", None, Pill::Quiet, true, t, move |s, _| {
+            stage.unpin(s)
+        }));
+    }
+    if s.background_trial.is_some() {
+        actions = actions.child(pill(
+            "background-untry",
+            "Back to this window",
+            None,
+            Pill::Quiet,
+            true,
+            t,
+            |s, _| s.background_trial = None,
+        ));
+    }
+    let hint = if s.settings.background_target.is_some() {
+        "Drag the image to move it. The pin holds its point there as the window resizes; drag it to \
+         pick another. Drag the window's corner to try a size."
+    } else {
+        "Drag the image to move it. Drag the pin to hold a point in place as the window resizes. \
+         Drag the window's corner to try a size."
+    };
+
+    let mut block = col().key("background-placement").w_full().gap(8.0).child(surface).child(
+        row()
+            .w_full()
+            .gap(12.0)
+            .items_start()
+            .child(note(hint, false, t).grow(1.0).min_w(0.0))
+            .child(actions),
+    );
     // Stretched to the window and not zoomed, it's the same wherever it's placed
     if s.settings.image_fit == ImageFit::Fill && s.settings.background_zoom == 1.0 {
-        block = block.opacity(0.45).child(note(
+        block = block.child(note(
             "Stretched to the window, the whole image shows wherever it's placed. Zoom in or out to place it.",
             false,
             t,
@@ -594,89 +921,26 @@ fn placement(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
     Some(block)
 }
 
-/// A surface `size` points large to pick a point on, by dragging or with the arrow keys: `content`
-/// in it, and the point at `at` (0 to 1 across and down) marked over that, hollow when it only
-/// follows another point
-#[allow(clippy::too_many_arguments)]
-fn point_picker(
-    key: &'static str,
-    label: &'static str,
-    size: [f32; 2],
-    at: [f32; 2],
-    following: bool,
-    t: &Theme,
-    set: fn(&mut Ui, [f32; 2]),
-    get: fn(&Ui) -> [f32; 2],
-    content: El,
-) -> El {
-    const MARK: f32 = 16.0;
-    // Crosshairs across the whole surface, faint, so the point reads against any image
-    let hair = Color::WHITE.alpha(0.35);
-    let cross = el()
-        .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .inert()
-        .child(el().pin(Some(at[0] * size[0]), Some(0.0), None, Some(0.0)).w(1.0).fill(hair))
-        .child(el().pin(Some(0.0), Some(at[1] * size[1]), Some(0.0), None).h(1.0).fill(hair));
-    let mut mark = el()
-        .key(format!("{key}-mark"))
-        .pin(Some(at[0] * size[0] - MARK / 2.0), Some(at[1] * size[1] - MARK / 2.0), None, None)
-        .size(MARK, MARK)
-        .radius(MARK / 2.0)
-        .center()
-        .inert()
-        .border(2.0, Color::WHITE)
-        .shadow(0.0, 4.0, Color::BLACK.alpha(0.6));
-    if !following {
-        mark = mark.child(el().size(6.0, 6.0).radius(3.0).fill(t.accent));
-    }
-    el().key(key)
-        .size(size[0], size[1])
-        .radius(6.0)
-        .clip_rounded(6.0)
-        .border(1.0, t.accent_line)
-        .role("slider")
-        .label(label)
-        .help(label)
-        .focusable(true)
-        .cursor(rune::Cursor::Crosshair)
-        .on_drag(move |s: &mut Ui, drag: &mut Drag, _: &mut Tx| {
-            set(s, [drag.x / drag.w.max(1.0), drag.y / drag.h.max(1.0)]);
-        })
-        .on_key(move |s: &mut Ui, ev: &rune::KeyEvent, _: &mut Tx| {
-            let [x, y] = get(s);
-            let to = match ev.key {
-                rune::Key::Left => [x - POINT_STEP, y],
-                rune::Key::Right => [x + POINT_STEP, y],
-                rune::Key::Up => [x, y - POINT_STEP],
-                rune::Key::Down => [x, y + POINT_STEP],
-                _ => return false,
-            };
-            set(s, to);
-            true
-        })
-        .child(content)
-        .child(cross)
-        .child(mark)
-}
-
 /// What fills the window around an image smaller than it: each choice as a tile showing the image
 /// with that fill around it
-fn fill_picker(s: &Ui, t: &Theme) -> Option<El> {
+fn fill_picker(s: &Ui, room: f32, t: &Theme) -> Option<El> {
     const PER_ROW: usize = 4;
     const GAP: f32 = 8.0;
-    const TILE_H: f32 = 58.0;
+    const TILE_H: [f32; 2] = [58.0, 80.0];
     let image = s.background_image()?;
     let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
     // Zoomed out, even a covering fit leaves room around the image
     let covers = matches!(s.settings.image_fit, ImageFit::Cover | ImageFit::Fill) && s.settings.background_zoom >= 1.0;
-    let tile_w = (ROOM - GAP * (PER_ROW - 1) as f32) / PER_ROW as f32;
+    let tile_w = (room - GAP * (PER_ROW - 1) as f32) / PER_ROW as f32;
+    // Taller as they widen, short of crowding out what follows
+    let tile_h = (tile_w * 0.62).clamp(TILE_H[0], TILE_H[1]);
     // In each tile the image small in the middle, so there's room around it to fill
-    let inner = (tile_w * 0.56 / iw).min(TILE_H * 0.56 / ih);
+    let inner = (tile_w * 0.56 / iw).min(tile_h * 0.56 / ih);
     let (w, h) = (iw * inner, ih * inner);
-    let rect = [(tile_w - w) / 2.0, (TILE_H - h) / 2.0, w, h];
+    let rect = [(tile_w - w) / 2.0, (tile_h - h) / 2.0, w, h];
     let cover = {
-        let k = (tile_w / iw).max(TILE_H / ih);
-        [(tile_w - iw * k) / 2.0, (TILE_H - ih * k) / 2.0, iw * k, ih * k]
+        let k = (tile_w / iw).max(tile_h / ih);
+        [(tile_w - iw * k) / 2.0, (tile_h - ih * k) / 2.0, iw * k, ih * k]
     };
 
     let tile = |fill: BackgroundFill| {
@@ -685,7 +949,7 @@ fn fill_picker(s: &Ui, t: &Theme) -> Option<El> {
             pixels: image.pixels(),
             rect,
             cover,
-            window: [tile_w, TILE_H],
+            window: [tile_w, tile_h],
             fill,
             edges: s.background_edges,
             color: s.background_color(t.bg).color(),
@@ -707,7 +971,7 @@ fn fill_picker(s: &Ui, t: &Theme) -> Option<El> {
             .cursor(rune::Cursor::Pointer)
             .on_press(move |s: &mut Ui| s.set_background_fill(fill))
             .child(
-                el().size(tile_w, TILE_H)
+                el().size(tile_w, tile_h)
                     .radius(6.0)
                     .clip_rounded(6.0)
                     .fill(t.bg)
@@ -755,7 +1019,7 @@ fn fill_picker(s: &Ui, t: &Theme) -> Option<El> {
                 .children(rows),
         );
     if s.settings.background_fill == BackgroundFill::Color && !covers {
-        block = block.child(color_picker(s, t));
+        block = block.child(color_picker(s, room, t));
     }
     if covers {
         block = block.opacity(0.55);
@@ -859,14 +1123,14 @@ fn updates(s: &Ui, t: &Theme) -> El {
 /// The color around the image: picked on the picker (`rune_kit::ColorPicker`, our Rune patch:
 /// anomalyco/rune#1433), typed as a code, or one of the image's own edge colors, black, white or
 /// the window's own
-fn color_picker(s: &Ui, t: &Theme) -> El {
+fn color_picker(s: &Ui, room: f32, t: &Theme) -> El {
     let mut swatches = vec![t.bg, Color::BLACK, Color::WHITE];
     if let Some(edges) = s.background_edges {
         swatches.extend(edges.map(|c| c.alpha(1.0)));
     }
     let mut picker = rune_kit::ColorPicker::new(s.background_color(t.bg))
         .label("Color around the image")
-        .size(ROOM, 132.0)
+        .size(room, 132.0)
         .swatches(swatches)
         .on_change(|s: &mut Ui, hsv, _| s.set_background_color(hsv))
         .hex_field(&s.background_hex, |s: &mut Ui| &mut s.background_hex);
@@ -877,16 +1141,16 @@ fn color_picker(s: &Ui, t: &Theme) -> El {
         .key("background-color")
         .pt(6.0)
         .gap(12.0)
-        .children(s.background_dropper.then(|| dropper(s, t)).flatten())
+        .children(s.background_dropper.then(|| dropper(s, room, t)).flatten())
         .child(picker.build(&t.kit))
 }
 
 /// The image to pick a color from with the eyedropper, as wide as the sheet: pressing picks the
 /// color under the pointer, dragging picks as it goes, and letting go puts the eyedropper away
-fn dropper(s: &Ui, t: &Theme) -> Option<El> {
+fn dropper(s: &Ui, room: f32, t: &Theme) -> Option<El> {
     let image = s.background_image()?;
     let [iw, ih] = image.size().map(|[w, h]| [w as f32, h as f32])?;
-    let height = (ROOM * ih / iw).min(240.0);
+    let height = (room * ih / iw).min(240.0);
     let width = height * iw / ih;
     let surface = el()
         .key("background-dropper")
@@ -912,4 +1176,98 @@ fn dropper(s: &Ui, t: &Theme) -> Option<El> {
             .child(surface)
             .child(note("Press on the image to pick its color there.", false, t)),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gui::settings::Settings;
+
+    /// A 1200 × 800 window with a 1920 × 1080 image covering it, zoomed in a little
+    fn staged() -> (Ui, Stage) {
+        let mut ui = Ui::new(Settings::default());
+        ui.settings.image_fit = ImageFit::Cover;
+        ui.settings.background_zoom = 1.3;
+        ui.settings.background_anchor = [0.37, 0.61];
+        (ui, Stage::new(600.0, [1200.0, 800.0], [1920.0, 1080.0]))
+    }
+
+    /// Pins the image at the window's point `at`, dragging there from where it is and letting go
+    /// there if `released`
+    fn drag_pin(ui: &mut Ui, stage: &Stage, from: [f32; 2], at: [f32; 2], released: bool) -> Option<[f32; 2]> {
+        let at = stage.on_stage(stage.window(ui), at);
+        stage.repin(ui, from, at, released)
+    }
+
+    fn assert_still(before: [f32; 4], after: [f32; 4]) {
+        for n in 0..4 {
+            assert!((after[n] - before[n]).abs() < 0.01, "moved to {after:?} from {before:?}");
+        }
+    }
+
+    #[test]
+    fn moving_the_pin_leaves_the_image_where_it_is() {
+        let (mut ui, stage) = staged();
+        let before = stage.rect(&ui);
+        let from = [before[0], before[1]];
+        // Wandering over the window and past its edges, a fraction of a point at a time
+        for i in 0..400 {
+            let i = i as f32;
+            drag_pin(&mut ui, &stage, from, [i * 3.7 - 50.0, 900.0 - i * 2.3], false);
+            assert_still(before, stage.rect(&ui));
+        }
+        assert!(ui.settings.background_target.is_some());
+    }
+
+    #[test]
+    fn a_pin_let_go_past_the_window_goes_to_its_edge_with_its_point() {
+        let (mut ui, stage) = staged();
+        // Contained and zoomed in, the image reaches past the window's left edge, with more of it
+        // the preview shows there
+        ui.settings.image_fit = ImageFit::Contain;
+        ui.settings.background_zoom = 1.2;
+        ui.settings.background_anchor = [0.5, 0.5];
+        ui.settings.background_target = Some([0.5, 0.5]);
+        let before = stage.rect(&ui);
+        let from = [before[0], before[1]];
+        let past = [-40.0, 300.0];
+        let out = drag_pin(&mut ui, &stage, from, past, false).expect("held past the edge");
+        assert!(
+            (out[0] - past[0]).abs() < 0.01 && (out[1] - past[1]).abs() < 0.01,
+            "held at {out:?}"
+        );
+        assert_still(before, stage.rect(&ui));
+
+        assert_eq!(drag_pin(&mut ui, &stage, from, past, true), None);
+        let target = ui.settings.background_target.unwrap();
+        assert_eq!(target[0], 0.0);
+        let anchor = ui.settings.background_anchor;
+        assert!((anchor[0] - (past[0] - from[0]) / before[2]).abs() < 1e-3);
+        // The point the pin was on is at the window's left edge, as near as the image goes
+        let after = stage.rect(&ui);
+        assert!(after[0] > from[0]);
+    }
+
+    #[test]
+    fn unpinning_leaves_the_image_where_it_is() {
+        let (mut ui, stage) = staged();
+        let before = stage.rect(&ui);
+        drag_pin(&mut ui, &stage, [before[0], before[1]], [300.0, 200.0], true);
+        stage.unpin(&mut ui);
+        assert_eq!(ui.settings.background_target, None);
+        assert_still(before, stage.rect(&ui));
+    }
+
+    #[test]
+    fn a_size_tried_stays_in_the_middle() {
+        let (mut ui, stage) = staged();
+        let middle = stage.size.map(|v| v / 2.0);
+        stage.resize(&mut ui, [middle[0] + 100.0, middle[1] + 50.0]);
+        let window = stage.window(&ui);
+        let origin = stage.origin(window);
+        let corner = stage.on_stage(window, window);
+        assert!((origin[0] + corner[0] - stage.size[0]).abs() < 0.01);
+        assert!((origin[1] + corner[1] - stage.size[1]).abs() < 0.01);
+        assert!((corner[0] - middle[0] - 100.0).abs() < 0.01);
+    }
 }

@@ -84,6 +84,13 @@ pub struct Ui {
     pub background_sample: Option<std::sync::Arc<background::Sample>>,
     /// The eyedropper is on: pressing on the image picks the color around it
     pub background_dropper: bool,
+    /// What a drag on the settings' background preview is doing, picked where it was pressed
+    pub background_grab: Option<Grab>,
+    /// What a press on the settings' background preview would take, where the pointer is over it
+    pub background_hover: Option<Grab>,
+    /// The window size the settings' background preview tries in place of the window's own, to
+    /// see how the image holds up when the window resizes
+    pub background_trial: Option<[f32; 2]>,
     /// Gets background images ready off the UI thread, set up with the window
     pub background_loader: Option<rune::Latest<(String, Result<background::Prepared, String>)>>,
     /// The background the loader is working on
@@ -378,6 +385,19 @@ pub enum LiveSync {
     Closed,
 }
 
+/// What a drag on the settings' background preview does, picked by where it was pressed
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Grab {
+    /// Moves the image, which was this far from the window's top-left when pressed
+    Pan([f32; 2]),
+    /// Moves the point that holds still as the window resizes, leaving the image where it is:
+    /// `from` the window's top-left, as it was when pressed. Dragged past the window's edges,
+    /// the pin is `out` there, in the window's points, until it's let go
+    Pin { from: [f32; 2], out: Option<[f32; 2]> },
+    /// Tries another window size
+    Resize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Update {
     /// Not checked, or checking isn't possible on this platform
@@ -457,6 +477,9 @@ impl Ui {
             background_edges: None,
             background_sample: None,
             background_dropper: false,
+            background_grab: None,
+            background_hover: None,
+            background_trial: None,
             background_loading: None,
             background_error: None,
             warps: Warps::default(),
@@ -1178,6 +1201,19 @@ impl Ui {
         let target = target.map(|target| target.map(whole_percent));
         if target != self.settings.background_target {
             self.settings_mut(|s| s.background_target = target);
+        }
+    }
+
+    /// Sets the image's point and where in the window it goes together, as they are: unrounded,
+    /// so that the image stays exactly where they had it when the pin moves
+    pub fn set_background_pin(&mut self, anchor: [f32; 2], target: Option<[f32; 2]>) {
+        let anchor = anchor.map(|v| v.clamp(0.0, 1.0));
+        let target = target.map(|target| target.map(|v| v.clamp(0.0, 1.0)));
+        if anchor != self.settings.background_anchor || target != self.settings.background_target {
+            self.settings_mut(|s| {
+                s.background_anchor = anchor;
+                s.background_target = target;
+            });
         }
     }
 
