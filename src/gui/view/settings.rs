@@ -320,6 +320,8 @@ fn anchor_picker(current: Anchor, t: &Theme) -> El {
         .label("Card position")
         .focus_group()
         .focus_follows()
+        // The cards jump to the picked spot rather than fading across
+        .instant_changes()
         .padding(4.0)
         .gap(2.0)
         .radius(4.0)
