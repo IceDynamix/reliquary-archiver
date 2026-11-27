@@ -104,10 +104,10 @@ pub(super) fn empty(s: &Ui, summary: &Summary, cx: &Cx<Ui>, t: &Theme) -> El {
             col()
                 .w_full()
                 .gap(8.0)
-                .child(text("No warps kept yet").font(theme::HEADLINE).color(t.text))
+                .child(text("No warps yet").font(theme::HEADLINE).color(t.text))
                 .child(
                     text(
-                        "Every warp you make while the archiver runs is kept from now on. For the ones before, open                          Warp → View Details in the game to fetch the last six months, and import a Star Rail Station                          backup for anything older.",
+                        "New warps are saved automatically. For the last 6 months, open Warp → View Details in the game. For older ones, import a Star Rail Station backup.",
                     )
                     .font(theme::BODY)
                     .color(t.muted)
@@ -119,7 +119,7 @@ pub(super) fn empty(s: &Ui, summary: &Summary, cx: &Cx<Ui>, t: &Theme) -> El {
 
 /// Where the history comes from, with the pick of a backup's profile when one waits
 fn sources_card(s: &Ui, summary: &Summary, cx: &Cx<Ui>, t: &Theme) -> El {
-    let mut card = card("history-sources-card", "Where it comes from", t.secondary, cx, t);
+    let mut card = card("history-sources-card", "Sources", t.secondary, cx, t);
     if let Some(pick) = &s.warps.choose {
         card = card.child(profile_picker(pick, t).px(22.0).pt(12.0));
     }
@@ -174,7 +174,7 @@ fn heading(view: &View, t: &Theme) -> El {
 fn sources_link(summary: &Summary, t: &Theme) -> El {
     match summary.missing_requests().filter(|&n| n > 0) {
         Some(n) => page_link("history-to-sources", "Sources", Some(&icons::ALERT), WarpPage::Sources, t).help(format!(
-            "{} {} missing from the history. Where it comes from, and how to fill it in",
+            "{} {} missing",
             grouped(n),
             if n == 1 { "request" } else { "requests" }
         )),
@@ -318,7 +318,7 @@ fn latest_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El
                     .center()
                     .radius(3.0)
                     .border(1.0, t.warn)
-                    .help("Seen live, the game's history doesn't have it yet")
+                    .help("Not yet in the game's history")
                     .child(text("LIVE").font(theme::KICKER).color(t.warn)),
             );
         }
@@ -371,12 +371,12 @@ fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
 
     let key_detail = match &summary.key {
         Some(key) if key.usable(now) => format!(
-            "Authkey from {}, {} · works for about a day",
+            "Authkey from {}, {} · valid ~24h",
             origin_label(&key.origin),
             ago(now, key.obtained_at)
         ),
         Some(_) => "The authkey has expired. Open Warp → View Details in the game for a new one.".to_string(),
-        None => "Open Warp → View Details in the game while the archiver runs, and it syncs by itself.".to_string(),
+        None => "Open Warp → View Details in the game to sync.".to_string(),
     };
     let mut detail = col().gap(3.0).child(text(key_detail).font(theme::SMALL).color(t.muted).wrap());
     if let Some(at) = summary.last_sync {
@@ -440,17 +440,14 @@ fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
         grouped(summary.requests)
     )];
     if summary.unconfirmed > 0 {
-        let when = summary
-            .next_look
-            .map_or(String::new(), |at| format!(" (it adds an hour at a time, next look {})", clock(at)));
-        completeness.push(format!("{} seen live, waiting for the history{when}", summary.unconfirmed));
+        let when = summary.next_look.map_or(String::new(), |at| format!(" (next check {})", clock(at)));
+        completeness.push(format!("{} pending{when}", summary.unconfirmed));
     }
     let gap_note = match summary.missing_requests() {
-        Some(0) => Some(("Nothing is missing: the game's request counter agrees.".to_string(), t.good)),
+        Some(0) => Some(("Complete".to_string(), t.good)),
         Some(missing) => Some((
             format!(
-                "The game counts {} requests, {missing} aren't kept. The history only reaches back about six months, \
-                 a Star Rail Station backup can fill in older ones.",
+                "{missing} of {} requests missing. Import a Star Rail Station backup to fill in older pulls.",
                 grouped(summary.request_counter.unwrap_or_default() as usize + 1)
             ),
             t.warn,
@@ -469,7 +466,7 @@ fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
             "import-srs",
             &icons::IMPORT,
             "Star Rail Station",
-            text("Import a backup (.dat) for pulls older than the game's history")
+            text("Import a .dat backup for older pulls")
                 .font(theme::SMALL)
                 .color(t.muted)
                 .wrap(),
@@ -489,10 +486,7 @@ fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
             "warps-csv",
             &icons::DOWNLOAD,
             "CSV",
-            text("Export the whole history to a spreadsheet or another tool, or import one exported before")
-                .font(theme::SMALL)
-                .color(t.muted)
-                .wrap(),
+            text("Export or re-import your history").font(theme::SMALL).color(t.muted).wrap(),
             Some(
                 row()
                     .gap(8.0)
@@ -569,14 +563,10 @@ fn profile_picker(pick: &crate::gui::state::ProfilePick, t: &Theme) -> El {
             .border(1.0, t.accent_line)
             .child(kicker("Which profile is this account?", t.accent))
             .child(
-                text(format!(
-                    "The backup has more than one profile that could be UID {}. Pulls already kept are skipped, so importing \
-                     several is safe.",
-                    pick.uid
-                ))
-                .font(theme::SMALL)
-                .color(t.muted)
-                .wrap(),
+                text(format!("Several profiles could match UID {}. Duplicates are skipped.", pick.uid))
+                    .font(theme::SMALL)
+                    .color(t.muted)
+                    .wrap(),
             )
             .children(rows)
             .child(row().w_full().child(el().grow(1.0)).child(pill(

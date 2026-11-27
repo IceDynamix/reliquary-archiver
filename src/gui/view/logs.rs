@@ -73,12 +73,10 @@ pub fn dialog(s: &Ui, cx: &Cx<Ui>, t: &Theme, layer: &mut Vec<El>) {
         .child(controls)
         .child(log)
         .child(
-            text(format!(
-                "The latest {LOG_TAIL} lines. Copy or save the whole log to attach it to a bug report."
-            ))
-            .font(theme::SMALL)
-            .color(t.faint)
-            .wrap(),
+            text(format!("Last {LOG_TAIL} lines. Copy or save the full log for bug reports."))
+                .font(theme::SMALL)
+                .color(t.faint)
+                .wrap(),
         );
     let spec = Sheet {
         key: "logs",

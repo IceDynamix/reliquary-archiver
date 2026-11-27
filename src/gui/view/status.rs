@@ -51,16 +51,14 @@ fn pending(s: &Ui, t: &Theme, stage: Stage) -> El {
         Stage::Reading { uid } => Headline {
             kicker: "Logged in",
             title: format!("Reading UID {uid}"),
-            detail: "Your relics, light cones and characters arrive while the game finishes loading.".into(),
+            detail: "Loading your account…".into(),
             problem: None,
             actions: Vec::new(),
         },
         _ => Headline {
             kicker: "Waiting for the game",
             title: "Log in to the game".into(),
-            detail: "Start Honkai: Star Rail and log in. Already playing? Log out to the title screen and log back in. \
-                     The archiver only sees your account while the game logs in."
-                .into(),
+            detail: "Start the game and log in. Already in? Log out to the title screen and back in.".into(),
             problem: None,
             actions: Vec::new(),
         },
@@ -107,7 +105,9 @@ fn pending(s: &Ui, t: &Theme, stage: Stage) -> El {
                 .gap(6.0)
                 .child(kicker(headline.kicker, accent))
                 .child(title)
-                .child(text(headline.detail).key("detail").font(theme::BODY).color(t.muted).wrap()),
+                .children(
+                    (!headline.detail.is_empty()).then(|| text(headline.detail).key("detail").font(theme::BODY).color(t.muted).wrap()),
+                ),
         )
         .children(actions)
 }
@@ -118,7 +118,7 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
         return Some(Headline {
             kicker: "Can't capture",
             title: "Administrator rights needed".into(),
-            detail: "This version needs administrator rights to see the game's traffic.".into(),
+            detail: String::new(),
             problem: Some(&icons::SHIELD),
             actions: vec![
                 pill(
@@ -134,26 +134,16 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
                         }
                     },
                 ),
-                pill(
-                    "get-pcap-version",
-                    "Get the no-admin version",
-                    None,
-                    Pill::Quiet,
-                    true,
-                    t,
-                    |_, _| super::open_url(super::RELEASES_URL),
-                ),
+                pill("get-pcap-version", "No-admin version", None, Pill::Quiet, true, t, |_, _| {
+                    super::open_url(super::RELEASES_URL)
+                }),
             ],
         });
     }
     if let Some(error) = &s.capture.error {
         let npcap = cfg!(all(windows, feature = "pcap"));
         let detail = if npcap {
-            format!(
-                "The archiver uses Npcap to see the game's traffic. Install it, or reinstall it if it's already there. \
-                 Trying again meanwhile. ({})",
-                error.message
-            )
+            format!("Npcap is missing or broken. Install or reinstall it. Retrying… ({})", error.message)
         } else {
             format!("{}. Trying again…", capitalize(&error.message))
         };
@@ -191,7 +181,7 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
         return Some(Headline {
             kicker: "Can't read the game",
             title: "This game version isn't supported yet".into(),
-            detail: "Each game update needs a new release of the archiver before it can read the game's traffic.".into(),
+            detail: "Wait for an archiver update for this game version.".into(),
             problem: Some(&icons::ALERT),
             actions,
         });
@@ -200,8 +190,7 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
         return Some(Headline {
             kicker: "Data missed",
             title: "Capture interrupted".into(),
-            detail: "Some game data was missed, so the rest of this login can't be read. Log out to the title screen and log back in."
-                .into(),
+            detail: "Some data was missed. Log out to the title screen and back in.".into(),
             problem: Some(&icons::ALERT),
             actions: Vec::new(),
         });
@@ -218,26 +207,19 @@ fn ready(s: &Ui, t: &Theme, uid: u32, inventory: Inventory) -> El {
             "Capture interrupted",
             t.warn,
             "Missing recent changes",
-            "Changes since the interruption aren't here. Log out to the title screen and log back in to catch up.",
+            "Relog to catch up on recent changes.",
             t.text,
         )
     } else if picked_up {
         (
-            "Picked up from last run",
+            "Resumed from last run",
             t.warn,
             "May be missing changes",
-            "The archiver restarted while you were logged in, so anything that changed while it was closed isn't here \
-             and the export may be out of date. Log out to the title screen and log back in to catch up.",
+            "Changes made while the archiver was closed are missing. Relog to catch up.",
             t.text,
         )
     } else {
-        (
-            "Recorded",
-            t.good,
-            "Archive ready",
-            "Keeps updating while you play. Live sync sends every change as it happens.",
-            t.faint,
-        )
+        ("Recorded", t.good, "Archive ready", "Updates live as you play.", t.faint)
     };
 
     let count = |key: &'static str, count: usize, label: &'static str| {

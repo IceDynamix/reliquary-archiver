@@ -196,7 +196,7 @@ fn header(s: &Ui, t: &Theme) -> El {
 
 fn update_banner(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
     let (title, actions) = match &s.update {
-        Update::Available { version } if !s.update_dismissed => (format!("Version {version} is ready to install"), vec![
+        Update::Available { version } if !s.update_dismissed => (format!("Version {version} is available"), vec![
             pill("update-later", "Later", None, Pill::Quiet, true, t, |s, _| {
                 s.update_dismissed = true
             }),
@@ -204,7 +204,7 @@ fn update_banner(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
                 s.install_update()
             }),
         ]),
-        Update::Installing => ("Installing, the archiver restarts by itself".to_string(), vec![
+        Update::Installing => ("Installing… the app will restart".to_string(), vec![
             rune_kit::Spinner::new().size(16.0).color(t.accent).build(&t.kit),
         ]),
         _ => return None,
@@ -236,8 +236,7 @@ fn footer(s: &Ui, t: &Theme) -> El {
     } else {
         "Open capture file"
     };
-    let mut open_file = parts::entry("open-capture-file", &icons::FOLDER, label, t)
-        .help("Read a recording made with Wireshark or pktmon instead of capturing live");
+    let mut open_file = parts::entry("open-capture-file", &icons::FOLDER, label, t).help("Load a Wireshark or pktmon capture");
     if s.reading_file {
         open_file = open_file.disabled(true).opacity(0.5);
     } else {
@@ -260,7 +259,7 @@ fn footer(s: &Ui, t: &Theme) -> El {
         .child(open_file)
         .child(el().grow(1.0))
         .child(link("github", &icons::GITHUB, "GitHub", GITHUB_URL))
-        .child(link("discord", &icons::DISCORD, "Questions? Ask on Discord", DISCORD_URL))
+        .child(link("discord", &icons::DISCORD, "Discord", DISCORD_URL))
 }
 
 /// What just happened, in a band across the bottom of the window

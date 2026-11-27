@@ -98,7 +98,7 @@ pub const SCENES: &[Scene] = &[
         s.has_tray = true;
         s.panel = Some(Panel::Settings);
         s.port_edit.replace_text("80");
-        s.port_error = Some("Port 80 is already in use. Close other copies of the archiver, or choose another port.".into());
+        s.port_error = Some("Port 80 is in use. Close other copies or choose another port.".into());
     }),
     ("logs", |s| {
         running(s, 0);

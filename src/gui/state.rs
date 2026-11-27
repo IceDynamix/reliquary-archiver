@@ -883,7 +883,7 @@ impl Ui {
     pub fn sync_failed(&mut self, error: String) {
         let port = self.pending_port.unwrap_or(self.settings.ws_port);
         let error = if error.starts_with("Address already in use") {
-            format!("Port {port} is already in use. Close other copies of the archiver, or choose another port.")
+            format!("Port {port} is in use. Close other copies or choose another port.")
         } else {
             error
         };
@@ -1002,7 +1002,7 @@ impl Ui {
     pub fn capture_file_read(&mut self, export: Option<Box<Export>>, tx: &mut Tx) {
         self.reading_file = false;
         let Some(export) = export else {
-            let detail = "It has no complete login in it. Capture from the title screen until the game finished loading.";
+            let detail = "No complete login found. Start capturing before logging in.";
             self.notify("No account found in that file", Some(detail.into()), true, None, tx);
             return;
         };
@@ -1691,7 +1691,7 @@ mod tests {
         assert_eq!(ui.sync, LiveSync::Running { port: 23313, clients: 0 });
         assert_eq!(
             ui.port_error.as_deref(),
-            Some("Port 80 is already in use. Close other copies of the archiver, or choose another port.")
+            Some("Port 80 is in use. Close other copies or choose another port.")
         );
         assert_eq!(ui.settings.ws_port, 23313);
     }
@@ -1700,7 +1700,7 @@ mod tests {
     fn a_server_that_never_started_reports_why() {
         let mut ui = ui();
         ui.sync_failed("Address already in use, please close any other instances".into());
-        let expected = "Port 23313 is already in use. Close other copies of the archiver, or choose another port.";
+        let expected = "Port 23313 is in use. Close other copies or choose another port.";
         assert_eq!(ui.sync, LiveSync::Failed(expected.into()));
         ui.sync_failed("permission denied".into());
         assert_eq!(ui.sync, LiveSync::Failed("permission denied".into()));

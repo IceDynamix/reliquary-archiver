@@ -132,12 +132,8 @@ fn live_sync(s: &Ui, t: &Theme) -> El {
 
     let note = match (&s.port_error, s.pending_port) {
         (Some(error), _) => note(error.clone(), true, t),
-        (None, Some(port)) => note(format!("Moving the server to port {port}…"), false, t),
-        (None, None) => note(
-            "The optimizer connects to ws://localhost:<port>/ws. Port 0 picks any free port.",
-            false,
-            t,
-        ),
+        (None, Some(port)) => note(format!("Switching to port {port}…"), false, t),
+        (None, None) => note("Port 0 picks a free port.", false, t),
     };
 
     section("live-sync-settings", "Live sync", t)
@@ -158,23 +154,18 @@ fn window(s: &Ui, t: &Theme) -> El {
     if s.has_tray {
         section = section.child(toggle(
             "close-to-tray",
-            "Keep running in the tray when closed",
-            Some("Live sync keeps working while the window is closed"),
+            "Close to tray",
+            Some("Live sync keeps running"),
             s.settings.close_to_tray,
             |s| s.settings_mut(|s| s.close_to_tray = !s.close_to_tray),
             t,
         ));
     }
 
-    let start_hidden = if s.has_tray && s.settings.close_to_tray {
-        "Starts in the tray"
-    } else {
-        "Starts with the window minimized"
-    };
     section = section.child(toggle(
         "start-minimized",
         "Start minimized",
-        Some(start_hidden),
+        None,
         s.settings.start_minimized,
         |s| s.settings_mut(|s| s.start_minimized = !s.start_minimized),
         t,
@@ -190,7 +181,7 @@ fn window(s: &Ui, t: &Theme) -> El {
             t,
         ));
         if let Some(error) = &s.run_on_start_error {
-            section = section.child(note(format!("Couldn't change that: {error}"), true, t));
+            section = section.child(note(format!("Couldn't update: {error}"), true, t));
         }
     }
     section
@@ -226,7 +217,7 @@ fn appearance(s: &Ui, t: &Theme) -> El {
                     .min_w(0.0)
                     .gap(2.0)
                     .child(text(label).font(theme::BODY).color(t.text))
-                    .child(note(detail, false, t)),
+                    .children((!detail.is_empty()).then(|| note(detail, false, t))),
             )
             .child(control)
     };
@@ -234,7 +225,7 @@ fn appearance(s: &Ui, t: &Theme) -> El {
     section("appearance-settings", "Appearance", t)
         .child(setting(
             "Theme",
-            "Light or dark".into(),
+            String::new(),
             SegmentedControl::new(&labels, mode)
                 .label("Theme")
                 .fit()
@@ -249,7 +240,7 @@ fn appearance(s: &Ui, t: &Theme) -> El {
         ))
         .child(setting(
             "Card position",
-            format!("{}, for when the window is bigger than the cards", s.settings.card_anchor.label()),
+            s.settings.card_anchor.label().into(),
             anchor_picker(s.settings.card_anchor, t),
         ))
 }
@@ -348,18 +339,14 @@ fn background(s: &Ui, cx: &Cx<Ui>, room: f32, t: &Theme) -> El {
     let chosen = !path.is_empty();
     let mut section = section("background-settings", "Background", t).child(image_row(s, t));
     if !chosen {
-        return section.child(note(
-            "An image of your choice behind the window, faded so the text stays easy to read.",
-            false,
-            t,
-        ));
+        return section.child(note("Shown faded behind the window.", false, t));
     }
     let error = s
         .background_error
         .clone()
         .or_else(|| s.background.as_ref().and_then(|(_, image)| image.error()).map(|e| e.to_string()));
     if s.background_loading.is_some() {
-        section = section.child(note("Loading the image…", false, t));
+        section = section.child(note("Loading…", false, t));
     }
     if let Some(error) = error {
         section = section.child(note(format!("Couldn't load that image: {error}"), true, t));
@@ -895,11 +882,9 @@ fn placement(s: &Ui, cx: &Cx<Ui>, room: f32, t: &Theme) -> Option<El> {
         ));
     }
     let hint = if s.settings.background_target.is_some() {
-        "Drag the image to move it. The pin holds its point there as the window resizes; drag it to \
-         pick another. Drag the window's corner to try a size."
+        "Drag to move. Drag the pin to change the anchor point. Resize from the corner to preview."
     } else {
-        "Drag the image to move it. Drag the pin to hold a point in place as the window resizes. \
-         Drag the window's corner to try a size."
+        "Drag to move. Drag the pin to set an anchor point. Resize from the corner to preview."
     };
 
     let mut block = col().key("background-placement").w_full().gap(8.0).child(surface).child(
@@ -912,11 +897,7 @@ fn placement(s: &Ui, cx: &Cx<Ui>, room: f32, t: &Theme) -> Option<El> {
     );
     // Stretched to the window and not zoomed, it's the same wherever it's placed
     if s.settings.image_fit == ImageFit::Fill && s.settings.background_zoom == 1.0 {
-        block = block.child(note(
-            "Stretched to the window, the whole image shows wherever it's placed. Zoom in or out to place it.",
-            false,
-            t,
-        ));
+        block = block.child(note("Zoom to reposition a stretched image.", false, t));
     }
     Some(block)
 }
@@ -1000,10 +981,9 @@ fn fill_picker(s: &Ui, room: f32, t: &Theme) -> Option<El> {
                 .child(text("Around the image").font(theme::BODY).color(t.text))
                 .child(note(
                     if covers {
-                        "The image covers the window at this fit, so there's nothing around it. Fit, Shrink and Original \
-                         leave room, as does zooming out."
+                        "Not visible at this fit. Try Fit, Shrink, Original, or zoom out."
                     } else {
-                        "What fills the window where the image doesn't reach."
+                        "Fills the space around the image."
                     },
                     false,
                     t,
@@ -1080,7 +1060,7 @@ fn updates(s: &Ui, t: &Theme) -> El {
         Update::Idle => (format!("Version {version}"), false),
         Update::Checking => ("Checking for updates…".to_string(), false),
         Update::UpToDate => (format!("Version {version} is the latest"), false),
-        Update::Available { version: latest } => (format!("Version {latest} is available, you have {version}"), false),
+        Update::Available { version: latest } => (format!("Version {latest} available (you have {version})"), false),
         Update::Installing => ("Installing…".to_string(), false),
         Update::Failed(e) => (format!("Couldn't update: {e}"), true),
     };
@@ -1174,7 +1154,7 @@ fn dropper(s: &Ui, room: f32, t: &Theme) -> Option<El> {
             .gap(6.0)
             .items_center()
             .child(surface)
-            .child(note("Press on the image to pick its color there.", false, t)),
+            .child(note("Click to pick a color.", false, t)),
     )
 }
 

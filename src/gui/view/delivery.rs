@@ -12,7 +12,7 @@ use crate::gui::theme::{self, Theme};
 pub fn view(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
     ticket("delivery", &["delivery-perforation"], cx, t)
         .w_full()
-        .child(tab("delivery-tab", "Send to the optimizer", t.secondary, cx, t))
+        .child(tab("delivery-tab", "Optimizer", t.secondary, cx, t))
         .child(live_sync(s, t))
         .child(perforation("delivery-perforation", cx, t))
         .child(export_file(s, t))
@@ -25,7 +25,7 @@ fn live_sync(s: &Ui, t: &Theme) -> El {
         LiveSync::Running { port, clients: 1 } => ("Optimizer connected".to_string(), t.good, Some(*port)),
         LiveSync::Running { port, clients } => (format!("{clients} optimizer tabs connected"), t.good, Some(*port)),
         LiveSync::Failed(error) => (format!("Couldn't start: {error}"), t.bad, None),
-        LiveSync::Closed => ("Paused while the update installs".to_string(), t.faint, None),
+        LiveSync::Closed => ("Paused for update".to_string(), t.faint, None),
     };
 
     let mut detail = col().gap(3.0).child(
@@ -51,13 +51,7 @@ fn live_sync(s: &Ui, t: &Theme) -> El {
                 t,
                 move |s: &mut Ui, tx: &mut Tx| {
                     tx.copy(url.clone());
-                    s.notify(
-                        "Address copied",
-                        Some("Paste it into the optimizer's live sync".into()),
-                        false,
-                        None,
-                        tx,
-                    );
+                    s.notify("Address copied", Some("Paste it into the optimizer".into()), false, None, tx);
                 },
             ))
         }
@@ -73,9 +67,9 @@ fn live_sync(s: &Ui, t: &Theme) -> El {
 fn export_file(s: &Ui, t: &Theme) -> El {
     let ready = matches!(s.stage(), Stage::Ready { .. });
     let detail = if ready {
-        "A .json file for the optimizer's import"
+        "JSON for the optimizer's import"
     } else {
-        "Ready once your account's data is in"
+        "Available after login"
     };
     let save = pill(
         "save-export",

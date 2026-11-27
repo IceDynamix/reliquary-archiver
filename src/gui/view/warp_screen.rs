@@ -239,7 +239,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
     let Some(summary) = s.warps_summary() else {
         let message = match (&s.warps.unavailable, s.warps_uid()) {
             (Some(error), _) => format!("The warp database couldn't be opened: {error}"),
-            (None, None) => "Log in to the game once, and the warps of the account are kept from then on.".to_string(),
+            (None, None) => "Log in to start tracking warps.".to_string(),
             (None, Some(_)) => "Reading your warps…".to_string(),
         };
         return el().key("warp-screen").w_full().h_full().fill(t.bg).padding(22.0).child(
@@ -1013,8 +1013,8 @@ fn short_status(message: &str) -> String {
     if let Some(rest) = message.strip_prefix("Synced ") {
         return format!("Synced {rest}");
     }
-    if message.contains("live pulls waiting") {
-        return message.split(" live").next().map_or("Waiting".into(), |n| format!("{n} waiting"));
+    if message.contains(" pulls pending") {
+        return message.split(" pulls").next().map_or("Waiting".into(), |n| format!("{n} waiting"));
     }
     if message.starts_with("Log in") {
         return "Not logged in".into();
@@ -1266,7 +1266,7 @@ fn pity_block(view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
         .child(label_at(format!("Hard {}", rates.hard), t.muted));
 
     let left = if in_soft {
-        "In soft pity: the odds climb every warp".to_string()
+        "In soft pity".to_string()
     } else {
         format!(
             "{} to soft pity, {} to hard pity",
@@ -1336,7 +1336,7 @@ fn odds_row(view: &View, t: &Theme) -> El {
     }
     let caption = match view.budget {
         Some(budget) => format!("With your {} warps", grouped(budget.warps)),
-        None => "Warps it takes, on average. Log in to see what yours buy".to_string(),
+        None => "Average warps needed. Log in to use your own.".to_string(),
     };
     col()
         .key("odds")
@@ -1437,7 +1437,7 @@ fn targets(view: &View, t: &Theme) -> Option<El> {
         Some(0) => "Not owned yet".to_string(),
         Some(c) if c >= most => format!("{} maxed", level(c)),
         Some(c) => format!("You have {}", level(c)),
-        None => "Log in to count what you own".to_string(),
+        None => "Log in to see owned copies".to_string(),
     };
     Some(
         col()
@@ -1703,10 +1703,7 @@ mod tests {
     #[test]
     fn statuses_shorten() {
         assert_eq!(short_status("Synced 2 min ago"), "Synced 2 min ago");
-        assert_eq!(
-            short_status("4 live pulls waiting for the game's history · next look 01:45"),
-            "4 waiting"
-        );
-        assert_eq!(short_status("Log in to the game to start keeping your warps"), "Not logged in");
+        assert_eq!(short_status("4 pulls pending · next check 01:45"), "4 waiting");
+        assert_eq!(short_status("Log in to start tracking warps"), "Not logged in");
     }
 }

@@ -343,7 +343,7 @@ impl Worker {
         self.busy(None);
         match result {
             Ok(Some(uid)) => self.use_key(uid, &key, origin),
-            Ok(None) => self.notice("The authkey works, but its account has no warps", None, false),
+            Ok(None) => self.notice("No warps on this account", None, false),
             Err(ApiError::Expired) => self.notice(
                 "That authkey has expired",
                 Some("Open Warp → View Details in the game for a new one".into()),
@@ -507,7 +507,7 @@ impl Worker {
         }
 
         if let Some(other) = fetched.iter().find(|pull| pull.uid != uid) {
-            let detail = format!("It's UID {}'s, not {uid}'s", other.uid);
+            let detail = format!("It belongs to UID {}", other.uid);
             self.notice("That authkey belongs to another account", Some(detail), true);
             return;
         }
@@ -585,7 +585,7 @@ impl Worker {
             return;
         };
         if !chosen.fits(uid) {
-            let detail = format!("Its pull ids don't end in {:02}, the last digits of UID {uid}", uid % 100);
+            let detail = format!("Pull IDs don't match UID {uid}");
             return self.notice("That profile is another account's", Some(detail), true);
         }
 
@@ -643,11 +643,7 @@ impl Worker {
         }
         // Ids end in the account's last two digits, a file of another account's pulls is turned away
         if let Some(pull) = read.pulls.iter().find(|p| !super::id_belongs_to(p.id.unwrap_or_default(), uid)) {
-            let detail = format!(
-                "Pull {} doesn't end in {:02}, the last digits of UID {uid}",
-                pull.id.unwrap_or_default(),
-                uid % 100
-            );
+            let detail = format!("Pull {} doesn't match UID {uid}", pull.id.unwrap_or_default());
             return self.notice("Those are another account's warps", Some(detail), true);
         }
         let pulls: Vec<Pull> = read

@@ -105,31 +105,28 @@ pub fn status_line(s: &Ui, t: &Theme) -> El {
 pub fn status(s: &Ui, t: &Theme) -> (String, rune::Color) {
     let now = jiff::Timestamp::now().as_second();
     if let Some(error) = &s.warps.unavailable {
-        (format!("Warps can't be kept: {error}"), t.bad)
+        (format!("Can't save warps: {error}"), t.bad)
     } else if let Some(busy) = &s.warps.busy {
         (busy.clone(), t.accent)
     } else if s.warps_uid().is_none() {
-        ("Log in to the game to start keeping your warps".to_string(), t.faint)
+        ("Log in to start tracking warps".to_string(), t.faint)
     } else if let Some(summary) = s.warps_summary() {
         let usable = summary.key.as_ref().is_some_and(|key| key.usable(now));
         if summary.unconfirmed > 0 && usable {
-            let when = summary.next_look.map_or(String::new(), |at| format!(" · next look {}", clock(at)));
-            (
-                format!("{} live pulls waiting for the game's history{when}", summary.unconfirmed),
-                t.warn,
-            )
+            let when = summary.next_look.map_or(String::new(), |at| format!(" · next check {}", clock(at)));
+            (format!("{} pulls pending{when}", summary.unconfirmed), t.warn)
         } else if summary.unconfirmed > 0 {
             (
-                format!("{} live pulls kept · open Warp → View Details to sync", summary.unconfirmed),
+                format!("{} pulls pending · open Warp → View Details to sync", summary.unconfirmed),
                 t.warn,
             )
         } else if let (true, Some(at)) = (usable, summary.last_sync) {
             (format!("Synced {}", ago(now, at)), t.good)
         } else if summary.total == 0 {
-            ("Warps you make are kept from now on".to_string(), t.faint)
+            ("Tracking new warps".to_string(), t.faint)
         } else {
             (
-                format!("{} pulls kept · open Warp → View Details to sync", grouped(summary.total)),
+                format!("{} pulls · open Warp → View Details to sync", grouped(summary.total)),
                 t.faint,
             )
         }
