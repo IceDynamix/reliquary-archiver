@@ -145,7 +145,7 @@ mod tests {
         let fit = art_transform(&main(None), window, Fit::Narrow);
         let [left, top] = apply(fit, [1200.0, -100.0]);
         let [right, _] = apply(fit, [1800.0, -100.0]);
-        assert!(near((left + right) / 2.0, 230.0));
+        assert!(near((left + right) / 2.0, window[0] / 2.0));
         assert!(near(top, narrow_rail_foot() + NARROW_GAP));
     }
 
