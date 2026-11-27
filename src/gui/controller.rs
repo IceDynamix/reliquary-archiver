@@ -50,8 +50,6 @@ pub enum Act {
     CaptureError(bool),
     Unsupported(bool),
     Stalled(bool),
-    /// The selected account's data was picked up from the last run
-    PickedUp(bool),
     ReadingFile(bool),
 
     SyncStarting,
@@ -124,7 +122,6 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
                 s.accounts.push(Account {
                     uid,
                     inventory: Some(INVENTORY),
-                    picked_up: false,
                 });
                 s.select(uid);
             }
@@ -133,7 +130,6 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
             if let Some(Account {
                 uid,
                 inventory: Some(inventory),
-                ..
             }) = s.selected_account().cloned()
             {
                 let grown = Inventory {
@@ -157,11 +153,6 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
         }
         Act::Unsupported(on) => s.capture.unsupported = on,
         Act::Stalled(on) => s.capture.stalled = on,
-        Act::PickedUp(on) => {
-            if let Some(account) = s.accounts.iter_mut().find(|a| Some(a.uid) == s.selected) {
-                account.picked_up = on;
-            }
-        }
         Act::ReadingFile(on) => s.reading_file = on,
 
         Act::SyncStarting => s.sync = LiveSync::Starting,
@@ -318,13 +309,11 @@ const SECTIONS: &[(&str, &[(&str, Act)])] = &[
         ("Capture error", Act::CaptureError(true)),
         ("Unsupported", Act::Unsupported(true)),
         ("Interrupted", Act::Stalled(true)),
-        ("Picked up", Act::PickedUp(true)),
         ("Reading file", Act::ReadingFile(true)),
         ("Clear admin", Act::NeedsAdmin(false)),
         ("Clear error", Act::CaptureError(false)),
         ("Clear unsupported", Act::Unsupported(false)),
         ("Clear interrupted", Act::Stalled(false)),
-        ("Clear picked up", Act::PickedUp(false)),
         ("Done reading", Act::ReadingFile(false)),
     ]),
     ("Live sync", &[

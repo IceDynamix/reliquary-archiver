@@ -1,4 +1,3 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
 use std::ops::Not;
 
 use serde::{Deserialize, Serialize};
@@ -30,14 +29,14 @@ pub struct GachaFunds {
     pub oneric_shards: u32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(Serialize, Debug, Clone, Copy)]
 pub enum BannerType {
     Character,
     LightCone,
     Standard,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct BannerInfo {
     pub rate_up_item_list: Vec<u32>,
     pub banner_type: BannerType,
@@ -133,21 +132,13 @@ pub struct Material {
     pub expire_time: Option<u64>,
 }
 
-/// A relic slot as the export names it. An alias because serde takes a field written `&str` to
-/// borrow from what it reads, which would keep relics from being read back from kept state
-pub type SlotName = &'static str;
-
-/// The trailblazer as the exporter names it, an alias for the same reason as [`SlotName`]
-pub type TrailblazerName = &'static str;
-
 #[serde_as]
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Relic {
     #[serde_as(as = "DisplayFromStr")]
     pub set_id: u32,
     pub name: String,
-    #[serde(deserialize_with = "super::utils::deserialize_slot")]
-    pub slot: SlotName,
+    pub slot: &'static str,
     pub rarity: u32,
     pub level: u32,
     pub mainstat: String,
@@ -231,7 +222,7 @@ pub struct Traces {
     pub stat_9: bool,
     pub stat_10: bool,
     pub special: bool,
-    #[serde(default, skip_serializing_if = "<&bool>::not")]
+    #[serde(skip_serializing_if = "<&bool>::not")]
     pub elation_debt: bool,
 }
 
@@ -245,48 +236,4 @@ impl Memosprite {
     pub fn if_present(self) -> Option<Memosprite> {
         if self.skill == 0 && self.talent == 0 { None } else { Some(self) }
     }
-}
-
-/// What an exporter has captured, in its own terms rather than the game's. The exporter works on
-/// it directly, and it's also what's kept between runs: a new game version changes the commands
-/// but not this. Change [`ExporterState::VERSION`] along with anything here that older states
-/// wouldn't read right.
-#[derive(Serialize, Deserialize, Debug, Clone, Default)]
-pub struct ExporterData {
-    pub(super) initialized: bool,
-    pub(super) uid: Option<u32>,
-    #[serde(default, deserialize_with = "super::utils::deserialize_trailblazer")]
-    pub(super) trailblazer: Option<TrailblazerName>,
-    pub(super) banners: HashMap<u32, BannerInfo>,
-    pub(super) gacha: GachaFunds,
-    pub(super) materials: BTreeMap<u32, Material>,
-    pub(super) light_cones: BTreeMap<u32, LightCone>,
-    pub(super) relics: BTreeMap<u32, Relic>,
-    /// relic recon relics keep a stable id throughout the event
-    pub(super) recon_relics: Vec<u32>,
-    /// All known characters. Level and ascension are only filled in once the base avatar is known
-    pub(super) characters: BTreeMap<u32, Character>,
-    /// The level and ascension of each base avatar, which multipath characters take theirs from
-    pub(super) multipath_base_avatars: HashMap<u32, BaseAvatar>,
-    /// Characters in `characters` that are still waiting for their base avatar
-    pub(super) unresolved_multipath_characters: HashSet<u32>,
-}
-
-/// An exporter's [`ExporterData`] as it's kept between runs, with the version it was kept at
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct ExporterState {
-    pub version: u32,
-    pub data: ExporterData,
-}
-
-impl ExporterState {
-    /// 2: the data is kept as the exporter holds it, its collections keyed by id
-    pub const VERSION: u32 = 2;
-}
-
-/// What multipath characters take from their base avatar
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BaseAvatar {
-    pub level: u32,
-    pub ascension: u32,
 }

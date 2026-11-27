@@ -83,17 +83,6 @@ async fn tap_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc:
     // The GUI keeps capturing for as long as it runs, a single bad packet shouldn't cost it a network interface
     let mut session = CaptureSession::new(manager, false);
 
-    // Pick up a game that's still logged in from the last run
-    let kept = tokio::task::spawn_blocking(|| crate::warps::store::default_path().and_then(crate::resume::start))
-        .await
-        .ok()
-        .flatten();
-    if let Some((saved, keep)) = kept {
-        session.resume_from(saved, move |session| {
-            keep.send(session).ok();
-        });
-    }
-
     // The tap reopens itself whenever it fails, so this only ends if the tap is done for good
     let mut packets = tap.open();
 

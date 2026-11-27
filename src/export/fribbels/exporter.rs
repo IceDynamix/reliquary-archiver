@@ -1,6 +1,6 @@
-use std::collections::{BTreeMap, HashMap};
-use std::ops::{Deref, DerefMut};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::{GameCommand, command_id};
 #[cfg(feature = "stream")]
 use tokio::sync::broadcast;
@@ -12,39 +12,26 @@ use crate::export::fribbels::models::*;
 
 pub struct OptimizerExporter {
     pub(super) database: &'static Database,
-    /// Everything captured, which is also what's kept between runs
-    pub(super) data: Tracked<ExporterData>,
+
+    // State fields
+    pub(super) initialized: bool,
+    pub(super) uid: Option<u32>,
+    pub(super) trailblazer: Option<&'static str>,
+    pub(super) banners: HashMap<u32, BannerInfo>,
+    pub(super) gacha: GachaFunds,
+    pub(super) materials: BTreeMap<u32, Material>,
+    pub(super) light_cones: BTreeMap<u32, LightCone>,
+    pub(super) relics: BTreeMap<u32, Relic>,
+    /// relic recon relics keep a stable id throughout the event
+    pub(super) recon_relics: Vec<u32>,
+    /// All known characters. Level and ascension are only filled in once the base avatar is known
+    pub(super) characters: BTreeMap<u32, Character>,
+    pub(super) multipath_base_avatars: HashMap<u32, ProtoCharacter>,
+    /// Characters in `characters` that are still waiting for their base avatar
+    pub(super) unresolved_multipath_characters: HashSet<u32>,
 
     #[cfg(feature = "stream")]
     pub(super) event_channel: broadcast::Sender<OptimizerEvent>,
-}
-
-/// A value that counts the times it was borrowed to be written to, see
-/// [`OptimizerExporter::generation`]. Reading through it leaves the count alone.
-pub(super) struct Tracked<T> {
-    value: T,
-    generation: u64,
-}
-
-impl<T> Tracked<T> {
-    fn new(value: T) -> Self {
-        Self { value, generation: 0 }
-    }
-}
-
-impl<T> Deref for Tracked<T> {
-    type Target = T;
-
-    fn deref(&self) -> &T {
-        &self.value
-    }
-}
-
-impl<T> DerefMut for Tracked<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        self.generation += 1;
-        &mut self.value
-    }
 }
 
 impl Default for OptimizerExporter {
@@ -57,82 +44,58 @@ impl OptimizerExporter {
     pub fn new() -> OptimizerExporter {
         OptimizerExporter {
             database: get_database(),
-            data: Tracked::new(ExporterData::default()),
+
+            // Initialize state fields
+            initialized: false,
+            uid: None,
+            trailblazer: None,
+            banners: HashMap::new(),
+            gacha: GachaFunds::default(),
+            materials: BTreeMap::new(),
+            light_cones: BTreeMap::new(),
+            relics: BTreeMap::new(),
+            recon_relics: Vec::new(),
+            characters: BTreeMap::new(),
+            multipath_base_avatars: HashMap::new(),
+            unresolved_multipath_characters: HashSet::new(),
 
             #[cfg(feature = "stream")]
             event_channel: broadcast::channel(16).0,
         }
     }
 
-    /// Everything captured, to keep between runs and [`restore`](Self::restore) later
-    pub fn state(&self) -> ExporterState {
-        ExporterState {
-            version: ExporterState::VERSION,
-            data: (*self.data).clone(),
-        }
-    }
-
-    /// Picks up from a [`state`](Self::state) kept earlier, as if its commands had been read
-    /// again. Returns false, leaving the exporter as it was, for a state of another version.
-    ///
-    /// The exporter is changed in place, so whoever is subscribed to its events stays subscribed.
-    pub fn restore(&mut self, state: ExporterState) -> bool {
-        if state.version != ExporterState::VERSION {
-            warn!(
-                version = state.version,
-                "kept exporter state is of another version, not restoring it"
-            );
-            return false;
-        }
-        *self.data = state.data;
-
-        #[cfg(feature = "stream")]
-        if self.data.initialized {
-            self.emit_initial_scan();
-        }
-        true
-    }
-
-    /// Goes up whenever what the exporter captured may have changed, so whatever keeps its
-    /// [`state`](Self::state) can tell whether it needs to again by comparing with the
-    /// generation it last kept. It can go up without anything having changed, never the
-    /// other way round.
-    pub fn generation(&self) -> u64 {
-        self.data.generation
-    }
-
     /// The uid of the account, once it is known
     pub fn uid(&self) -> Option<u32> {
-        self.data.uid
+        self.uid
     }
 
     /// Which trailblazer the account plays, once it is known
     pub fn trailblazer(&self) -> Option<&'static str> {
-        self.data.trailblazer
+        self.trailblazer
     }
 
     pub fn gacha_funds(&self) -> GachaFunds {
-        self.data.gacha
+        self.gacha
     }
 
     /// The gacha banners by id
     pub fn banners(&self) -> &HashMap<u32, BannerInfo> {
-        &self.data.banners
+        &self.banners
     }
 
     /// Materials by id
     pub fn materials(&self) -> &BTreeMap<u32, Material> {
-        &self.data.materials
+        &self.materials
     }
 
     /// Light cones by unique id
     pub fn light_cones(&self) -> &BTreeMap<u32, LightCone> {
-        &self.data.light_cones
+        &self.light_cones
     }
 
     /// Relics by unique id
     pub fn relics(&self) -> &BTreeMap<u32, Relic> {
-        &self.data.relics
+        &self.relics
     }
 
     /// Characters by id.
@@ -140,12 +103,12 @@ impl OptimizerExporter {
     /// A multipath character's level and ascension come from its base avatar. Until that has been
     /// captured, they are 0, like in the export.
     pub fn characters(&self) -> &BTreeMap<u32, Character> {
-        &self.data.characters
+        &self.characters
     }
 
     #[allow(unused_variables)]
     fn emit_event(&self, event: OptimizerEvent) {
-        if self.data.initialized {
+        if self.initialized {
             // Send only fails if there are no active receivers. We don't care if this is the case.
             #[cfg(feature = "stream")]
             self.event_channel.send(event).ok();
@@ -155,34 +118,34 @@ impl OptimizerExporter {
     }
 
     fn reset(&mut self) {
-        self.data.initialized = false;
-        self.data.uid = None;
-        self.data.trailblazer = None;
-        self.data.banners.clear();
-        self.data.gacha = GachaFunds::default();
-        self.data.materials.clear();
-        self.data.light_cones.clear();
-        self.data.relics.clear();
-        self.data.characters.clear();
-        self.data.multipath_base_avatars.clear();
-        self.data.unresolved_multipath_characters.clear();
+        self.initialized = false;
+        self.uid = None;
+        self.trailblazer = None;
+        self.banners.clear();
+        self.gacha = GachaFunds::default();
+        self.materials.clear();
+        self.light_cones.clear();
+        self.relics.clear();
+        self.characters.clear();
+        self.multipath_base_avatars.clear();
+        self.unresolved_multipath_characters.clear();
     }
 
     fn is_finishable(&self) -> bool {
-        self.data.trailblazer.is_some()
-            && self.data.uid.is_some()
-            && !self.data.relics.is_empty()
+        self.trailblazer.is_some()
+            && self.uid.is_some()
+            && !self.relics.is_empty()
             // at least one character has its level and ascension
-            && self.data.characters.len() > self.data.unresolved_multipath_characters.len()
-            && !self.data.light_cones.is_empty()
+            && self.characters.len() > self.unresolved_multipath_characters.len()
+            && !self.light_cones.is_empty()
     }
 
     fn is_empty(&self) -> bool {
-        self.data.trailblazer.is_none()
-            && self.data.uid.is_none()
-            && self.data.relics.is_empty()
-            && self.data.characters.is_empty()
-            && self.data.light_cones.is_empty()
+        self.trailblazer.is_none()
+            && self.uid.is_none()
+            && self.relics.is_empty()
+            && self.characters.is_empty()
+            && self.light_cones.is_empty()
     }
 
     #[cfg(feature = "stream")]
@@ -286,8 +249,8 @@ impl Exporter for OptimizerExporter {
             }
         }
 
-        if !self.data.initialized && self.is_finishable() {
-            self.data.initialized = true;
+        if !self.initialized && self.is_finishable() {
+            self.initialized = true;
             info!("finished initialization");
 
             #[cfg(feature = "stream")]
@@ -300,7 +263,7 @@ impl Exporter for OptimizerExporter {
     }
 
     fn is_initialized(&self) -> bool {
-        self.data.initialized
+        self.initialized
     }
 
     #[instrument(skip_all)]
@@ -310,29 +273,29 @@ impl Exporter for OptimizerExporter {
             return None;
         }
 
-        if self.data.trailblazer.is_none() {
+        if self.trailblazer.is_none() {
             warn!("trailblazer gender was not recorded");
         }
 
-        if self.data.uid.is_none() {
+        if self.uid.is_none() {
             warn!("uid was not recorded");
         }
 
-        if self.data.relics.is_empty() {
+        if self.relics.is_empty() {
             warn!("relics were not recorded");
         }
 
-        if self.data.light_cones.is_empty() {
+        if self.light_cones.is_empty() {
             warn!("light cones were not recorded");
         }
 
-        if self.data.characters.is_empty() {
+        if self.characters.is_empty() {
             warn!("characters were not recorded");
         }
 
-        if !self.data.unresolved_multipath_characters.is_empty() {
+        if !self.unresolved_multipath_characters.is_empty() {
             warn!(
-                num = self.data.unresolved_multipath_characters.len(),
+                num = self.unresolved_multipath_characters.len(),
                 "multipath characters were not resolved"
             );
         }
@@ -342,15 +305,15 @@ impl Exporter for OptimizerExporter {
             build: env!("CARGO_PKG_VERSION"),
             version: 4,
             metadata: Metadata {
-                uid: self.data.uid,
-                trailblazer: self.data.trailblazer,
+                uid: self.uid,
+                trailblazer: self.trailblazer,
             },
-            gacha: self.data.gacha,
-            materials: self.data.materials.values().cloned().collect(),
-            light_cones: self.data.light_cones.values().cloned().collect(),
-            relics: self.data.relics.values().cloned().collect(),
-            characters: self.data.characters.values().cloned().collect(),
-            recon_relics: self.data.recon_relics.clone(),
+            gacha: self.gacha,
+            materials: self.materials.values().cloned().collect(),
+            light_cones: self.light_cones.values().cloned().collect(),
+            relics: self.relics.values().cloned().collect(),
+            characters: self.characters.values().cloned().collect(),
+            recon_relics: self.recon_relics.clone(),
         };
 
         Some(export)

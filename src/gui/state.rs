@@ -367,9 +367,6 @@ pub struct Account {
     pub uid: u32,
     /// What the account holds, once all of its login data arrived
     pub inventory: Option<Inventory>,
-    /// Its data was picked up from the last run, so what changed while the archiver was closed
-    /// is missing until it logs in again
-    pub picked_up: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -492,7 +489,6 @@ impl Ui {
             Some(Account {
                 uid,
                 inventory: Some(inventory),
-                ..
             }) => Stage::Ready {
                 uid: *uid,
                 inventory: *inventory,
@@ -568,24 +564,6 @@ impl Ui {
 
     /// Applies what the capture session made of a packet. True when that changed anything
     pub fn session_event(&mut self, event: &SessionEvent) -> bool {
-        if let SessionEvent::AccountSeen { uid } | SessionEvent::PickedUp { uid } = *event {
-            // The session reports these in order, the login a pick-up starts from first
-            let picked_up = matches!(event, SessionEvent::PickedUp { .. });
-            return match self.accounts.iter_mut().find(|a| a.uid == uid) {
-                Some(account) => std::mem::replace(&mut account.picked_up, picked_up) != picked_up,
-                // Its AccountLoggedIn is still on its way, which keeps what's set here
-                None if picked_up => {
-                    self.accounts.push(Account {
-                        uid,
-                        inventory: None,
-                        picked_up,
-                    });
-                    true
-                }
-                None => false,
-            };
-        }
-
         let capture = &mut self.capture;
         let before = (capture.connected, capture.stalled, capture.unsupported);
         match event {
@@ -601,7 +579,6 @@ impl Ui {
             SessionEvent::Recovered => capture.stalled = false,
             SessionEvent::PacketsDecoded(_)
             | SessionEvent::AccountSeen { .. }
-            | SessionEvent::PickedUp { .. }
             | SessionEvent::LoginFinished
             | SessionEvent::DecodeError
             | SessionEvent::Warp(_) => {}
@@ -615,11 +592,7 @@ impl Ui {
     pub fn account_logged_in(&mut self, uid: u32) {
         match self.accounts.iter_mut().find(|a| a.uid == uid) {
             Some(account) => account.inventory = None,
-            None => self.accounts.push(Account {
-                uid,
-                inventory: None,
-                picked_up: false,
-            }),
+            None => self.accounts.push(Account { uid, inventory: None }),
         }
         // Whoever logged in last is who the user is looking at in the game
         self.select(uid);
@@ -1618,21 +1591,6 @@ mod tests {
         let mut ui = ui();
         assert!(!ui.inventory_changed(7, Inventory::default()));
         assert!(ui.accounts.is_empty());
-    }
-
-    #[test]
-    fn a_picked_up_account_is_flagged_until_it_logs_in_again() {
-        let mut ui = ui();
-        let picked_up = |ui: &Ui| ui.accounts.iter().find(|a| a.uid == 7).map(|a| a.picked_up);
-
-        // The session's events can come before the account's own
-        assert!(!ui.session_event(&SessionEvent::AccountSeen { uid: 7 }));
-        assert!(ui.session_event(&SessionEvent::PickedUp { uid: 7 }));
-        ui.account_logged_in(7);
-        assert_eq!(picked_up(&ui), Some(true));
-
-        assert!(ui.session_event(&SessionEvent::AccountSeen { uid: 7 }));
-        assert_eq!(picked_up(&ui), Some(false));
     }
 
     #[test]

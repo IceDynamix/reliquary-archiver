@@ -6,7 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures::lock::Mutex;
 use reliquary::network::command::command_id::{self, PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
@@ -18,7 +18,7 @@ use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp
 use reliquary::network::command::{GameCommand, GameCommandError};
 use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, NetworkError};
 use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::fribbels::{Export, ExporterState, OptimizerExporter};
+use reliquary_archiver::export::fribbels::{Export, OptimizerExporter};
 use tracing::{info, trace, warn};
 
 use crate::accounts::MultiAccountManager;
@@ -29,31 +29,6 @@ use crate::warps::{BannerInfo, LiveRequest, WarpEvent};
 
 /// The web app the game asks an authkey for when it opens the warp history
 const WARP_HISTORY_APP: &str = "webview_gacha";
-
-/// How often at most what changed is handed over to be kept, see [`CaptureSession::resume_from`]
-const KEEP_EVERY: Duration = Duration::from_secs(2);
-
-/// A connection's account, session key and captured state, kept to pick the connection up again
-/// after a restart
-#[derive(Debug, Clone)]
-pub struct SavedSession {
-    pub conv_id: u32,
-    pub uid: u32,
-    /// The seed of the session key (`PlayerGetTokenScRsp.secret_key_seed`)
-    pub seed: u64,
-    pub state: ExporterState,
-}
-
-/// Sessions kept from earlier runs and where to send what to keep
-struct Resume {
-    /// By conversation, until traffic of theirs decodes
-    saved: HashMap<u32, SavedSession>,
-    keep: Box<dyn Fn(SavedSession) + Send + Sync>,
-    /// The [generation](OptimizerExporter::generation) each conversation's exporter was last
-    /// kept at
-    kept: HashMap<u32, u64>,
-    last_kept: Instant,
-}
 
 /// Something that happened while processing a packet
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,13 +43,6 @@ pub enum SessionEvent {
     },
     /// The game finished sending its login data
     LoginFinished,
-    /// An account's connection was picked up from the last run (see
-    /// [`CaptureSession::resume_from`]), right after its [`SessionEvent::AccountSeen`]. Its data
-    /// is what was kept then: whatever changed while the archiver was closed is missing until
-    /// it logs in again, which brings a plain [`SessionEvent::AccountSeen`].
-    PickedUp {
-        uid: u32,
-    },
     /// The traffic can't be decrypted, which means the game version is not supported
     DecryptionKeyMissing,
     /// A packet or command could not be decoded, capturing can continue
@@ -107,9 +75,6 @@ pub struct CaptureSession {
     conv_uids: HashMap<u32, u32>,
     /// The warp each connection asked for last, until its result arrives: (banner, request counter)
     gacha_requests: HashMap<u32, (u32, u32)>,
-    /// The seed of each connection's session key
-    seeds: HashMap<u32, u64>,
-    resume: Option<Resume>,
 }
 
 impl CaptureSession {
@@ -125,28 +90,7 @@ impl CaptureSession {
             stall: StallDetector::default(),
             conv_uids: HashMap::new(),
             gacha_requests: HashMap::new(),
-            seeds: HashMap::new(),
-            resume: None,
         }
-    }
-
-    /// Picks up the `saved` sessions when their connections turn out to be still going: when
-    /// a command of theirs decrypts with the kept key, their exporters carry on from the kept
-    /// state, as if the login had been captured. From then on, every session's account, key
-    /// and state go to `keep` whenever they change, [`KEEP_EVERY`] at most.
-    pub fn resume_from(&mut self, saved: Vec<SavedSession>, keep: impl Fn(SavedSession) + Send + Sync + 'static) {
-        let saved: HashMap<u32, SavedSession> = saved.into_iter().map(|session| (session.conv_id, session)).collect();
-        for sniffer in self.sniffers.values_mut() {
-            for session in saved.values() {
-                sniffer.set_session_key(session.conv_id, session.seed);
-            }
-        }
-        self.resume = Some(Resume {
-            saved,
-            keep: Box::new(keep),
-            kept: HashMap::new(),
-            last_kept: Instant::now(),
-        });
     }
 
     pub async fn handle_packet(&mut self, packet: Packet) -> Vec<SessionEvent> {
@@ -158,65 +102,7 @@ impl CaptureSession {
             push_stall_change(&mut events, change);
         }
 
-        self.keep_changed().await;
         events
-    }
-
-    /// Hands the sessions whose exporter changed to be kept, if it's been long enough. Whatever
-    /// changed them, a command or anything else, shows in the exporter's generation.
-    async fn keep_changed(&mut self) {
-        let Some(resume) = self.resume.as_mut() else { return };
-        if resume.last_kept.elapsed() < KEEP_EVERY {
-            return;
-        }
-        resume.last_kept = Instant::now();
-        for (&conv_id, &uid) in &self.conv_uids {
-            let Some(&seed) = self.seeds.get(&conv_id) else { continue };
-            let Some(exporter) = self.manager.lock().await.get_conv_exporter(conv_id) else {
-                continue;
-            };
-            let exporter = exporter.lock().await;
-            let generation = exporter.generation();
-            if resume.kept.get(&conv_id) == Some(&generation) {
-                continue;
-            }
-            let state = exporter.state();
-            drop(exporter);
-            resume.kept.insert(conv_id, generation);
-            (resume.keep)(SavedSession { conv_id, uid, seed, state });
-        }
-    }
-
-    /// Restores the kept session of the connection, if it has one and it hasn't been seen yet
-    async fn resume_connection(&mut self, conv_id: u32, command_id: u16, events: &mut Vec<SessionEvent>) {
-        let Some(resume) = self.resume.as_mut() else { return };
-        if self.conv_uids.contains_key(&conv_id) {
-            return;
-        }
-        let Some(saved) = resume.saved.remove(&conv_id) else { return };
-        if command_id == PlayerGetTokenScRsp {
-            // A login of its own after all, which brings a new key and everything else
-            return;
-        }
-
-        let exporter = self.manager.lock().await.get_or_create_exporter(conv_id);
-        let mut restoring = exporter.lock().await;
-        if !restoring.restore(saved.state) {
-            return;
-        }
-        // What was restored is what's kept already
-        resume.kept.insert(conv_id, restoring.generation());
-        drop(restoring);
-        info!(conv_id, uid = saved.uid, "picked up the connection from the last run");
-        self.seeds.insert(conv_id, saved.seed);
-        self.conv_uids.insert(conv_id, saved.uid);
-        self.manager.lock().await.register_uid(conv_id, saved.uid);
-        self.latest_uid = Some(saved.uid);
-        events.push(SessionEvent::AccountSeen { uid: saved.uid });
-        events.push(SessionEvent::PickedUp { uid: saved.uid });
-        if exporter.lock().await.is_initialized() {
-            events.push(SessionEvent::LoginFinished);
-        }
     }
 
     /// Decodes the packet and routes its commands. Returns no events for packets that aren't game traffic.
@@ -229,18 +115,8 @@ impl CaptureSession {
             return events;
         }
 
-        let received = {
-            let saved = self.resume.iter().flat_map(|resume| resume.saved.values());
-            let sniffer = self.sniffers.entry(source).or_insert_with(|| {
-                let mut sniffer = GameSniffer::new();
-                for session in saved {
-                    sniffer.set_session_key(session.conv_id, session.seed);
-                }
-                sniffer
-            });
-            sniffer.receive_packet(packet.data)
-        };
-        let packets = match received {
+        let sniffer = self.sniffers.entry(source).or_default();
+        let packets = match sniffer.receive_packet(packet.data) {
             Ok(packets) => packets,
             Err(NetworkError::ConnectionPacket(ConnectionPacketError::IncorrectPorts)) => {
                 // Not game traffic, which is expected from sources that don't filter by port
@@ -330,8 +206,6 @@ impl CaptureSession {
     }
 
     async fn handle_command(&mut self, conv_id: u32, command: GameCommand, events: &mut Vec<SessionEvent>) {
-        self.resume_connection(conv_id, command.command_id, events).await;
-
         if command.command_id == PlayerLoginScRsp {
             info!(conv_id, "detected login start");
         }
@@ -348,7 +222,6 @@ impl CaptureSession {
             && let Ok(token_rsp) = command.parse_proto::<PlayerGetTokenScRspProto>()
         {
             let uid = token_rsp.uid;
-            self.seeds.insert(conv_id, token_rsp.secret_key_seed);
             self.conv_uids.insert(conv_id, uid);
             self.manager.lock().await.register_uid(conv_id, uid);
             self.latest_uid = Some(uid);
@@ -668,75 +541,6 @@ mod tests {
             banners.iter().map(|b| (b.gacha_id, &b.rate_up)).collect::<Vec<_>>()
         );
         assert!(banners.iter().any(|b| b.gacha_id == 2142));
-    }
-
-    /// Replays 4.7standard.pcapng from `RQA_CAPTURES` as a restart halfway through would see it:
-    /// a first run until the login is done, then a second that only gets the rest, with what
-    /// the first one kept. The second should end up where a run over all of it does.
-    #[tokio::test]
-    async fn a_restart_picks_the_connection_up_with_the_kept_session() {
-        use futures::StreamExt;
-
-        let Ok(dir) = std::env::var("RQA_CAPTURES") else {
-            return;
-        };
-        let replay = crate::capture::Replay::for_path(std::path::Path::new(&dir).join("4.7standard.pcapng")).unwrap();
-        let packets: Vec<Packet> = replay.open().unwrap().map(|packet| packet.unwrap()).collect().await;
-
-        let pulls = |events: &[SessionEvent]| {
-            events
-                .iter()
-                .filter_map(|event| match event {
-                    SessionEvent::Warp(WarpEvent::Pulled(request)) => Some((request.request_no, request.items.clone())),
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-        let export = async |session: &CaptureSession| serde_json::to_value(session.export().await.unwrap()).unwrap();
-
-        // All of it in one run
-        let mut whole = session();
-        let mut whole_events = Vec::new();
-        for packet in &packets {
-            whole_events.extend(whole.handle_packet(packet.clone()).await);
-        }
-
-        // The first run stops a little after the login, before the warps
-        let mut first = session();
-        let mut stop = None;
-        for (i, packet) in packets.iter().enumerate() {
-            let events = first.handle_packet(packet.clone()).await;
-            if stop.is_none() && events.contains(&SessionEvent::LoginFinished) {
-                stop = Some(i + 200);
-            }
-            if stop == Some(i) {
-                break;
-            }
-        }
-        let stop = stop.expect("the capture has a login");
-        let (&conv_id, &uid) = first.conv_uids.iter().next().unwrap();
-        let state = first.manager.lock().await.get_conv_exporter(conv_id).unwrap().lock().await.state();
-        let saved = SavedSession {
-            conv_id,
-            uid,
-            seed: first.seeds[&conv_id],
-            state: serde_json::from_str(&serde_json::to_string(&state).unwrap()).unwrap(),
-        };
-
-        // The second gets the rest
-        let mut second = session();
-        second.resume_from(vec![saved], |_| {});
-        let mut second_events = Vec::new();
-        for packet in &packets[stop + 1..] {
-            second_events.extend(second.handle_packet(packet.clone()).await);
-        }
-
-        assert!(second_events.contains(&SessionEvent::AccountSeen { uid }));
-        assert!(second_events.contains(&SessionEvent::PickedUp { uid }));
-        assert!(second.is_initialized().await);
-        assert!(!pulls(&second_events).is_empty(), "the warps after the restart are seen");
-        assert!(pulls(&whole_events).ends_with(&pulls(&second_events)));
-        assert_eq!(export(&second).await, export(&whole).await);
     }
 
     #[tokio::test]

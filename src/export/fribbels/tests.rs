@@ -145,7 +145,7 @@ fn character_gets_its_level_once_the_base_avatar_is_known() {
     let mut exporter = OptimizerExporter::new();
 
     assert!(exporter.ingest_multipath_character(&path_data(MARCH_7TH)).is_none());
-    assert_eq!(exporter.data.characters[&MARCH_7TH].level, 0);
+    assert_eq!(exporter.characters[&MARCH_7TH].level, 0);
 
     exporter.ingest_character(&base_avatar(MARCH_7TH, 80, 6));
 
@@ -198,14 +198,14 @@ fn player_sync_updates_and_deletes_relics() {
         ..Default::default()
     });
     assert!(matches!(events.as_slice(), [OptimizerEvent::UpdateRelics(relics)] if relics.len() == 2));
-    assert_eq!(exporter.data.relics.len(), 2);
+    assert_eq!(exporter.relics.len(), 2);
 
     let events = exporter.handle_player_sync(PlayerSyncScNotify {
         del_relic_list: vec![1],
         ..Default::default()
     });
     assert!(matches!(events.as_slice(), [OptimizerEvent::DeleteRelics(ids)] if ids == &[1]));
-    assert_eq!(exporter.data.relics.keys().copied().collect::<Vec<_>>(), vec![2]);
+    assert_eq!(exporter.relics.keys().copied().collect::<Vec<_>>(), vec![2]);
 }
 
 #[test]
@@ -256,67 +256,5 @@ fn banner_without_prizes_does_not_panic() {
         }],
         ..Default::default()
     });
-    assert!(matches!(
-        exporter.data.banners[&CHARACTER_BANNER].banner_type,
-        BannerType::Character
-    ));
-}
-
-#[test]
-fn kept_state_restores_the_same_export_and_carries_on() {
-    let mut exporter = exporter_with_banner(HIMEKO);
-    exporter.handle_player_sync(PlayerSyncScNotify {
-        relic_list: vec![relic(7, 1), relic(8, 1)],
-        ..Default::default()
-    });
-    exporter.ingest_character(&base_avatar(MARCH_7TH, 60, 5));
-    exporter.ingest_multipath_character(&path_data(MARCH_7TH));
-    // Waits for a base avatar the restored exporter has to remember it's waiting for
-    exporter.ingest_multipath_character(&path_data(HIMEKO));
-
-    let json = serde_json::to_string(&exporter.state()).unwrap();
-    let mut restored = OptimizerExporter::new();
-    assert!(restored.restore(serde_json::from_str(&json).unwrap()));
-
-    let export = |e: &OptimizerExporter| serde_json::to_value(e.export().unwrap()).unwrap();
-    assert_eq!(export(&restored), export(&exporter));
-
-    restored.ingest_character(&base_avatar(HIMEKO, 80, 6));
-    assert_eq!(restored.characters()[&HIMEKO].level, 80);
-    assert!(restored.handle_gacha(pull(&[HIMEKO])).is_some(), "the banner is still known");
-}
-
-#[test]
-fn kept_state_of_another_version_is_left_alone() {
-    let mut state = OptimizerExporter::new().state();
-    state.version += 1;
-    state.data.uid = Some(1);
-    let mut exporter = OptimizerExporter::new();
-    assert!(!exporter.restore(state));
-    assert_eq!(exporter.uid(), None);
-}
-
-#[test]
-fn generation_goes_up_with_what_is_captured_but_not_with_reading_it() {
-    let mut exporter = exporter_with_banner(HIMEKO);
-    let start = exporter.generation();
-
-    let _ = (
-        exporter.state(),
-        exporter.export(),
-        exporter.relics().len(),
-        exporter.is_initialized(),
-    );
-    assert_eq!(exporter.generation(), start, "reading leaves it alone");
-
-    exporter.handle_player_sync(PlayerSyncScNotify {
-        relic_list: vec![relic(7, 1)],
-        ..Default::default()
-    });
-    assert!(exporter.generation() > start, "a captured relic counts");
-
-    let mut restored = OptimizerExporter::new();
-    let before = restored.generation();
-    assert!(restored.restore(exporter.state()));
-    assert!(restored.generation() > before, "restoring counts too");
+    assert!(matches!(exporter.banners[&CHARACTER_BANNER].banner_type, BannerType::Character));
 }

@@ -27,8 +27,6 @@ mod capture;
 mod cli;
 mod logging;
 mod merge;
-#[cfg(feature = "gui")]
-mod resume;
 mod session;
 mod stall;
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]
