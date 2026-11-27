@@ -10,7 +10,6 @@ use std::time::Instant;
 
 use futures::lock::Mutex;
 use reliquary::network::command::command_id::{self, PlayerLoginFinishScRsp, PlayerLoginScRsp};
-use reliquary::network::command::proto::DoGachaCsReq::DoGachaCsReq as DoGachaCsReqProto;
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp as DoGachaScRspProto;
 use reliquary::network::command::proto::GetAuthkeyScRsp::GetAuthkeyScRsp as GetAuthkeyScRspProto;
 use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp as GetGachaInfoScRspProto;
@@ -69,8 +68,6 @@ pub struct CaptureSession {
     /// Sources that sent something that isn't game traffic and are ignored from then on
     poisoned_sources: Option<HashSet<u64>>,
     stall: StallDetector,
-    /// The warp each connection asked for last, until its result arrives: (banner, request counter)
-    gacha_requests: HashMap<u32, (u32, u32)>,
 }
 
 impl CaptureSession {
@@ -83,7 +80,6 @@ impl CaptureSession {
             manager,
             poisoned_sources: poison_sources.then(HashSet::new),
             stall: StallDetector::default(),
-            gacha_requests: HashMap::new(),
         }
     }
 
@@ -211,7 +207,7 @@ impl CaptureSession {
         let manager = self.manager.clone();
         let mut manager = manager.lock().await;
 
-        if let Some(event) = self.warp_event(conv_id, manager.uid_of(conv_id), &command) {
+        if let Some(event) = self.warp_event(manager.uid_of(conv_id), &command) {
             events.push(SessionEvent::Warp(event));
         }
 
@@ -222,21 +218,13 @@ impl CaptureSession {
     }
 
     /// What the command says about warps, if anything. `uid` is the account the connection logged in as.
-    fn warp_event(&mut self, conv_id: u32, uid: Option<u32>, command: &GameCommand) -> Option<WarpEvent> {
+    fn warp_event(&self, uid: Option<u32>, command: &GameCommand) -> Option<WarpEvent> {
         match command.command_id {
-            command_id::DoGachaCsReq => {
-                // The request carries the account's warp request counter, the result doesn't
-                let request = command.parse_proto::<DoGachaCsReqProto>().ok()?;
-                self.gacha_requests.insert(conv_id, (request.gacha_id, request.gacha_random));
-                None
-            }
             command_id::DoGachaScRsp => {
                 let result = command.parse_proto::<DoGachaScRspProto>().ok()?;
-                let request_no = self
-                    .gacha_requests
-                    .remove(&conv_id)
-                    .filter(|(gacha_id, _)| *gacha_id == result.gacha_id)
-                    .map(|(_, counter)| counter);
+                // The result carries the counter the account's next warp request will send, one
+                // more than this request's
+                let request_no = result.next_gacha_random.checked_sub(1);
                 if result.retcode != 0 || result.gacha_item_list.is_empty() {
                     return None;
                 }
