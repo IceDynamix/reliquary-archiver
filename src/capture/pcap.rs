@@ -131,6 +131,9 @@ fn pcap_filter() -> String {
     format!("udp portrange {}-{}", GAME_PORTS.0, GAME_PORTS.1)
 }
 
+/// libpcap's DLT_RAW (raw IP) on most platforms, which some files carry instead of LINKTYPE_RAW
+const DLT_RAW: i32 = 12;
+
 /// Turns a packet read from a file into an Ethernet frame, which is what the sniffer expects
 fn normalize_offline_pcap_payload(linktype: pcap::Linktype, payload: &[u8]) -> std::result::Result<Vec<u8>, String> {
     fn frame_ip_payload(payload: &[u8], ethertype: u16) -> Vec<u8> {
@@ -146,7 +149,7 @@ fn normalize_offline_pcap_payload(linktype: pcap::Linktype, payload: &[u8]) -> s
     let is_ethernet = linktype == pcap::Linktype::ETHERNET || link_name.as_deref() == Some("EN10MB");
     let is_ipv4 = linktype == pcap::Linktype::IPV4 || link_name.as_deref() == Some("IPV4");
     let is_ipv6 = linktype == pcap::Linktype::IPV6 || link_name.as_deref() == Some("IPV6");
-    let is_raw_ip = linktype == pcap::Linktype::RAW || linktype.0 == 12 || link_name.as_deref() == Some("RAW");
+    let is_raw_ip = linktype == pcap::Linktype::RAW || linktype.0 == DLT_RAW || link_name.as_deref() == Some("RAW");
 
     if is_ethernet {
         return Ok(payload.to_vec());

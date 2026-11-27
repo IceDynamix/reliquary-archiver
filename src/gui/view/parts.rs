@@ -8,6 +8,7 @@
 
 use rune::{Color, Cx, El, Icon, LineCap, Path, Shape, Tx, col, el, icon, row, text};
 
+use super::format::sentence;
 use crate::gui::state::Ui;
 use crate::gui::theme::{self, Theme};
 
@@ -25,20 +26,6 @@ const OFFSET: f32 = 7.0;
 /// Light catching the top of glass: white over dark glass, stronger over light
 fn sheen(t: &Theme) -> Color {
     Color::WHITE.alpha(if t.dark { 0.07 } else { 0.55 })
-}
-
-/// Gold, for progress and what's done, in every theme as the game keeps it
-pub fn progress(t: &Theme) -> Color {
-    if t.dark {
-        rune::oklch(0.8, 0.12, 82.0)
-    } else {
-        rune::oklch(0.68, 0.13, 75.0)
-    }
-}
-
-/// The fill of plates: nearly opaque, a background image only just shows through
-pub fn glass(t: &Theme) -> Color {
-    t.panel.alpha(if t.dark { 0.93 } else { 0.95 })
 }
 
 /// A panel: light catches its top edge, and it sits on a soft shadow
@@ -100,7 +87,7 @@ fn cut_ticket(key: &str, tears: &[&str], surface: Option<El>, corners: [f32; 4],
     let mut tint = el()
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
         .corners(corners)
-        .fill(glass(t))
+        .fill(t.glass)
         .linear_gradient(std::f32::consts::PI, [(0.0, sheen(t)), (0.35, sheen(t).alpha(0.0))])
         .border(1.0, Color::WHITE.alpha(if t.dark { 0.05 } else { 0.35 }));
     let surface = surface.map(|surface| {
@@ -154,8 +141,7 @@ fn accent_lines(w: f32, h: f32, t: &Theme) -> Shape {
 
 /// A tag on a plate's top edge: a sharp strip of color, as the game tags its cards. Put it first
 /// in the plate
-pub fn tab(key: &str, label: &str, tint: Color, cx: &Cx<Ui>, t: &Theme) -> El {
-    let _ = cx;
+pub fn tab(key: &str, label: &str, tint: Color, t: &Theme) -> El {
     row()
         .key(key)
         .h(24.0)
@@ -166,19 +152,7 @@ pub fn tab(key: &str, label: &str, tint: Color, cx: &Cx<Ui>, t: &Theme) -> El {
         .ml(TAG_INSET)
         .self_start()
         .fill(tint)
-        .child(text(sentence(label)).font(TAB).color(t.on_accent))
-}
-
-const TAB: rune::TextStyle = rune::TextStyle::new(13.0, 650.0).lh(16.0).tracking(0.3);
-/// A label over a group, quieter than a title
-const LABEL: rune::TextStyle = rune::TextStyle::new(13.0, 600.0).lh(17.0).tracking(0.2);
-
-/// `capture` as `Capture`. The rest is left as it is, so `UID` stays in capitals
-fn sentence(label: &str) -> String {
-    let mut chars = label.chars();
-    chars
-        .next()
-        .map_or(String::new(), |first| first.to_uppercase().chain(chars).collect())
+        .child(text(sentence(label)).font(theme::TAG).color(t.on_accent))
 }
 
 /// Perforations, where a plate tears like a ticket: a dotted line, and where it meets the plate's
@@ -237,65 +211,114 @@ pub enum Pill {
     Quiet,
 }
 
-/// A rounded button. Without `enabled` it dims and ignores presses
-pub fn pill(
-    key: &str,
-    label: &str,
-    glyph: Option<&'static Icon>,
-    kind: Pill,
-    enabled: bool,
-    t: &Theme,
-    on_press: impl Fn(&mut Ui, &mut Tx) + 'static,
-) -> El {
-    pill_for(key, label, glyph, kind, enabled, t, on_press)
+/// How tall a pill is; its radius is half of it
+const PILL_HEIGHT: f32 = 34.0;
+
+/// A rounded button, painted as `kind`. It's enabled and has no glyph unless told otherwise;
+/// [`PillButton::build`] makes it
+pub fn pill<'a>(key: &'a str, label: &'a str, kind: Pill) -> PillButton<'a> {
+    PillButton {
+        key,
+        label,
+        kind,
+        glyph: None,
+        enabled: true,
+    }
 }
 
-/// [`pill`] for a window whose state isn't the app's, like the test controller
-pub fn pill_for<S: 'static>(
-    key: &str,
-    label: &str,
-    glyph: Option<&'static Icon>,
+/// A [`pill`] being made
+pub struct PillButton<'a> {
+    key: &'a str,
+    label: &'a str,
     kind: Pill,
+    glyph: Option<&'static Icon>,
     enabled: bool,
-    t: &Theme,
-    on_press: impl Fn(&mut S, &mut Tx) + 'static,
-) -> El {
-    let (fill, ink, hover) = match kind {
-        Pill::Primary => (t.primary, t.on_primary, t.on_primary.alpha(0.06)),
-        Pill::Secondary => (t.text.alpha(0.08), t.text, t.text.alpha(0.06)),
-        Pill::Quiet => (Color::TRANSPARENT, t.accent, t.accent.alpha(0.1)),
-    };
-    let mut pill = row()
-        .key(key)
-        .role("button")
-        .label(label)
-        .h(34.0)
-        .px(if kind == Pill::Quiet { 12.0 } else { 20.0 })
-        .gap(7.0)
-        .center()
-        .radius(17.0)
-        .fill(fill);
-    if kind == Pill::Primary {
-        pill = pill.shadow(3.0, 12.0, Color::BLACK.alpha(if t.dark { 0.35 } else { 0.15 })).child(
-            el().pin(Some(3.0), Some(3.0), Some(3.0), Some(3.0))
-                .radius(14.0)
-                .border(1.0, t.on_primary.alpha(0.22))
-                .inert(),
-        );
+}
+
+impl PillButton<'_> {
+    /// An icon before the label
+    pub fn glyph(mut self, glyph: &'static Icon) -> Self {
+        self.glyph = Some(glyph);
+        self
     }
-    pill = pill
-        .children(glyph.map(|glyph| icon(glyph, 15.0).color(ink)))
-        .child(text(label).font(theme::BUTTON).color(ink));
-    if enabled {
+
+    /// Without `enabled` it dims and ignores presses
+    pub fn enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
+        self
+    }
+
+    pub fn build(self, t: &Theme, on_press: impl Fn(&mut Ui, &mut Tx) + 'static) -> El {
+        self.build_for(t, on_press)
+    }
+
+    /// [`build`](Self::build) for a window whose state isn't the app's, like the test controller
+    pub fn build_for<S: 'static>(self, t: &Theme, on_press: impl Fn(&mut S, &mut Tx) + 'static) -> El {
+        let PillButton {
+            key,
+            label,
+            kind,
+            glyph,
+            enabled,
+        } = self;
+        let (fill, ink, hover) = match kind {
+            Pill::Primary => (t.primary, t.on_primary, t.on_primary.alpha(0.06)),
+            Pill::Secondary => (wash(t), t.text, t.text.alpha(0.06)),
+            Pill::Quiet => (Color::TRANSPARENT, t.accent, t.accent.alpha(0.1)),
+        };
+        let mut pill = row()
+            .key(key)
+            .role("button")
+            .label(label)
+            .h(PILL_HEIGHT)
+            .px(if kind == Pill::Quiet { 12.0 } else { 20.0 })
+            .gap(7.0)
+            .center()
+            .radius(PILL_HEIGHT / 2.0)
+            .fill(fill);
+        if kind == Pill::Primary {
+            pill = pill.shadow(3.0, 12.0, Color::BLACK.alpha(if t.dark { 0.35 } else { 0.15 })).child(
+                el().pin(Some(3.0), Some(3.0), Some(3.0), Some(3.0))
+                    .radius(14.0)
+                    .border(1.0, t.on_primary.alpha(0.22))
+                    .inert(),
+            );
+        }
         pill = pill
-            .focusable(true)
-            .hover(hover)
-            .cursor(rune::Cursor::Pointer)
-            .on_press_tx(on_press);
-    } else {
-        pill = pill.disabled(true).opacity(0.38);
+            .children(glyph.map(|glyph| icon(glyph, 15.0).color(ink)))
+            .child(text(label).font(theme::BUTTON).color(ink));
+        if enabled {
+            pill = pill
+                .focusable(true)
+                .hover(hover)
+                .cursor(rune::Cursor::Pointer)
+                .on_press_tx(on_press);
+        } else {
+            pill = pill.disabled(true).opacity(0.38);
+        }
+        pill
     }
-    pill
+}
+
+/// A wash of the text color: the fill of a [`Pill::Secondary`], and of chips that look like one
+fn wash(t: &Theme) -> Color {
+    t.text.alpha(0.08)
+}
+
+/// A row shaped and filled like a [`Pill::Secondary`], for chips that hold more than a label
+pub fn chip(t: &Theme) -> El {
+    row().h(PILL_HEIGHT).center_y().radius(PILL_HEIGHT / 2.0).fill(wash(t))
+}
+
+/// A text field's key handler that does `submit` on Enter
+pub fn submit_on_enter(submit: fn(&mut Ui)) -> impl Fn(&mut Ui, &rune::KeyEvent, &mut Tx) -> bool + 'static {
+    move |s: &mut Ui, ev: &rune::KeyEvent, _: &mut Tx| {
+        if ev.key == rune::Key::Enter {
+            submit(s);
+            return true;
+        }
+        false
+    }
 }
 
 /// A round icon button
@@ -337,7 +360,12 @@ pub fn entry(key: &str, glyph: &'static Icon, label: &str, t: &Theme) -> El {
 
 /// A label over a group, in sentence case, quieter than a title
 pub fn kicker(content: &str, color: Color) -> El {
-    text(sentence(content)).font(LABEL).color(color)
+    text(sentence(content)).font(theme::GROUP).color(color)
+}
+
+/// The dot between two [`kicker`]s on a line
+pub fn dot_sep(t: &Theme) -> El {
+    el().size(3.0, 3.0).radius(1.5).fill(t.faint)
 }
 
 /// A divider: a hairline of light that fades out at both ends
@@ -373,28 +401,15 @@ const PULSE: rune::Cycle = rune::Cycle {
 /// the current one glowing in the accent, the rest dim
 pub fn node_track(steps: &[(&'static str, Node)], t: &Theme) -> El {
     const SIZE: f32 = 30.0;
-    let gold = progress(t);
     let mut track = row().key("steps").w_full().items_start();
     for (i, (label, state)) in steps.iter().enumerate() {
         if i > 0 {
             let done = steps[i - 1].1 == Node::Done && *state != Node::Todo;
-            // Under the medallions either side, which it reaches into
-            track = track.child(
-                el().grow(1.0)
-                    .h(3.0)
-                    .radius(1.5)
-                    .mt(SIZE / 2.0 - 1.5)
-                    .mx(-30.0)
-                    .paint_order(-1)
-                    .fill(if done { gold } else { t.text.alpha(0.14) }),
-            );
+            track = track.child(track_link(done, SIZE, t).mx(-30.0));
         }
-        let medallion = el().size(SIZE, SIZE).radius(SIZE / 2.0).center();
+        let medallion = medallion(SIZE);
         let medallion = match state {
-            Node::Done => medallion
-                .fill(gold)
-                .shadow(0.0, 10.0, gold.alpha(0.35))
-                .child(icon(&super::icons::CHECK, 15.0).color(rune::oklch(0.25, 0.04, 70.0))),
+            Node::Done => check_medallion(SIZE, t).shadow(0.0, 10.0, t.gold.alpha(0.35)),
             Node::Active => medallion
                 .fill(t.panel)
                 .border(2.0, t.accent)
@@ -423,6 +438,101 @@ pub fn node_track(steps: &[(&'static str, Node)], t: &Theme) -> El {
         );
     }
     track
+}
+
+/// A round marker on a track, `size` across, its content centered
+pub fn medallion(size: f32) -> El {
+    el().size(size, size).radius(size / 2.0).center()
+}
+
+/// A gold [`medallion`] with a check, for a step or a copy that's done
+pub fn check_medallion(size: f32, t: &Theme) -> El {
+    medallion(size)
+        .fill(t.gold)
+        .child(icon(&super::icons::CHECK, size / 2.0).color(t.on_gold))
+}
+
+/// The line on a track between two [`medallion`]s `size` across, gold once it's `done`. Give it a
+/// negative margin across to reach into the medallions either side; it goes under them
+pub fn track_link(done: bool, size: f32, t: &Theme) -> El {
+    el().grow(1.0)
+        .h(3.0)
+        .radius(1.5)
+        .mt(size / 2.0 - 1.5)
+        .paint_order(-1)
+        .fill(if done { t.gold } else { t.text.alpha(0.14) })
+}
+
+/// How a status reads
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Tone {
+    /// Nothing to say
+    Quiet,
+    /// Something's under way
+    Busy,
+    Good,
+    Warn,
+    Bad,
+}
+
+impl Tone {
+    /// The color of its dot
+    pub fn dot(self, t: &Theme) -> Color {
+        match self {
+            Tone::Quiet => t.faint,
+            Tone::Busy => t.accent,
+            Tone::Good => t.good,
+            Tone::Warn => t.warn,
+            Tone::Bad => t.bad,
+        }
+    }
+
+    /// The color of its words: a quiet one's muted rather than faint, so it still reads
+    pub fn ink(self, t: &Theme) -> Color {
+        match self {
+            Tone::Quiet => t.muted,
+            tone => tone.dot(t),
+        }
+    }
+}
+
+/// A status's dot in `tint`, `size` across, or while `busy` a spinner in the accent
+pub fn status_dot(tint: Color, busy: bool, size: f32, t: &Theme) -> El {
+    if busy {
+        rune_kit::Spinner::new().size(12.0).color(t.accent).build(&t.kit)
+    } else {
+        el().size(size, size).radius(size / 2.0).fill(tint)
+    }
+}
+
+/// An icon in a double ring, like the nodes of the game's circuits, a title and what it means, and
+/// its action past a divider. It has no padding of its own
+pub fn option_row(
+    key: &'static str,
+    glyph: &'static Icon,
+    title: &'static str,
+    detail: El,
+    action: impl Into<Option<El>>,
+    t: &Theme,
+) -> El {
+    let medallion = medallion(38.0).border(1.0, t.accent_line).child(
+        medallion(30.0)
+            .fill(t.well)
+            .border(1.0, t.line)
+            .child(icon(glyph, 15.0).color(t.accent)),
+    );
+    let line = row().key(key).w_full().gap(14.0).center_y().child(medallion).child(
+        col()
+            .grow(1.0)
+            .min_w(0.0)
+            .gap(3.0)
+            .child(text(title).font(theme::TITLE).color(t.text))
+            .child(detail),
+    );
+    match action.into() {
+        Some(action) => line.child(el().w(1.0).h(34.0).fill(t.line)).child(action),
+        None => line,
+    }
 }
 
 /// The red dragon on the app's tile, the one color that stays the same in every theme

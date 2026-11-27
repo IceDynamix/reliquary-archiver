@@ -1,29 +1,24 @@
 //! The warp tracker's plate on the main window: each warp's pity, and the way into the warp screen
 //! (see [`super::warp_screen`]), which has the rest.
 
-use rune::{Cx, El, col, el, row, text};
+use rune::{Cx, El, col, row, text};
 
-use super::parts::{kicker, ring_button, stub_perforation, tab, ticket};
+use super::format::{ago, clock, grouped};
+use super::parts::{Tone, kicker, ring_button, status_dot, stub_perforation, tab, ticket};
+use super::warp_screen::label;
 use crate::gui::icons;
 use crate::gui::state::Ui;
 use crate::gui::theme::{self, Theme};
 use crate::warps::Pool;
 use crate::warps::stats::{Highlight, PoolStats};
 
-/// The pools the plate shows, with short names
-const PLATE_POOLS: [(Pool, &str); 3] = [
-    (Pool::Character, "Character"),
-    (Pool::LightCone, "Light Cone"),
-    (Pool::Standard, "Standard"),
-];
+/// The pools the plate shows
+const PLATE_POOLS: [Pool; 3] = [Pool::Character, Pool::LightCone, Pool::Standard];
 
 /// The plate on the main window
 pub fn plate_view(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
     let summary = s.warps_summary();
-    let counters = PLATE_POOLS.iter().map(|&(pool, label)| {
-        let stats = summary.and_then(|summary| summary.pool(pool));
-        counter(pool, label, stats, t)
-    });
+    let counters = PLATE_POOLS.map(|pool| counter(pool, summary.and_then(|summary| summary.pool(pool)), t));
 
     let open = ring_button("open-warps", &icons::CHEVRON, "Open the warp screen", false, t, |s| s.open_warps());
 
@@ -31,7 +26,7 @@ pub fn plate_view(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
     const STUB: f32 = 72.0;
     ticket("warps", &["warps-perforation"], cx, t)
         .w_full()
-        .child(tab("warps-tab", "Warps", t.secondary, cx, t))
+        .child(tab("warps-tab", "Warps", t.secondary, t))
         .child(
             row()
                 .w_full()
@@ -51,7 +46,7 @@ pub fn plate_view(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
 const COUNTER: rune::TextStyle = rune::TextStyle::new(26.0, 500.0).lh(30.0).features("'tnum' 1");
 
 /// One pool's pity in big numbers, the 4 star pity under it
-fn counter(pool: Pool, label: &str, stats: Option<&PoolStats>, t: &Theme) -> El {
+fn counter(pool: Pool, stats: Option<&PoolStats>, t: &Theme) -> El {
     let (pity5, pity4) = stats.map_or((None, None), |s| (Some(s.pity5), Some(s.pity4)));
     let guaranteed = stats.and_then(|s| s.guarantee5) == Some(true);
     let number = row()
@@ -76,66 +71,133 @@ fn counter(pool: Pool, label: &str, stats: Option<&PoolStats>, t: &Theme) -> El 
         .grow(1.0)
         .min_w(0.0)
         .gap(1.0)
-        .child(kicker(label, t.muted))
+        .child(kicker(label(pool), t.muted))
         .child(number)
         .child(foot)
 }
 
 /// Where syncing stands, in a line with a dot
 pub fn status_line(s: &Ui, t: &Theme) -> El {
-    let (message, tint) = status(s, t);
-    let mut line = row().key("warps-status").w_full().gap(8.0).center_y();
-    line = if s.warps.busy.is_some() {
-        line.child(rune_kit::Spinner::new().size(12.0).color(t.accent).build(&t.kit))
-    } else {
-        line.child(el().size(6.0, 6.0).radius(3.0).fill(tint))
-    };
-    line.child(
-        text(message)
-            .font(theme::SMALL)
-            .color(if tint == t.faint { t.muted } else { tint })
-            .truncate()
-            .grow(1.0)
-            .min_w(0.0),
-    )
+    let status = SyncStatus::of(s);
+    let tone = status.tone();
+    row()
+        .key("warps-status")
+        .w_full()
+        .gap(8.0)
+        .center_y()
+        .child(status_dot(tone.dot(t), s.warps.busy.is_some(), 6.0, t))
+        .child(
+            text(status.long())
+                .font(theme::SMALL)
+                .color(tone.ink(t))
+                .truncate()
+                .grow(1.0)
+                .min_w(0.0),
+        )
 }
 
-/// Where syncing stands, in words, and its color: faint when there's nothing to say, good when
-/// synced, warn when pulls wait, bad when warps can't be kept
-pub fn status(s: &Ui, t: &Theme) -> (String, rune::Color) {
-    let now = jiff::Timestamp::now().as_second();
-    if let Some(error) = &s.warps.unavailable {
-        (format!("Can't save warps: {error}"), t.bad)
-    } else if let Some(busy) = &s.warps.busy {
-        (busy.clone(), t.accent)
-    } else if s.warps_uid().is_none() {
-        ("Log in to start tracking warps".to_string(), t.faint)
-    } else if let Some(summary) = s.warps_summary() {
-        let usable = summary.key.as_ref().is_some_and(|key| key.usable(now));
-        if summary.unconfirmed > 0 && usable {
-            let when = summary.next_look.map_or(String::new(), |at| format!(" · next check {}", clock(at)));
-            (format!("{} pulls pending{when}", summary.unconfirmed), t.warn)
-        } else if summary.unconfirmed > 0 {
-            (
-                format!("{} pulls pending · open Warp → View Details to sync", summary.unconfirmed),
-                t.warn,
-            )
-        } else if let (true, Some(at)) = (usable, summary.last_sync) {
-            (format!("Synced {}", ago(now, at)), t.good)
-        } else if summary.total == 0 {
-            ("Tracking new warps".to_string(), t.faint)
-        } else {
-            (
-                format!("{} pulls · open Warp → View Details to sync", grouped(summary.total)),
-                t.faint,
-            )
+/// Where syncing warps stands
+#[derive(Clone, Debug, PartialEq)]
+pub enum SyncStatus {
+    /// Warps can't be kept, for this reason
+    Unavailable(String),
+    /// Something's under way, in words
+    Busy(String),
+    LoggedOut,
+    /// Pulls seen live wait for the game's history, which the authkey can fetch, `next` time
+    Pending {
+        count: usize,
+        next: Option<i64>,
+    },
+    /// Pulls seen live wait for the game's history, and it takes a new authkey to fetch it
+    PendingKey {
+        count: usize,
+    },
+    /// The history was last fetched this long ago
+    Synced {
+        ago: String,
+    },
+    /// Nothing kept yet; new warps will be
+    Tracking,
+    /// Pulls kept, and it takes a new authkey to fetch the history
+    Kept {
+        total: usize,
+    },
+    /// The warps are still being read
+    Reading,
+}
+
+impl SyncStatus {
+    pub fn of(s: &Ui) -> SyncStatus {
+        let now = jiff::Timestamp::now().as_second();
+        if let Some(error) = &s.warps.unavailable {
+            return SyncStatus::Unavailable(error.clone());
         }
-    } else {
-        ("Reading your warps…".to_string(), t.faint)
+        if let Some(busy) = &s.warps.busy {
+            return SyncStatus::Busy(busy.clone());
+        }
+        if s.warps_uid().is_none() {
+            return SyncStatus::LoggedOut;
+        }
+        let Some(summary) = s.warps_summary() else {
+            return SyncStatus::Reading;
+        };
+        let usable = summary.key.as_ref().is_some_and(|key| key.usable(now));
+        match (summary.unconfirmed, usable, summary.last_sync) {
+            (count @ 1.., true, _) => SyncStatus::Pending {
+                count,
+                next: summary.next_look,
+            },
+            (count @ 1.., false, _) => SyncStatus::PendingKey { count },
+            (_, true, Some(at)) => SyncStatus::Synced { ago: ago(now, at) },
+            _ if summary.total == 0 => SyncStatus::Tracking,
+            _ => SyncStatus::Kept { total: summary.total },
+        }
+    }
+
+    /// In words
+    pub fn long(&self) -> String {
+        match self {
+            SyncStatus::Unavailable(error) => format!("Can't save warps: {error}"),
+            SyncStatus::Busy(words) => words.clone(),
+            SyncStatus::LoggedOut => "Log in to start tracking warps".to_string(),
+            SyncStatus::Pending { count, next } => {
+                let when = next.map_or(String::new(), |at| format!(" · next check {}", clock(at)));
+                format!("{count} pulls pending{when}")
+            }
+            SyncStatus::PendingKey { count } => format!("{count} pulls pending · open Warp → View Details to sync"),
+            SyncStatus::Synced { ago } => format!("Synced {ago}"),
+            SyncStatus::Tracking => "Tracking new warps".to_string(),
+            SyncStatus::Kept { total } => format!("{} pulls · open Warp → View Details to sync", grouped(total)),
+            SyncStatus::Reading => "Reading your warps…".to_string(),
+        }
+    }
+
+    /// In a couple of words, for the warp screen's header
+    pub fn short(&self) -> String {
+        match self {
+            SyncStatus::Pending { count, .. } | SyncStatus::PendingKey { count } => format!("{count} waiting"),
+            SyncStatus::LoggedOut => "Not logged in".to_string(),
+            other => {
+                let long = other.long();
+                long.split(" · ").next().unwrap_or(&long).to_string()
+            }
+        }
+    }
+
+    /// Quiet when there's nothing to say, good when synced, warn when pulls wait, bad when warps
+    /// can't be kept
+    pub fn tone(&self) -> Tone {
+        match self {
+            SyncStatus::Unavailable(_) => Tone::Bad,
+            SyncStatus::Busy(_) => Tone::Busy,
+            SyncStatus::Pending { .. } | SyncStatus::PendingKey { .. } => Tone::Warn,
+            SyncStatus::Synced { .. } => Tone::Good,
+            SyncStatus::LoggedOut | SyncStatus::Tracking | SyncStatus::Kept { .. } | SyncStatus::Reading => Tone::Quiet,
+        }
     }
 }
 
-/// 7418 as 7,418
 /// A key for each of `fives` (in the pool's order, newest first): when it came and what it was,
 /// and for another of the same in the same second (a ten pull can give two) how many came before
 /// it. A count of the repeats only, so a new 5 star doesn't change the others' keys
@@ -155,64 +217,25 @@ pub(super) fn five_keys<'a>(fives: impl IntoIterator<Item = &'a Highlight>) -> V
         .collect()
 }
 
-pub(super) fn grouped(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// A Unix time as the local time of day
-pub(super) fn clock(at: i64) -> String {
-    local(at, "%H:%M")
-}
-
-/// A Unix time in the system's time zone, as `format` (strftime) writes it; empty when it's out of
-/// range
-pub(super) fn local(at: i64, format: &str) -> String {
-    jiff::Timestamp::from_second(at).map_or(String::new(), |t| {
-        t.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime(format).to_string()
-    })
-}
-
-/// A Unix time in UTC, as `format` (strftime) writes it; empty when it's out of range
-pub(super) fn utc(at: i64, format: &str) -> String {
-    jiff::Timestamp::from_second(at).map_or(String::new(), |t| t.strftime(format).to_string())
-}
-
-/// How long ago a Unix time was, roughly
-pub(super) fn ago(now: i64, then: i64) -> String {
-    let seconds = (now - then).max(0);
-    match seconds {
-        0..60 => "just now".to_string(),
-        60..3600 => format!("{} min ago", seconds / 60),
-        3600..86400 => format!("{} h ago", seconds / 3600),
-        86400..604800 => format!("{} days ago", seconds / 86400),
-        _ => utc(then, "%Y-%m-%d"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn numbers_are_grouped_by_thousands() {
-        assert_eq!(grouped(7), "7");
-        assert_eq!(grouped(1582), "1,582");
-        assert_eq!(grouped(1234567), "1,234,567");
-    }
-
-    #[test]
-    fn times_read_as_how_long_ago() {
-        assert_eq!(ago(1000, 990), "just now");
-        assert_eq!(ago(10_000, 10_000 - 300), "5 min ago");
-        assert_eq!(ago(100_000, 100_000 - 7200), "2 h ago");
+    fn statuses_shorten() {
+        let synced = SyncStatus::Synced { ago: "2 min ago".into() };
+        assert_eq!(synced.long(), "Synced 2 min ago");
+        assert_eq!(synced.short(), "Synced 2 min ago");
+        let pending = SyncStatus::Pending { count: 4, next: None };
+        assert_eq!(pending.long(), "4 pulls pending");
+        assert_eq!(pending.short(), "4 waiting");
+        let pending = SyncStatus::PendingKey { count: 4 };
+        assert_eq!(pending.long(), "4 pulls pending · open Warp → View Details to sync");
+        assert_eq!(pending.short(), "4 waiting");
+        assert_eq!(SyncStatus::LoggedOut.short(), "Not logged in");
+        let kept = SyncStatus::Kept { total: 1582 };
+        assert_eq!(kept.long(), "1,582 pulls · open Warp → View Details to sync");
+        assert_eq!(kept.short(), "1,582 pulls");
     }
 
     #[test]
@@ -220,7 +243,6 @@ mod tests {
         use crate::warps::stats::Outcome;
         let five = |time, item_id| Highlight {
             item_id,
-            rarity: 5,
             pity: 80,
             outcome: Outcome::Unknown,
             time,

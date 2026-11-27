@@ -1,100 +1,77 @@
-//! Windows startup registry integration.
-//!
-//! This module handles adding/removing the application from the Windows
-//! startup registry (`HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`).
-//!
-//! When enabled, the application will automatically launch when Windows starts.
+//! Starting the app on login, through the current user's `Run` key
+//! (`HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Run`).
 
 use std::env::current_exe;
+use std::fmt;
 
-use windows_registry::{CURRENT_USER, HSTRING, Type};
+use windows_registry::{CURRENT_USER, HSTRING, Key, Type};
 
-/// Errors that can occur during registry operations.
-#[derive(Debug, Eq, PartialEq)]
+/// What went wrong reading or changing the `Run` key
+#[derive(Debug)]
 pub enum RegistryError {
-    /// Failed to create or open the registry key
-    KeyCreationFailed,
-    /// Could not determine the path to the current executable
-    PathUnobtainable,
-    /// Failed to add the registry value
-    AddFailed,
-    /// Failed to remove the registry value
-    RemoveFailed,
+    /// The `Run` key couldn't be opened
+    OpenKey(windows::core::Error),
+    /// The path to this executable couldn't be found
+    ExePath(std::io::Error),
+    /// The entry couldn't be written
+    Add(windows::core::Error),
+    /// The entry couldn't be removed
+    Remove(windows::core::Error),
 }
 
-/// Registry key name for the startup entry
-const REGISTRY_KEY_NAME: &str = "reliquary-archiver";
-/// Path to the Windows Run registry key
-const REGISTRY_KEY_PATH: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
-
-/// Enables or disables the application's run-on-startup setting.
-///
-/// When enabled, adds the current executable path to the Windows startup registry.
-/// When disabled, removes the registry entry.
-///
-/// # Errors
-/// Returns a [`RegistryError`] if the registry operation fails.
-pub fn set_run_on_start(enabled: bool) -> Result<(), RegistryError> {
-    let key = CURRENT_USER
-        .create(REGISTRY_KEY_PATH)
-        .map_err(|_| RegistryError::KeyCreationFailed)?;
-
-    let path_to_exe = current_exe().map_err(|_| RegistryError::PathUnobtainable)?;
-
-    if enabled {
-        key.set_string(REGISTRY_KEY_NAME, path_to_exe.to_str().unwrap())
-            .map_err(|_| RegistryError::AddFailed)
-    } else {
-        key.remove_value(REGISTRY_KEY_NAME).map_err(|_| RegistryError::RemoveFailed)
-    }
-}
-
-/// Checks if the registry state matches the expected setting.
-///
-/// This handles cases where the executable has been moved after enabling
-/// run-on-start, ensuring the settings stay in sync with the actual registry.
-///
-/// # Returns
-/// - `Ok(true)` if the registry matches the expected state
-/// - `Ok(false)` if there's a mismatch (caller should update settings)
-/// - `Err(RegistryError)` if the registry cannot be accessed
-pub fn registry_matches_settings(enabled: bool) -> Result<bool, RegistryError> {
-    let key = CURRENT_USER.create(REGISTRY_KEY_PATH);
-    if key.is_err() {
-        tracing::error!("Failed to get registry key handle");
-        return Err(RegistryError::KeyCreationFailed);
-    };
-    let key = key.unwrap();
-
-    let val = key.get_value(REGISTRY_KEY_NAME);
-    if val.is_err() {
-        if enabled {
-            tracing::warn!("Run on start enabled but no key set in registry! Disabling setting.");
-            return Ok(false);
-        } else {
-            return Ok(true);
+impl fmt::Display for RegistryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::OpenKey(e) => write!(f, "Couldn't open the startup programs list: {e}"),
+            Self::ExePath(e) => write!(f, "Couldn't find where the app is: {e}"),
+            Self::Add(e) => write!(f, "Couldn't add the app to the startup programs: {e}"),
+            Self::Remove(e) => write!(f, "Couldn't remove the app from the startup programs: {e}"),
         }
     }
-    let val = val.unwrap();
+}
 
-    if val.ty() != Type::String {
-        tracing::error!("Key in registry set but is not of type string! Removing registry key");
-        key.remove_value(REGISTRY_KEY_NAME).unwrap();
+impl std::error::Error for RegistryError {}
+
+/// The value's name under the `Run` key
+const REGISTRY_KEY_NAME: &str = "reliquary-archiver";
+const REGISTRY_KEY_PATH: &str = "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run";
+
+fn run_key() -> Result<Key, RegistryError> {
+    CURRENT_USER.create(REGISTRY_KEY_PATH).map_err(RegistryError::OpenKey)
+}
+
+/// Adds this executable to the programs started on login, or removes it
+pub fn set_run_on_start(enabled: bool) -> Result<(), RegistryError> {
+    let key = run_key()?;
+    if enabled {
+        let exe = current_exe().map_err(RegistryError::ExePath)?;
+        key.set_hstring(REGISTRY_KEY_NAME, &HSTRING::from(exe.as_os_str()))
+            .map_err(RegistryError::Add)
+    } else {
+        key.remove_value(REGISTRY_KEY_NAME).map_err(RegistryError::Remove)
+    }
+}
+
+/// Brings the `Run` entry in line with this executable, and says whether run-on-start is on.
+///
+/// An entry that isn't a string, or names another path (the executable was moved since), is
+/// removed, so run-on-start counts as off.
+pub fn reconcile_registry() -> Result<bool, RegistryError> {
+    let key = run_key()?;
+    let Ok(value) = key.get_value(REGISTRY_KEY_NAME) else {
         return Ok(false);
+    };
+
+    let registered = (value.ty() == Type::String).then(|| {
+        let path = HSTRING::from_wide(value.as_wide()).to_string_lossy();
+        path.trim_end_matches('\0').to_owned()
+    });
+    let exe = current_exe().map_err(RegistryError::ExePath)?;
+    if registered.as_deref().is_some_and(|path| std::path::Path::new(path) == exe) {
+        return Ok(true);
     }
 
-    let path_to_exe = current_exe().unwrap().to_str().unwrap().to_owned() + "\0";
-    let path_in_registry = HSTRING::from_wide(val.as_wide()).to_string_lossy();
-
-    let paths_match = path_to_exe == path_in_registry;
-
-    tracing::debug!("\npaths are:\n(exe): {:?}\nand\n(reg): {:?}", path_to_exe, path_in_registry);
-
-    let matches = enabled == paths_match;
-
-    if !paths_match {
-        tracing::info!("Path in registry does not match path to exe. Removing registry key");
-        key.remove_value(REGISTRY_KEY_NAME).unwrap();
-    }
-    Ok(matches)
+    tracing::info!(?registered, exe = %exe.display(), "the startup entry is stale, removing it");
+    key.remove_value(REGISTRY_KEY_NAME).map_err(RegistryError::Remove)?;
+    Ok(false)
 }

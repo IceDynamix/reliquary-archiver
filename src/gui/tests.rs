@@ -12,7 +12,7 @@ fn runtime(scene: &str) -> Runtime<Ui> {
     let mut ui = Ui::new(Settings::default());
     let (_, apply) = SCENES.iter().find(|(name, _)| *name == scene).expect("no such scene");
     apply(&mut ui);
-    let mut rt = Runtime::new(ui, view, (460.0, 700.0), Env {
+    let mut rt = Runtime::new(ui, view, (540.0, 800.0), Env {
         system_dark: true,
         scale: 1.0,
     });
@@ -86,10 +86,10 @@ fn settings_open_from_the_header_and_switches_change_them() {
 #[test]
 fn a_new_port_waits_for_the_server_before_it_is_saved() {
     let mut rt = runtime("settings");
-    rt.update(|s, _| s.port_edit.replace_text("4000"));
+    rt.update(|s, _| s.port.edit.replace_text("4000"));
     rt.frame(0.0);
     click(&mut rt, "apply-port");
-    assert_eq!(rt.state.pending_port, Some(4000));
+    assert_eq!(rt.state.port.pending, Some(4000));
     assert_eq!(rt.state.settings.ws_port, 23313);
 }
 

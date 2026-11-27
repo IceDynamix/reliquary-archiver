@@ -79,10 +79,8 @@ pub enum PityUpdate {
 
 impl PityUpdate {
     pub fn increment(&mut self) {
-        match self {
-            PityUpdate::AddPity { amount, .. } => *amount += 1,
-            PityUpdate::ResetPity { amount, .. } => *amount += 1,
-        }
+        let (PityUpdate::AddPity { amount } | PityUpdate::ResetPity { amount, .. }) = self;
+        *amount += 1;
     }
 
     pub fn reset(&mut self, guarantee: bool) {

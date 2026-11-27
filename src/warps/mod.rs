@@ -18,7 +18,7 @@
 //! A pull's id is 19 digits: the UTC hour it was made in (Unix seconds plus 600, so it reads as
 //! HH:10:00), a 7 digit sequence shared with the other players on the server that starts over every
 //! hour, and the last two digits of the account's uid. The sequence makes ids sort in the order the
-//! pulls were made, and the pulls of one request are consecutive.
+//! pulls were made, and the pulls of one request are consecutive ([`ID_STEP`] apart).
 
 // Keeping warps is the window's: the headless capture only reports them
 #[cfg(feature = "gui")]
@@ -120,6 +120,43 @@ impl Pool {
     pub fn is_collab(self) -> bool {
         matches!(self, Pool::CollabCharacter | Pool::CollabLightCone)
     }
+
+    /// Whether the pool's 5 stars are light cones rather than characters
+    pub fn is_light_cone(self) -> bool {
+        matches!(self, Pool::LightCone | Pool::CollabLightCone)
+    }
+
+    /// How many copies of a 5 star count: up to S5 for a light cone, E6 for a character
+    pub fn max_copies(self) -> u32 {
+        if self.is_light_cone() { 5 } else { 7 }
+    }
+
+    /// What having `copies` of a 5 star (at least 1) is called: S1 for a light cone, E0 for a
+    /// character
+    pub fn copy_level(self, copies: u32) -> String {
+        if self.is_light_cone() {
+            format!("S{copies}")
+        } else {
+            format!("E{}", copies.saturating_sub(1))
+        }
+    }
+
+    /// The pass a warp on it costs
+    pub fn pass(self) -> u32 {
+        if self.has_rate_up() { item::SPECIAL_PASS } else { item::PASS }
+    }
+}
+
+/// The pull a 4 star is guaranteed by, in every pool
+pub const FOUR_STAR_PITY: u32 = 10;
+
+/// The game's ids for the items warps are bought with
+pub mod item {
+    /// Star Rail Pass, for the standard and departure warps
+    pub const PASS: u32 = 101;
+    /// Star Rail Special Pass, for the event warps
+    pub const SPECIAL_PASS: u32 = 102;
+    pub const UNDYING_STARLIGHT: u32 = 252;
 }
 
 /// Where a pull is known from, as bits
@@ -199,14 +236,26 @@ pub struct BannerInfo {
     pub rate_up: Vec<u32>,
 }
 
+/// How far apart consecutive pull ids are: the sequence sits above the uid's two digits
+pub const ID_STEP: i64 = 100;
+
 /// The last two digits of a pull id are the last two of the account's uid
 pub fn id_belongs_to(id: i64, uid: u32) -> bool {
-    id.rem_euclid(100) == i64::from(uid % 100)
+    id.rem_euclid(ID_STEP) == i64::from(uid) % ID_STEP
 }
 
 /// Mainland China accounts start with 1, 2 or 5 and use their own servers
 pub fn is_mainland(uid: u32) -> bool {
-    matches!(uid.to_string().chars().next(), Some('1' | '2' | '5'))
+    let first_digit = uid.checked_ilog10().map_or(0, |digits| uid / 10u32.pow(digits));
+    matches!(first_digit, 1 | 2 | 5)
+}
+
+/// A `2024-05-01 12:00:00` time as Unix seconds, reading it as UTC
+fn parse_datetime(text: &str) -> Option<i64> {
+    let time = jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", text).ok()?;
+    time.to_zoned_datetime(jiff::tz::TimeZone::UTC)
+        .ok()
+        .map(|t| t.timestamp().as_second())
 }
 
 #[cfg(test)]

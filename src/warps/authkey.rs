@@ -24,18 +24,15 @@ pub fn from_url(url: &str) -> Option<HistoryKey> {
         }
     }
     let authkey = authkey.filter(|key| !key.is_empty())?;
+    let mut key = HistoryKey::for_region(host.ends_with("mihoyo.com"), authkey);
     // The page itself lives elsewhere than its data, the data is what's asked for
-    let host = if host.contains("webstatic") {
-        if host.ends_with("mihoyo.com") {
-            "public-operation-hkrpg.mihoyo.com".to_string()
-        } else {
-            "public-operation-hkrpg-sg.hoyoverse.com".to_string()
-        }
-    } else {
-        host.to_string()
-    };
-    let game_biz = game_biz.unwrap_or_else(|| if host.ends_with("mihoyo.com") { "hkrpg_cn" } else { "hkrpg_global" }.to_string());
-    Some(HistoryKey { authkey, host, game_biz })
+    if !host.contains("webstatic") {
+        key.host = host.to_string();
+    }
+    if let Some(game_biz) = game_biz {
+        key.game_biz = game_biz;
+    }
+    Some(key)
 }
 
 fn percent_decode(text: &str) -> Option<String> {

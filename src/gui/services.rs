@@ -13,27 +13,44 @@ use reliquary_archiver::export::fribbels::Export;
 use rune::{AppHandle, FileDialogOptions, Tx};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 use super::settings::{Settings, SettingsFile};
 use super::state::Ui;
 use crate::accounts::MultiAccountManager;
-use crate::capture::Replay;
+use crate::capture::{Replay, Tap};
+use crate::warps::service::{Command as WarpCommand, WarpService};
 use crate::websocket::PortCommand;
 
 pub struct Services {
+    rt: Handle,
+    app: AppHandle<Ui>,
+    manager: Arc<Mutex<MultiAccountManager>>,
+    selected_tx: watch::Sender<Option<u32>>,
+    port_tx: watch::Sender<PortCommand>,
+    settings_file: SettingsFile,
+    /// Updates were turned off from the command line
+    no_update: bool,
+    /// Kept for as long as the app runs, dropping it removes the icon
+    _tray: Option<rune::Tray>,
+    /// The warp database
+    warps: WarpService,
+}
+
+/// What [`Services::start`] starts from, besides the window
+pub struct Start {
     pub rt: Handle,
-    pub app: AppHandle<Ui>,
-    pub manager: Arc<Mutex<MultiAccountManager>>,
-    pub selected_tx: watch::Sender<Option<u32>>,
-    pub port_tx: watch::Sender<PortCommand>,
+    /// Where packets are captured from
+    pub tap: Tap,
     pub settings_file: SettingsFile,
+    /// The port the WebSocket server opens first
+    pub ws_port: u16,
+    /// The system tray icon, kept for as long as the app runs
+    pub tray: Option<rune::Tray>,
+    /// Capturing needs administrator rights the app doesn't have, so it won't start
+    pub needs_admin: bool,
     /// Updates were turned off from the command line
     pub no_update: bool,
-    /// Kept for as long as the app runs, dropping it removes the icon
-    pub _tray: Option<rune::Tray>,
-    /// The warp database
-    pub warps: crate::warps::service::WarpService,
 }
 
 /// The Save dialog for an export
@@ -60,8 +77,62 @@ pub fn capture_file_dialog() -> FileDialogOptions {
 }
 
 impl Services {
+    /// Starts capturing, the WebSocket server and everything that feeds the window
+    pub fn start(app: AppHandle<Ui>, start: Start) -> Services {
+        let Start {
+            rt,
+            tap,
+            settings_file,
+            ws_port,
+            tray,
+            needs_admin,
+            no_update,
+        } = start;
+        let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
+        let (selected_tx, selected_rx) = watch::channel(None);
+        let warps = {
+            let app = app.clone();
+            WarpService::start(crate::warps::store::default_path(), move |update| {
+                app.update(move |s, tx| s.warp_update(update, tx))
+            })
+        };
+        let (port_tx, port_rx) = watch::channel(PortCommand::Open(ws_port));
+
+        rt.spawn(settings_file.writer());
+        rt.spawn(super::forward_server(app.clone(), manager.clone(), port_rx, selected_rx));
+        if needs_admin {
+            warn!("not capturing, administrator rights are needed");
+        } else {
+            rt.spawn(super::forward_worker(app.clone(), manager.clone(), tap, warps.clone()));
+        }
+        rt.spawn(super::forward_logs(app.clone()));
+
+        Services {
+            rt,
+            app,
+            manager,
+            selected_tx,
+            port_tx,
+            settings_file,
+            no_update: no_update || std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1"),
+            _tray: tray,
+            warps,
+        }
+    }
+
     pub fn save_settings(&self, settings: &Settings) {
         self.settings_file.save_if_changed(settings);
+    }
+
+    /// Saves the settings and writes them at once, for when the app is about to exit
+    pub fn flush_settings(&self, settings: &Settings) {
+        self.save_settings(settings);
+        self.settings_file.flush();
+    }
+
+    /// Hands `command` to the warp database
+    pub fn warp_command(&self, command: WarpCommand) {
+        self.warps.send(command);
     }
 
     pub fn select_account(&self, uid: u32) {
@@ -80,22 +151,10 @@ impl Services {
     pub fn save_export(&self, uid: u32, path: PathBuf) {
         let (manager, app) = (self.manager.clone(), self.app.clone());
         self.rt.spawn(async move {
-            let exporter = manager.lock().await.get_account_exporter(uid);
-            let export = match exporter {
-                Some(exporter) => exporter.lock().await.export(),
-                None => None,
-            };
+            let export = manager.lock().await.account_exporter(uid).and_then(|exporter| exporter.export());
             match export {
                 Some(export) => write_export(app, export, path).await,
-                None => app.update(|s, tx| {
-                    s.notify(
-                        "Couldn't export",
-                        Some("The account's data isn't complete yet".into()),
-                        true,
-                        None,
-                        tx,
-                    )
-                }),
+                None => app.update(|s, tx| s.notify_error("Couldn't export", "The account's data isn't complete yet", tx)),
             }
         });
     }
@@ -112,11 +171,9 @@ impl Services {
             let name = file_name(&path);
             app.update(move |s, tx| {
                 s.reading_file = false;
-                s.notify(
+                s.notify_error(
                     "Can't read that file",
-                    Some(format!("{name} isn't a capture file this version can read")),
-                    true,
-                    None,
+                    format!("{name} isn't a capture file this version can read"),
                     tx,
                 );
             });
@@ -134,8 +191,8 @@ impl Services {
             let text = crate::logging::lines().join("\n");
             let result = std::fs::write(&path, text);
             app.update(move |s, tx| match result {
-                Ok(()) => s.notify("Saved logs", Some(file_name(&path)), false, Some(path), tx),
-                Err(e) => s.notify("Couldn't save logs", Some(e.to_string()), true, None, tx),
+                Ok(()) => s.notify_saved("Saved logs", path, tx),
+                Err(e) => s.notify_error("Couldn't save logs", e.to_string(), tx),
             });
         });
     }
@@ -164,19 +221,20 @@ impl Services {
         #[cfg(windows)]
         {
             let app = self.app.clone();
-            self.rt.spawn_blocking(move || match crate::update::update_noninteractive() {
-                Ok(true) => app.update(|_, tx| {
-                    crate::update::request_spawn_after_exit();
-                    tx.quit();
-                }),
-                result => {
-                    let error = match result {
-                        Err(e) => e.to_string(),
-                        _ => "The update reported no changes".to_string(),
-                    };
-                    error!(%error, "failed to update");
-                    app.update(move |s, _| s.update_failed(error));
-                }
+            self.rt.spawn_blocking(move || {
+                let error = match crate::update::update_noninteractive() {
+                    Ok(true) => {
+                        app.update(|_, tx| {
+                            crate::update::request_spawn_after_exit();
+                            tx.quit();
+                        });
+                        return;
+                    }
+                    Ok(false) => "The update reported no changes".to_string(),
+                    Err(e) => e.to_string(),
+                };
+                error!(%error, "failed to update");
+                app.update(move |s, _| s.update_failed(error));
             });
         }
     }
@@ -184,7 +242,7 @@ impl Services {
     /// Adds or removes the app from the programs Windows starts on login
     pub fn set_run_on_start(&self, enabled: bool) -> Result<(), String> {
         #[cfg(windows)]
-        return super::run_on_start::set_run_on_start(enabled).map_err(|e| format!("{e:?}"));
+        return super::run_on_start::set_run_on_start(enabled).map_err(|e| e.to_string());
         #[cfg(not(windows))]
         {
             let _ = enabled;
@@ -194,12 +252,12 @@ impl Services {
 
     /// Starts the app again with administrator rights and quits this instance
     pub fn restart_as_admin(&self, tx: &mut Tx) {
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+        #[cfg(pktmon_only)]
         match crate::elevation::escalate_to_admin() {
             Ok(()) => tx.quit(),
             Err(e) => error!(%e, "failed to restart as administrator"),
         }
-        #[cfg(not(all(not(feature = "pcap"), feature = "pktmon")))]
+        #[cfg(not(pktmon_only))]
         let _ = tx;
     }
 }
@@ -213,7 +271,8 @@ pub fn reveal(path: &Path) {
     }
 }
 
-fn file_name(path: &Path) -> String {
+/// The file's name, for a notice
+pub fn file_name(path: &Path) -> String {
     path.file_name()
         .map_or_else(|| path.display().to_string(), |name| name.to_string_lossy().into_owned())
 }
@@ -234,7 +293,7 @@ async fn write_export(app: AppHandle<Ui>, export: Export, path: PathBuf) {
         Err(e) => error!(%e, "Failed to save export to {}", path.display()),
     }
     app.update(move |s, tx| match result {
-        Ok(()) => s.notify("Export saved", Some(file_name(&path)), false, Some(path), tx),
-        Err(e) => s.notify("Couldn't save the export", Some(e), true, None, tx),
+        Ok(()) => s.notify_saved("Export saved", path, tx),
+        Err(e) => s.notify_error("Couldn't save the export", e, tx),
     });
 }

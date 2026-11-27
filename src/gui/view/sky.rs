@@ -177,31 +177,24 @@ fn chart(w: f32, h: f32, astrolabe: [f32; 2], armillary: [f32; 2], inks: Inks) -
     // Graduated scales down the right edge, below the armillary, and along the top, left of it
     let inset = 7.0;
     let right_from = (armillary[1] + 150.0).min(h * 0.4);
-    let mut y = right_from;
-    let mut i = 0;
-    while y < h - inset {
-        let length = if i % 10 == 0 {
-            14.0
-        } else if i % 5 == 0 {
-            9.0
-        } else {
-            4.5
-        };
-        shape = shape.line(
-            [w - inset, y],
-            [w - inset - length, y],
-            0.6,
-            BUTT,
-            if i % 10 == 0 { inks.mid } else { inks.faint },
-        );
-        y += 8.0;
-        i += 1;
-    }
+    shape = ticks(shape, right_from, h - inset, inks, |y, length| {
+        ([w - inset, y], [w - inset - length, y])
+    });
     shape = shape.line([w - inset, right_from], [w - inset, h - inset], 0.7, BUTT, inks.mid);
     let top_to = (armillary[0] - 150.0).max(w * 0.6);
-    let mut x = w * 0.3;
+    shape = ticks(shape, w * 0.3, top_to, inks, |x, length| ([x, inset], [x, inset + length]));
+    if top_to > w * 0.3 {
+        shape = shape.line([w * 0.3, inset], [top_to, inset], 0.7, BUTT, inks.mid);
+    }
+    shape
+}
+
+/// A graduated scale's ticks every 8 points from `from` up to `to`, longer every fifth and longest
+/// and stronger every tenth. `tick` gives the ends of a tick `length` long at a point along it
+fn ticks(mut shape: Shape, from: f32, to: f32, inks: Inks, tick: impl Fn(f32, f32) -> ([f32; 2], [f32; 2])) -> Shape {
+    let mut at = from;
     let mut i = 0;
-    while x < top_to {
+    while at < to {
         let length = if i % 10 == 0 {
             14.0
         } else if i % 5 == 0 {
@@ -209,18 +202,10 @@ fn chart(w: f32, h: f32, astrolabe: [f32; 2], armillary: [f32; 2], inks: Inks) -
         } else {
             4.5
         };
-        shape = shape.line(
-            [x, inset],
-            [x, inset + length],
-            0.6,
-            BUTT,
-            if i % 10 == 0 { inks.mid } else { inks.faint },
-        );
-        x += 8.0;
+        let (start, end) = tick(at, length);
+        shape = shape.line(start, end, 0.6, BUTT, if i % 10 == 0 { inks.mid } else { inks.faint });
+        at += 8.0;
         i += 1;
-    }
-    if top_to > w * 0.3 {
-        shape = shape.line([w * 0.3, inset], [top_to, inset], 0.7, BUTT, inks.mid);
     }
     shape
 }

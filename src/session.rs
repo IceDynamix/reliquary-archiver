@@ -9,16 +9,15 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::lock::Mutex;
-use reliquary::network::command::command_id::{self, PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::command_id::{self, PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::command::proto::DoGachaCsReq::DoGachaCsReq as DoGachaCsReqProto;
 use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp as DoGachaScRspProto;
 use reliquary::network::command::proto::GetAuthkeyScRsp::GetAuthkeyScRsp as GetAuthkeyScRspProto;
 use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp as GetGachaInfoScRspProto;
-use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
 use reliquary::network::command::{GameCommand, GameCommandError};
 use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, NetworkError};
-use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::fribbels::{Export, OptimizerExporter};
+use reliquary_archiver::export::fribbels::Export;
+use reliquary_archiver::export::{Exporter, banner_rate_up};
 use tracing::{info, trace, warn};
 
 use crate::accounts::MultiAccountManager;
@@ -69,10 +68,7 @@ pub struct CaptureSession {
     manager: Arc<Mutex<MultiAccountManager>>,
     /// Sources that sent something that isn't game traffic and are ignored from then on
     poisoned_sources: Option<HashSet<u64>>,
-    latest_uid: Option<u32>,
     stall: StallDetector,
-    /// The account each connection logged in as
-    conv_uids: HashMap<u32, u32>,
     /// The warp each connection asked for last, until its result arrives: (banner, request counter)
     gacha_requests: HashMap<u32, (u32, u32)>,
 }
@@ -86,9 +82,7 @@ impl CaptureSession {
             merger: SourceMerger::new(),
             manager,
             poisoned_sources: poison_sources.then(HashSet::new),
-            latest_uid: None,
             stall: StallDetector::default(),
-            conv_uids: HashMap::new(),
             gacha_requests: HashMap::new(),
         }
     }
@@ -214,29 +208,21 @@ impl CaptureSession {
             events.push(SessionEvent::LoginFinished);
         }
 
-        // Route command to the correct exporter
-        let exporter = self.manager.lock().await.get_or_create_exporter(conv_id);
+        let manager = self.manager.clone();
+        let mut manager = manager.lock().await;
 
-        // Check if this is a UID discovery packet and register it if so
-        if command.command_id == PlayerGetTokenScRsp
-            && let Ok(token_rsp) = command.parse_proto::<PlayerGetTokenScRspProto>()
-        {
-            let uid = token_rsp.uid;
-            self.conv_uids.insert(conv_id, uid);
-            self.manager.lock().await.register_uid(conv_id, uid);
-            self.latest_uid = Some(uid);
-            events.push(SessionEvent::AccountSeen { uid });
-        }
-
-        if let Some(event) = self.warp_event(conv_id, &command) {
+        if let Some(event) = self.warp_event(conv_id, manager.uid_of(conv_id), &command) {
             events.push(SessionEvent::Warp(event));
         }
 
-        exporter.lock().await.read_command(command);
+        // Route command to the correct exporter
+        if let Some(uid) = manager.read_command(conv_id, command) {
+            events.push(SessionEvent::AccountSeen { uid });
+        }
     }
 
-    /// What the command says about warps, if anything
-    fn warp_event(&mut self, conv_id: u32, command: &GameCommand) -> Option<WarpEvent> {
+    /// What the command says about warps, if anything. `uid` is the account the connection logged in as.
+    fn warp_event(&mut self, conv_id: u32, uid: Option<u32>, command: &GameCommand) -> Option<WarpEvent> {
         match command.command_id {
             command_id::DoGachaCsReq => {
                 // The request carries the account's warp request counter, the result doesn't
@@ -254,7 +240,7 @@ impl CaptureSession {
                 if result.retcode != 0 || result.gacha_item_list.is_empty() {
                     return None;
                 }
-                let Some(&uid) = self.conv_uids.get(&conv_id) else {
+                let Some(uid) = uid else {
                     warn!("a warp was made before the account was known, it can't be kept");
                     return None;
                 };
@@ -271,7 +257,7 @@ impl CaptureSession {
                 if response.retcode != 0 || response.auth_appid != WARP_HISTORY_APP || response.authkey.is_empty() {
                     return None;
                 }
-                let uid = *self.conv_uids.get(&conv_id)?;
+                let uid = uid?;
                 Some(WarpEvent::Authkey {
                     uid,
                     authkey: response.authkey,
@@ -282,16 +268,11 @@ impl CaptureSession {
                 let banners = info
                     .gacha_info_list
                     .iter()
-                    .map(|banner| {
-                        let mut rate_up: Vec<u32> = banner.prize_item_list.iter().chain(&banner.item_detail_list).copied().collect();
-                        rate_up.sort_unstable();
-                        rate_up.dedup();
-                        BannerInfo {
-                            gacha_id: banner.gacha_id,
-                            begin: banner.begin_time,
-                            end: banner.end_time,
-                            rate_up,
-                        }
+                    .map(|banner| BannerInfo {
+                        gacha_id: banner.gacha_id,
+                        begin: banner.begin_time,
+                        end: banner.end_time,
+                        rate_up: banner_rate_up(banner),
                     })
                     .collect();
                 Some(WarpEvent::Banners { banners })
@@ -323,22 +304,18 @@ impl CaptureSession {
         }
     }
 
-    /// The exporter of the account that logged in most recently
-    pub async fn latest_exporter(&self) -> Option<Arc<Mutex<OptimizerExporter>>> {
-        self.manager.lock().await.get_account_exporter(self.latest_uid?)
-    }
-
     /// Whether everything needed for an export of the latest account has been captured
     pub async fn is_initialized(&self) -> bool {
-        match self.latest_exporter().await {
-            Some(exporter) => exporter.lock().await.is_initialized(),
-            None => false,
-        }
+        self.manager
+            .lock()
+            .await
+            .latest_exporter()
+            .is_some_and(|exporter| exporter.is_initialized())
     }
 
     /// Export whatever has been captured for the latest account
     pub async fn export(&self) -> Option<Export> {
-        self.latest_exporter().await?.lock().await.export()
+        self.manager.lock().await.latest_exporter()?.export()
     }
 }
 
@@ -536,10 +513,6 @@ mod tests {
             _ => None,
         });
         let banners = banners.expect("the warp screen's banners");
-        println!(
-            "banners: {:?}",
-            banners.iter().map(|b| (b.gacha_id, &b.rate_up)).collect::<Vec<_>>()
-        );
         assert!(banners.iter().any(|b| b.gacha_id == 2142));
     }
 

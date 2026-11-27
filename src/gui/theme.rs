@@ -27,6 +27,8 @@ pub struct Theme {
     pub bg: Color,
     /// Panels on the background
     pub panel: Color,
+    /// The fill of plates: nearly opaque, a background image only just shows through
+    pub glass: Color,
     /// Insets inside panels
     pub well: Color,
     /// Panel edges and dividers
@@ -53,6 +55,10 @@ pub struct Theme {
     pub bone_shade: Color,
     /// The back of this tile set, the deep version of the accent
     pub tile_back: Color,
+    /// Gold, for progress and what's done, in every theme as the game keeps it
+    pub gold: Color,
+    /// Dark ink on gold
+    pub on_gold: Color,
 }
 
 /// How an accent is made, in OKLCH
@@ -149,17 +155,22 @@ impl Theme {
         let tint = |l: f32, c: f32| oklch(l, c * if accent == Accent::Silver { 0.6 } else { 1.0 }, gem.hue);
         let (second_hue, second_chroma) = gem.second;
 
+        let on_gold = oklch(0.25, 0.04, 70.0);
+
         let theme = if dark {
             let panel = tint(0.185, 0.013);
+            let panel = if frosted { panel.alpha(0.86) } else { panel };
+            let accent_ink = accent_color(accent, true);
             Theme {
                 kit: Kit::neutral(true),
                 dark,
                 bg: tint(0.155, 0.012),
-                panel: if frosted { panel.alpha(0.86) } else { panel },
+                panel,
+                glass: panel.alpha(0.93),
                 well: tint(0.13, 0.01).alpha(if frosted { 0.7 } else { 1.0 }),
                 line: tint(0.32, 0.03),
-                accent: accent_color(accent, true),
-                accent_line: oklch(gem.on_dark, gem.chroma, gem.hue).alpha(0.42),
+                accent: accent_ink,
+                accent_line: accent_ink.alpha(0.42),
                 on_accent: tint(0.18, 0.02),
                 secondary: oklch(0.68, second_chroma, second_hue),
                 primary: tint(0.93, 0.03),
@@ -173,14 +184,18 @@ impl Theme {
                 bone: oklch(0.93, 0.012, 88.0),
                 bone_shade: oklch(0.87, 0.016, 85.0),
                 tile_back: tile_back(accent, true).0,
+                gold: oklch(0.8, 0.12, 82.0),
+                on_gold,
             }
         } else {
             let panel = tint(0.99, 0.006);
+            let panel = if frosted { panel.alpha(0.88) } else { panel };
             Theme {
                 kit: Kit::neutral(false),
                 dark,
                 bg: tint(0.955, 0.012),
-                panel: if frosted { panel.alpha(0.88) } else { panel },
+                panel,
+                glass: panel.alpha(0.95),
                 well: tint(0.935, 0.01).alpha(if frosted { 0.75 } else { 1.0 }),
                 line: tint(0.84, 0.025),
                 accent: accent_color(accent, false),
@@ -198,6 +213,8 @@ impl Theme {
                 bone: oklch(0.985, 0.008, 88.0),
                 bone_shade: oklch(0.93, 0.014, 85.0),
                 tile_back: tile_back(accent, false).0,
+                gold: oklch(0.68, 0.13, 75.0),
+                on_gold,
             }
         };
         theme.with_kit()
@@ -230,4 +247,8 @@ pub const LABEL: TextStyle = TextStyle::new(13.5, 500.0).lh(18.0).tracking(0.3);
 pub const SMALL: TextStyle = TextStyle::new(12.5, 400.0).lh(17.0).tracking(0.2);
 pub const BUTTON: TextStyle = TextStyle::new(14.0, 600.0).lh(18.0).tracking(0.6);
 pub const NUMBER: TextStyle = TextStyle::new(32.0, 500.0).lh(36.0).features("'tnum' 1");
+/// The words on a plate's tag
+pub const TAG: TextStyle = TextStyle::new(13.0, 650.0).lh(16.0).tracking(0.3);
+/// A label over a group, in sentence case: quieter than a title, bolder than [`LABEL`]
+pub const GROUP: TextStyle = TextStyle::new(13.0, 600.0).lh(17.0).tracking(0.2);
 pub const MONO: TextStyle = TextStyle::new(11.5, 400.0).lh(16.0).mono();

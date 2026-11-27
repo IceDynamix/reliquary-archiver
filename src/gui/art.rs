@@ -9,10 +9,10 @@
 //! kept decoded (as QOI) at the size the game has it, since the warp screen draws it about as large.
 //!
 //! The view asks with [`ArtCache::get`], which answers at once: the image if it's there, `None`
-//! while it's on its way. Worker threads download, several at once, and decode, a few at once, then
-//! wake the window, and
-//! [`ArtCache::take_done`] (called from `poll`) hands the result to Rune.
+//! while it's on its way. Worker threads download, several at once, and decode, a few at once,
+//! then wake the window, and [`ArtCache::take_done`] (called from `poll`) hands the result to Rune.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, mpsc};
@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use image::DynamicImage;
 use rune::{Color, Image, ImageCache};
+use serde_json::Value;
 
 /// Where the art is: hsr-warp-art's files, in an R2 bucket behind Cloudflare's cache
 const WARP_ART_URL: &str = "https://sparxie.anemew.me";
@@ -136,7 +137,11 @@ impl Art {
         let safe = |s: &str| s.replace(|c: char| !c.is_ascii_alphanumeric() && c != '_', "-");
         let (stem, version) = (safe(file.rsplit_once('.').map_or(file, |(stem, _)| stem)), safe(version));
         // Portraits are kept scaled down to this
-        let height = if matches!(self, Art::Portrait(_)) { format!("-{PORTRAIT_HEIGHT}") } else { String::new() };
+        let height = if matches!(self, Art::Portrait(_)) {
+            format!("-{PORTRAIT_HEIGHT}")
+        } else {
+            String::new()
+        };
         format!("warp-{version}-{stem}{height}.qoi")
     }
 }
@@ -221,6 +226,67 @@ impl BannerArt {
     pub fn placed(&self) -> bool {
         self.layer(Layer::Main).is_some_and(|l| l.on_screen.is_some())
     }
+
+    /// A banner's entry in the manifest, `None` when nothing of it is of use
+    fn parse(entry: &Value) -> Option<BannerArt> {
+        let mut layers: Vec<LayerArt> = entry["layers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(LayerArt::parse)
+            .collect();
+        // Without its main layer placed, a banner's art isn't worth drawing in layers, but its
+        // tickets still are
+        if !layers.iter().any(|l| l.layer == Layer::Main && l.on_screen.is_some()) {
+            layers.retain(|l| matches!(l.layer, Layer::Tab | Layer::TabSelected));
+        }
+        let surface = Surface::parse(entry);
+        (!layers.is_empty() || surface.is_some()).then_some(BannerArt { layers, surface })
+    }
+}
+
+impl LayerArt {
+    /// A layer's entry in a banner's
+    fn parse(l: &Value) -> Option<LayerArt> {
+        let canvas = numbers(&l["canvas"]).unwrap_or([2048.0, 2048.0]);
+        let weight = &l["weight"];
+        Some(LayerArt {
+            layer: Layer::from_name(l["layer"].as_str()?)?,
+            file: string(&l["file"])?,
+            canvas,
+            rect: numbers(&l["rect"]).unwrap_or([0.0, 0.0, canvas[0], canvas[1]]),
+            on_screen: numbers::<4>(&l["canvas_on_screen"]).filter(|v| v[2] > 0.0),
+            weight: numbers(&weight["centre"]).zip(rect(&weight["core"])).map(|(center, core)| Weight {
+                center,
+                core,
+                person: rect(&weight["person"]),
+                head: rect(&weight["head"]),
+            }),
+        })
+    }
+}
+
+/// `N` numbers, from a JSON array of exactly that many
+fn numbers<const N: usize>(v: &Value) -> Option<[f32; N]> {
+    let floats: Vec<f32> = v.as_array()?.iter().map(|x| x.as_f64().map(|x| x as f32)).collect::<Option<_>>()?;
+    floats.try_into().ok()
+}
+
+/// A box, x, y, width and height, that has an area
+fn rect(v: &Value) -> Option<[f32; 4]> {
+    numbers::<4>(v).filter(|r| r[2] > 0.0 && r[3] > 0.0)
+}
+
+fn string(v: &Value) -> Option<String> {
+    v.as_str().map(str::to_string)
+}
+
+/// The entries of a JSON object keyed by id, skipping keys that aren't one
+fn by_id(v: &Value) -> impl Iterator<Item = (u32, &Value)> {
+    v.as_object()
+        .into_iter()
+        .flatten()
+        .filter_map(|(id, entry)| Some((id.parse().ok()?, entry)))
 }
 
 /// What the art has
@@ -247,92 +313,39 @@ impl Manifest {
     }
 
     fn parse(bytes: &[u8]) -> Option<Manifest> {
-        let json: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+        let json: Value = serde_json::from_slice(bytes).ok()?;
         let build = json["game"]["build"].as_str().unwrap_or("0").to_string();
-        let floats = |v: &serde_json::Value| -> Option<Vec<f32>> { v.as_array()?.iter().map(|x| x.as_f64().map(|x| x as f32)).collect() };
-        let mut banners = HashMap::new();
-        for kind in ["character", "light_cone", "collaboration_character", "collaboration_light_cone"] {
-            let Some(entries) = json["banners"][kind].as_object() else {
-                continue;
-            };
-            for (id, entry) in entries {
-                let Ok(id) = id.parse::<u32>() else { continue };
-                let mut layers: Vec<LayerArt> = entry["layers"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|l| {
-                        let layer = Layer::from_name(l["layer"].as_str()?)?;
-                        let file = l["file"].as_str()?.to_string();
-                        let canvas = floats(&l["canvas"]).filter(|v| v.len() == 2).unwrap_or(vec![2048.0, 2048.0]);
-                        let rect = floats(&l["rect"])
-                            .filter(|v| v.len() == 4)
-                            .unwrap_or(vec![0.0, 0.0, canvas[0], canvas[1]]);
-                        let on_screen = floats(&l["canvas_on_screen"]).filter(|v| v.len() == 4 && v[2] > 0.0);
-                        Some(LayerArt {
-                            layer,
-                            file,
-                            canvas: [canvas[0], canvas[1]],
-                            rect: [rect[0], rect[1], rect[2], rect[3]],
-                            on_screen: on_screen.map(|v| [v[0], v[1], v[2], v[3]]),
-                            weight: floats(&l["weight"]["centre"])
-                                .filter(|v| v.len() == 2)
-                                .zip(floats(&l["weight"]["core"]).filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0))
-                                .map(|(c, k)| Weight {
-                                    center: [c[0], c[1]],
-                                    core: [k[0], k[1], k[2], k[3]],
-                                    person: floats(&l["weight"]["person"])
-                                        .filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0)
-                                        .map(|v| [v[0], v[1], v[2], v[3]]),
-                                    head: floats(&l["weight"]["head"])
-                                        .filter(|v| v.len() == 4 && v[2] > 0.0 && v[3] > 0.0)
-                                        .map(|v| [v[0], v[1], v[2], v[3]]),
-                                }),
-                        })
-                    })
-                    .collect();
-                // Without its main layer placed, a banner's art isn't worth drawing in layers, but
-                // its tickets still are
-                if !layers.iter().any(|l| l.layer == Layer::Main && l.on_screen.is_some()) {
-                    layers.retain(|l| matches!(l.layer, Layer::Tab | Layer::TabSelected));
-                }
-                let surface = Surface::parse(entry);
-                if !layers.is_empty() || surface.is_some() {
-                    banners.insert(id, BannerArt { layers, surface });
-                }
-            }
-        }
+        let banners = ["character", "light_cone", "collaboration_character", "collaboration_light_cone"]
+            .into_iter()
+            .flat_map(|kind| by_id(&json["banners"][kind]))
+            .filter_map(|(id, entry)| Some((id, BannerArt::parse(entry)?)))
+            .collect();
         let mut tickets = HashMap::new();
         for (name, ticket) in [("standard", Ticket::Standard), ("departure", Ticket::Departure)] {
             let tabs = &json["tabs"][name];
-            let file = |layer: &str| tabs[layer].as_str().map(str::to_string);
             if tabs.is_object() {
-                tickets.insert(ticket, [file("tab"), file("tab_selected")]);
+                tickets.insert(ticket, [string(&tabs["tab"]), string(&tabs["tab_selected"])]);
             }
         }
-        let mut own = HashMap::new();
-        for kind in ["character", "light_cone"] {
-            for (id, slots) in json["art"][kind].as_object().into_iter().flatten() {
-                let Ok(id) = id.parse::<u32>() else { continue };
-                let file = |slot: &str| slots[slot].as_str().map(str::to_string);
-                own.insert(id, OwnArt {
-                    portrait: file("portrait"),
-                    preview: file("preview"),
-                    icon: file("icon"),
-                });
-            }
-        }
-        let items = json["art"]["item"]
-            .as_object()
+        let own = ["character", "light_cone"]
             .into_iter()
-            .flatten()
-            .filter_map(|(id, slots)| Some((id.parse::<u32>().ok()?, slots["icon"].as_str()?.to_string())))
+            .flat_map(|kind| by_id(&json["art"][kind]))
+            .map(|(id, slots)| {
+                (id, OwnArt {
+                    portrait: string(&slots["portrait"]),
+                    preview: string(&slots["preview"]),
+                    icon: string(&slots["icon"]),
+                })
+            })
+            .collect();
+        let items = by_id(&json["art"]["item"])
+            .filter_map(|(id, slots)| Some((id, string(&slots["icon"])?)))
             .collect();
         let hashes = json["files"]
             .as_object()
             .into_iter()
             .flatten()
-            .filter_map(|(file, about)| Some((file.clone(), about["sha256"].as_str()?.to_string())))
+            .filter_map(|(file, about)| Some((file.clone(), string(&about["sha256"])?)))
             .collect();
         Some(Manifest {
             build,
@@ -347,56 +360,59 @@ impl Manifest {
 
 impl Surface {
     /// The banner's panel, or for a light cone the frame's motif alone
-    fn parse(entry: &serde_json::Value) -> Option<Surface> {
-        let color = |v: &serde_json::Value| -> Option<Color> {
-            let c: Vec<f32> = v.as_array()?.iter().map(|x| x.as_f64().map(|x| x as f32)).collect::<Option<_>>()?;
-            (c.len() == 4).then(|| srgb([c[0], c[1], c[2]], c[3]))
-        };
-        let pattern = |v: &serde_json::Value| -> Option<Pattern> {
-            let tile: Vec<f32> = v["tile"]
-                .as_array()?
-                .iter()
-                .map(|x| x.as_f64().map(|x| x as f32))
-                .collect::<Option<_>>()?;
-            (tile.len() == 2 && tile[0] > 0.0 && tile[1] > 0.0).then_some(())?;
-            Some(Pattern {
-                file: v["pattern"].as_str()?.to_string(),
-                color: color(&v["color"])?,
-                tile: [tile[0], tile[1]],
-            })
-        };
-        // A gradient's colors take the place of the layer's own
-        let paint = |v: &serde_json::Value| -> Option<Paint> {
-            let stops = v["gradient"]["colors"].as_array();
-            match stops.map(|s| s.iter().map(color).collect::<Option<Vec<_>>>()) {
-                Some(Some(stops)) if stops.len() == 2 => Some(Paint {
-                    start: stops[0],
-                    end: stops[1],
-                }),
-                _ => color(&v["color"]).map(|c| Paint { start: c, end: c }),
-            }
-        };
+    fn parse(entry: &Value) -> Option<Surface> {
         let panel = &entry["panel"];
+        let frame_pattern = || Pattern::parse(&entry["frame_pattern"]);
         let surface = if panel.is_object() {
             Surface {
-                fill: paint(&panel["fill"]),
-                fade: paint(&panel["fade"]),
-                pattern: pattern(&panel["pattern"]).or_else(|| pattern(&entry["frame_pattern"])),
+                fill: Paint::parse(&panel["fill"]),
+                fade: Paint::parse(&panel["fade"]),
+                pattern: Pattern::parse(&panel["pattern"]).or_else(frame_pattern),
             }
         } else {
             Surface {
                 fill: None,
                 fade: None,
-                pattern: pattern(&entry["frame_pattern"]),
+                pattern: frame_pattern(),
             }
         };
         (surface.fill.is_some() || surface.pattern.is_some()).then_some(surface)
     }
 }
 
+impl Paint {
+    /// A panel layer's paint: a gradient's colors take the place of the layer's own
+    fn parse(v: &Value) -> Option<Paint> {
+        let stops = v["gradient"]["colors"].as_array();
+        match stops.map(|s| s.iter().map(game_color).collect::<Option<Vec<_>>>()) {
+            Some(Some(stops)) if stops.len() == 2 => Some(Paint {
+                start: stops[0],
+                end: stops[1],
+            }),
+            _ => game_color(&v["color"]).map(|c| Paint { start: c, end: c }),
+        }
+    }
+}
+
+impl Pattern {
+    fn parse(v: &Value) -> Option<Pattern> {
+        let tile = numbers::<2>(&v["tile"]).filter(|[w, h]| *w > 0.0 && *h > 0.0)?;
+        Some(Pattern {
+            file: string(&v["pattern"])?,
+            color: game_color(&v["color"])?,
+            tile,
+        })
+    }
+}
+
+/// A color from the manifest, sRGB and alpha
+fn game_color(v: &Value) -> Option<Color> {
+    numbers::<4>(v).map(|[r, g, b, a]| srgb([r, g, b], a))
+}
+
 /// A color as the game's UI gives it, in sRGB
 fn srgb(rgb: [f32; 3], alpha: f32) -> Color {
-    let [r, g, b] = rgb.map(|c| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) });
+    let [r, g, b] = rgb.map(super::srgb_to_linear);
     Color { r, g, b, a: alpha }
 }
 
@@ -420,9 +436,25 @@ struct Done {
     tint: Option<[f32; 3]>,
 }
 
+/// Where a piece of art is read from
+struct Source {
+    /// The file's version, as the manifest has it ([`Manifest::version`])
+    version: String,
+    /// The art's base, a folder or a URL
+    base: String,
+    file: String,
+}
+
 enum Job {
     Manifest,
-    Art(Art, String),
+    Art(Art, Source),
+}
+
+/// What an art thread finished
+enum Finished {
+    /// The manifest, `None` when it couldn't be had
+    Manifest(Option<Manifest>),
+    Art(Done),
 }
 
 enum ManifestState {
@@ -432,15 +464,17 @@ enum ManifestState {
     Missing,
 }
 
+/// Art for the window. Asked for and handed to Rune on the UI thread; only `done` is shared with
+/// the art threads
 pub struct ArtCache {
     images: ImageCache,
-    slots: Mutex<HashMap<Art, Slot>>,
-    tints: Mutex<HashMap<Art, Color>>,
-    manifest: Mutex<ManifestState>,
+    slots: RefCell<HashMap<Art, Slot>>,
+    tints: RefCell<HashMap<Art, Color>>,
+    manifest: RefCell<ManifestState>,
     /// Where requests go, `None` to fetch on the spot (for snapshots, which draw one frame)
     jobs: Option<mpsc::Sender<Job>>,
-    done: Arc<Mutex<Vec<Done>>>,
-    manifest_done: Arc<Mutex<Option<Option<Manifest>>>>,
+    /// What the art threads finished, for [`ArtCache::take_done`]
+    done: Arc<Mutex<Vec<Finished>>>,
 }
 
 impl ArtCache {
@@ -449,11 +483,10 @@ impl ArtCache {
     pub fn new(waker: rune::Waker) -> Self {
         let (jobs, requests) = mpsc::channel::<Job>();
         let requests = Arc::new(Mutex::new(requests));
-        let done: Arc<Mutex<Vec<Done>>> = Arc::default();
-        let manifest_done: Arc<Mutex<Option<Option<Manifest>>>> = Arc::default();
+        let done: Arc<Mutex<Vec<Finished>>> = Arc::default();
         let agent = agent();
         for n in 0..DOWNLOADS {
-            let (requests, finished, manifest_finished) = (requests.clone(), done.clone(), manifest_done.clone());
+            let (requests, done) = (requests.clone(), done.clone());
             let (wake, agent) = (waker.clone(), agent.clone());
             std::thread::Builder::new()
                 .name(format!("warp-art-{n}"))
@@ -463,56 +496,52 @@ impl ArtCache {
                         // work, not for this one's download. Jobs start in the order they're asked
                         let job = requests.lock().unwrap_or_else(PoisonError::into_inner).recv();
                         let Ok(job) = job else { break };
-                        match job {
-                            Job::Manifest => {
-                                *manifest_finished.lock().unwrap_or_else(PoisonError::into_inner) = Some(fetch_manifest(&agent));
-                            }
+                        let finished = match job {
+                            Job::Manifest => Finished::Manifest(fetch_manifest(&agent)),
                             Job::Art(art, source) => {
                                 let (fetched, tint) = fetch(&agent, art, &source);
-                                finished
-                                    .lock()
-                                    .unwrap_or_else(PoisonError::into_inner)
-                                    .push(Done { art, fetched, tint });
+                                Finished::Art(Done { art, fetched, tint })
                             }
-                        }
+                        };
+                        done.lock().unwrap_or_else(PoisonError::into_inner).push(finished);
                         wake();
                     }
                 })
                 .expect("couldn't start an art thread");
         }
-        Self::with(waker, Some(jobs), done, manifest_done)
+        Self::with(waker, Some(jobs), done)
     }
 
     /// Fetches when asked, for snapshots
     pub fn blocking(waker: rune::Waker) -> Self {
-        Self::with(waker, None, Arc::default(), Arc::default())
+        Self::with(waker, None, Arc::default())
     }
 
-    fn with(
-        waker: rune::Waker,
-        jobs: Option<mpsc::Sender<Job>>,
-        done: Arc<Mutex<Vec<Done>>>,
-        manifest_done: Arc<Mutex<Option<Option<Manifest>>>>,
-    ) -> Self {
+    fn with(waker: rune::Waker, jobs: Option<mpsc::Sender<Job>>, done: Arc<Mutex<Vec<Finished>>>) -> Self {
         Self {
             images: ImageCache::new(waker),
-            slots: Mutex::default(),
-            tints: Mutex::default(),
-            manifest: Mutex::new(ManifestState::NotAsked),
+            slots: RefCell::default(),
+            tints: RefCell::default(),
+            manifest: RefCell::new(ManifestState::NotAsked),
             jobs,
             done,
-            manifest_done,
         }
     }
 
     /// How a banner featuring `item` lays its art out, when the banner art has it. `None` while
     /// that's being found out
     pub fn banner(&self, item: u32) -> Option<BannerArt> {
-        self.manifest().and_then(|m| m.banners.get(&item).cloned())
+        self.with_banner(item, BannerArt::clone)
+    }
+
+    /// What `look` makes of how a banner featuring `item` lays its art out, as [`ArtCache::banner`]
+    /// without a copy of it
+    pub fn with_banner<T>(&self, item: u32, look: impl FnOnce(&BannerArt) -> T) -> Option<T> {
+        self.manifest()?.banners.get(&item).map(look)
     }
 
     fn manifest(&self) -> Option<Arc<Manifest>> {
-        let mut state = self.manifest.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.manifest.borrow_mut();
         match &*state {
             ManifestState::Ready(m) => return Some(m.clone()),
             ManifestState::Loading | ManifestState::Missing => return None,
@@ -535,7 +564,7 @@ impl ArtCache {
     /// The art if it's here, `None` while it's on its way or when it couldn't be had
     pub fn get(&self, art: Art) -> Option<Image> {
         {
-            let slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+            let slots = self.slots.borrow();
             match slots.get(&art) {
                 Some(Slot::Ready(image)) => return image.error().is_none().then(|| image.clone()),
                 Some(Slot::Loading | Slot::Missing) => return None,
@@ -545,8 +574,12 @@ impl ArtCache {
         // From where the manifest says, under the art's base
         let manifest = self.manifest()?;
         let file = art.file(&manifest)?;
-        let source = format!("{}\n{}\n{file}", manifest.version(file), warp_art_base());
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let source = Source {
+            version: manifest.version(file).to_string(),
+            base: warp_art_base(),
+            file: file.to_string(),
+        };
+        let mut slots = self.slots.borrow_mut();
         match &self.jobs {
             Some(jobs) => {
                 slots.insert(art, Slot::Loading);
@@ -560,7 +593,7 @@ impl ArtCache {
                     let _ = image.wait();
                 }
                 if let Some(tint) = tint {
-                    self.tints.lock().unwrap_or_else(PoisonError::into_inner).insert(art, color(tint));
+                    self.tints.borrow_mut().insert(art, accent_of_rgb(tint));
                 }
                 slots.insert(art, image.clone().map_or(Slot::Missing, Slot::Ready));
                 image
@@ -570,37 +603,32 @@ impl ArtCache {
 
     /// The color of a banner's backdrop, once it's here: the banner's own accent
     pub fn tint(&self, item: u32) -> Option<Color> {
-        self.tints
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .get(&Art::Layer(item, Layer::Backdrop))
-            .copied()
+        self.tints.borrow().get(&Art::Layer(item, Layer::Backdrop)).copied()
     }
 
-    /// Hands art the thread finished to Rune. True when there was any
+    /// Hands what the threads finished to Rune. True when there was any
     pub fn take_done(&self) -> bool {
-        let mut changed = false;
-        if let Some(manifest) = self.manifest_done.lock().unwrap_or_else(PoisonError::into_inner).take() {
-            *self.manifest.lock().unwrap_or_else(PoisonError::into_inner) = match manifest {
-                Some(manifest) => ManifestState::Ready(Arc::new(manifest)),
-                None => ManifestState::Missing,
-            };
-            changed = true;
-        }
         let done = std::mem::take(&mut *self.done.lock().unwrap_or_else(PoisonError::into_inner));
         if done.is_empty() {
-            return changed;
+            return false;
         }
-        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
-        for Done { art, fetched, tint } in done {
-            if let Some(tint) = tint {
-                self.tints.lock().unwrap_or_else(PoisonError::into_inner).insert(art, color(tint));
+        let (mut slots, mut tints) = (self.slots.borrow_mut(), self.tints.borrow_mut());
+        for finished in done {
+            match finished {
+                Finished::Manifest(manifest) => {
+                    *self.manifest.borrow_mut() = manifest.map_or(ManifestState::Missing, |m| ManifestState::Ready(Arc::new(m)));
+                }
+                Finished::Art(Done { art, fetched, tint }) => {
+                    if let Some(tint) = tint {
+                        tints.insert(art, accent_of_rgb(tint));
+                    }
+                    let slot = match fetched {
+                        Some(fetched) => Slot::Ready(self.install(fetched)),
+                        None => Slot::Missing,
+                    };
+                    slots.insert(art, slot);
+                }
             }
-            let slot = match fetched {
-                Some(fetched) => Slot::Ready(self.install(fetched)),
-                None => Slot::Missing,
-            };
-            slots.insert(art, slot);
         }
         true
     }
@@ -612,7 +640,7 @@ impl ArtCache {
 
 /// An accent from a picture's color: its hue, at a lightness and strength that read as an accent
 /// on dark and light alike. A gray picture gives a soft gold
-fn color(rgb: [f32; 3]) -> Color {
+fn accent_of_rgb(rgb: [f32; 3]) -> Color {
     let [_, a, bb, _] = srgb(rgb, 1.0).to_oklab();
     let chroma = (a * a + bb * bb).sqrt();
     if chroma < 0.02 {
@@ -626,7 +654,9 @@ fn warp_art_base() -> String {
     std::env::var(WARP_ART_ENV)
         .ok()
         .filter(|base| !base.trim().is_empty())
-        .map_or(WARP_ART_URL.to_string(), |base| base.trim().trim_end_matches(['/', '\\']).to_string())
+        .map_or(WARP_ART_URL.to_string(), |base| {
+            base.trim().trim_end_matches(['/', '\\']).to_string()
+        })
 }
 
 fn agent() -> ureq::Agent {
@@ -676,13 +706,10 @@ fn fetch_manifest(agent: &ureq::Agent) -> Option<Manifest> {
     Manifest::parse(&bytes)
 }
 
-/// The art from the cache folder, or downloaded into it, and for a banner's backdrop its color.
-/// `source` is the file's version, the art's base and the file, a line each
-fn fetch(agent: &ureq::Agent, art: Art, source: &str) -> (Option<Fetched>, Option<[f32; 3]>) {
-    let mut lines = source.lines();
-    let (Some(version), Some(base), Some(file)) = (lines.next(), lines.next(), lines.next()) else {
-        return (None, None);
-    };
+/// The art from the cache folder, or downloaded into it, and for a banner's backdrop its color
+fn fetch(agent: &ureq::Agent, art: Art, source: &Source) -> (Option<Fetched>, Option<[f32; 3]>) {
+    let Source { version, base, file } = source;
+    let (version, file) = (version.as_str(), file.as_str());
     let cached = cache_dir().map(|dir| dir.join(art.cache_name(file, version)));
     let backdrop = matches!(art, Art::Layer(_, Layer::Backdrop));
     if let Some(path) = &cached
@@ -814,16 +841,8 @@ fn decode(bytes: &[u8]) -> Option<DynamicImage> {
     image::RgbaImage::from_raw(width, height, rgba).map(DynamicImage::ImageRgba8)
 }
 
-/// Writes beside the file and moves it in place, so a half written file is never read
 fn keep(path: &std::path::Path, bytes: &[u8]) {
-    let temp = path.with_extension(format!("{}.tmp", std::process::id()));
-    let written = path
-        .parent()
-        .map_or(Ok(()), std::fs::create_dir_all)
-        .and_then(|()| std::fs::write(&temp, bytes))
-        .and_then(|()| std::fs::rename(&temp, path));
-    if let Err(e) = written {
-        let _ = std::fs::remove_file(&temp);
+    if let Err(e) = crate::dirs::write_atomic(path, |temp| std::fs::write(temp, bytes)) {
         tracing::debug!(%e, "couldn't keep art");
     }
 }
@@ -853,21 +872,9 @@ fn rgba(image: DynamicImage) -> Fetched {
     }
 }
 
-/// The app's cache folder: under the local app data folder on Windows, Caches on macOS, the XDG
-/// cache folder elsewhere
+/// Where downloaded art is kept
 fn cache_dir() -> Option<PathBuf> {
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(|dir| PathBuf::from(dir).join("reliquary-archiver").join("Cache"))
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library").join("Caches").join("reliquary-archiver"))
-    } else {
-        std::env::var_os("XDG_CACHE_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-            .map(|dir| dir.join("reliquary-archiver"))
-    };
-    base.filter(|path| path.is_absolute()).map(|dir| dir.join("art"))
+    crate::dirs::cache_dir().map(|dir| dir.join("art"))
 }
 
 #[cfg(test)]
@@ -904,7 +911,10 @@ mod tests {
         assert_eq!(file(Art::Item(102)), Some("items/102.jxl"));
         assert_eq!(file(Art::Item(101)), None);
         assert_eq!(file(Art::Layer(1511, Layer::Main)), Some("characters/1511/avatar.jxl"));
-        assert_eq!(file(Art::Ticket(Ticket::Banner(1511), true)), Some("characters/1511/tab_selected.jxl"));
+        assert_eq!(
+            file(Art::Ticket(Ticket::Banner(1511), true)),
+            Some("characters/1511/tab_selected.jxl")
+        );
         assert_eq!(file(Art::Ticket(Ticket::Standard, false)), Some("tabs/standard_tab.jxl"));
         assert_eq!(file(Art::Pattern(1511)), Some("patterns/decopatternpixeleater.jxl"));
     }
@@ -954,9 +964,8 @@ mod tests {
     fn jpeg_xl_decodes() {
         // 2x2, lossless: red, half transparent green, transparent, white
         const TINY: &[u8] = &[
-            0xff, 0x0a, 0x08, 0x10, 0xb0, 0x12, 0x08, 0x00, 0x10, 0x00, 0x74, 0x00, 0x4b, 0x18, 0x8b, 0x15, 0xc2, 0x09,
-            0xaa, 0xb7, 0x1f, 0x34, 0x17, 0x90, 0x01, 0x60, 0xfc, 0x47, 0x44, 0x3f, 0x9e, 0xde, 0x6d, 0x22, 0xc1, 0x8a,
-            0xbd, 0x77, 0x98, 0x2a, 0x03,
+            0xff, 0x0a, 0x08, 0x10, 0xb0, 0x12, 0x08, 0x00, 0x10, 0x00, 0x74, 0x00, 0x4b, 0x18, 0x8b, 0x15, 0xc2, 0x09, 0xaa, 0xb7, 0x1f,
+            0x34, 0x17, 0x90, 0x01, 0x60, 0xfc, 0x47, 0x44, 0x3f, 0x9e, 0xde, 0x6d, 0x22, 0xc1, 0x8a, 0xbd, 0x77, 0x98, 0x2a, 0x03,
         ];
         let image = decode(TINY).unwrap().into_rgba8();
         assert_eq!(image.dimensions(), (2, 2));

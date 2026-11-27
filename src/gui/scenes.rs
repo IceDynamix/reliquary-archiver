@@ -5,10 +5,13 @@
 //! reliquary-archiver --ui --snap ready.png --scene ready [--theme light]
 //! ```
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use super::settings::{Accent, Anchor};
-use super::state::{Account, CaptureError, Funds, Inventory, LiveSync, Notice, Panel, Screen, Ui, Update};
+use super::settings::{Accent, Anchor, BackgroundFill, ImageFit};
+use super::state::{Account, CaptureError, Funds, Inventory, LiveSync, Notice, Panel, ProfilePick, Roster, Screen, Ui, Update, WarpPage};
+use crate::warps::Pool;
+use crate::warps::service::{KeyState, ProfileChoice, RunningBanner, Summary};
+use crate::warps::stats::{Featured, RateUps, pool_stats};
 
 /// A name and what it changes in a fresh window
 pub type Scene = (&'static str, fn(&mut Ui));
@@ -24,10 +27,7 @@ pub const SCENES: &[Scene] = &[
         running(s, 0);
         logged_in(s, UID, Some(INVENTORY));
     }),
-    ("synced", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-    }),
+    ("synced", linked),
     ("accounts", |s| {
         running(s, 2);
         logged_in(
@@ -49,8 +49,7 @@ pub const SCENES: &[Scene] = &[
         s.capture.stalled = true;
     }),
     ("stalled-ready", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         s.capture.stalled = true;
     }),
     ("unsupported", |s| {
@@ -61,7 +60,7 @@ pub const SCENES: &[Scene] = &[
     ("capture-error", |s| {
         running(s, 0);
         s.capture.error = Some(CaptureError {
-            message: "could not open capture source: wpcap.dll was not found".into(),
+            message: CAPTURE_ERROR.into(),
             at: Instant::now(),
         });
     }),
@@ -92,8 +91,8 @@ pub const SCENES: &[Scene] = &[
         running(s, 0);
         s.has_tray = true;
         s.panel = Some(Panel::Settings);
-        s.port_edit.replace_text("80");
-        s.port_error = Some("Port 80 is in use. Close other copies or choose another port.".into());
+        s.port.edit.replace_text("80");
+        s.port.error = Some("Port 80 is in use. Close other copies or choose another port.".into());
     }),
     ("logs", |s| {
         running(s, 0);
@@ -101,8 +100,7 @@ pub const SCENES: &[Scene] = &[
         s.log_tail = LOG.lines().map(str::to_string).collect();
     }),
     ("background", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         background(s, 0.45);
     }),
     ("background-waiting", |s| {
@@ -115,79 +113,57 @@ pub const SCENES: &[Scene] = &[
         background(s, 0.3);
         s.panel = Some(Panel::Settings);
     }),
-    // The background contained, with a fill around it: the one `SCENE_FILL` numbers (0 to 7, as
+    // The background contained, with a fill around it: the one `SCENE_FILL` numbers (as
     // `BackgroundFill::ALL`), Blur without
     ("background-fill", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         background(s, 0.9);
-        s.settings.image_fit = super::settings::ImageFit::Contain;
+        s.settings.image_fit = ImageFit::Contain;
         let fill = std::env::var("SCENE_FILL").ok().and_then(|n| n.parse::<usize>().ok()).unwrap_or(1);
-        s.settings.background_fill = super::settings::BackgroundFill::ALL[fill.min(7)];
+        s.settings.background_fill = BackgroundFill::ALL[fill.min(BackgroundFill::ALL.len() - 1)];
         s.settings.background_anchor = [0.5, 0.5];
         s.settings.background_target = Some([0.3, 0.5]);
     }),
     // The background's position and fill in the settings, over the background they set
     ("background-position", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         background(s, 0.6);
-        s.settings.image_fit = super::settings::ImageFit::Contain;
-        s.settings.background_fill = super::settings::BackgroundFill::MirrorBlur;
+        s.settings.image_fit = ImageFit::Contain;
+        s.settings.background_fill = BackgroundFill::MirrorBlur;
         s.settings.background_anchor = [0.3, 0.6];
         s.settings.background_target = Some([0.5, 0.2]);
         s.panel = Some(Panel::Settings);
     }),
     // The background covering the window, zoomed in on a point to the right of its middle
     ("background-zoom", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         background(s, 0.6);
-        s.settings.image_fit = super::settings::ImageFit::Cover;
+        s.settings.image_fit = ImageFit::Cover;
         s.settings.background_zoom = 1.6;
         s.settings.background_anchor = [0.7, 0.4];
         s.settings.background_target = None;
         s.panel = Some(Panel::Settings);
     }),
     // The color around the background picked in the settings
-    ("background-color", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        background(s, 0.6);
-        s.settings.image_fit = super::settings::ImageFit::Contain;
-        s.settings.background_fill = super::settings::BackgroundFill::Color;
-        s.settings.background_color = Some("#2a1f4d".into());
-        s.background_hex.replace_text("#2a1f4d");
-        s.panel = Some(Panel::Settings);
-    }),
+    ("background-color", background_color),
     // The eyedropper out, to pick the color around the background from the image
     ("background-dropper", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        background(s, 0.6);
-        s.settings.image_fit = super::settings::ImageFit::Contain;
-        s.settings.background_fill = super::settings::BackgroundFill::Color;
-        s.settings.background_color = Some("#2a1f4d".into());
-        s.background_hex.replace_text("#2a1f4d");
-        s.background_dropper = true;
-        s.panel = Some(Panel::Settings);
+        background_color(s);
+        s.background.dropper = true;
     }),
     ("anchored", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         background(s, 0.5);
         s.settings.card_anchor = Anchor::BottomRight;
     }),
     ("anchored-settings", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         background(s, 0.5);
         s.settings.card_anchor = Anchor::Left;
         s.panel = Some(Panel::Settings);
     }),
     ("appearance", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         s.settings.accent = Accent::Sapphire;
         s.panel = Some(Panel::Settings);
     }),
@@ -198,74 +174,39 @@ pub const SCENES: &[Scene] = &[
     ("emerald", |s| gem(s, Accent::Emerald)),
     ("sapphire", |s| gem(s, Accent::Sapphire)),
     ("warps", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         warps(s, true);
     }),
     // The warp screen turned to its history page
-    ("warp-history", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        warps(s, true);
-        roster(s);
-        s.screen = Screen::Warps;
-        s.warps.page = crate::gui::state::WarpPage::History;
-    }),
+    ("warp-history", |s| warp_screen(s, WarpPage::History)),
     ("warp-history-lc", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        warps(s, true);
-        roster(s);
-        s.screen = Screen::Warps;
-        s.warps.page = crate::gui::state::WarpPage::History;
-        s.warps.pool = crate::warps::Pool::LightCone;
+        warp_screen(s, WarpPage::History);
+        s.warps.pool = Pool::LightCone;
     }),
     // Turned further, to where the history comes from
-    ("warp-import-export", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        warps(s, true);
-        roster(s);
-        s.screen = Screen::Warps;
-        s.warps.page = crate::gui::state::WarpPage::ImportExport;
-    }),
+    ("warp-import-export", |s| warp_screen(s, WarpPage::ImportExport)),
     // An account with no warps kept yet
     ("warps-new", |s| {
         running(s, 0);
         logged_in(s, UID, Some(INVENTORY));
         s.warps.accounts = vec![UID];
-        s.warps.summaries.insert(UID, crate::gui::scenes::empty_summary());
+        s.warps.summaries.insert(UID, empty_summary());
         s.screen = Screen::Warps;
     }),
     ("warps-syncing", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         warps(s, false);
         s.warps.busy = Some("Syncing Character warps… 120".into());
     }),
-    ("warp-screen", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        warps(s, true);
-        roster(s);
-        s.screen = Screen::Warps;
-    }),
+    ("warp-screen", |s| warp_screen(s, WarpPage::Banner)),
     // Another of the running banners picked, one the account owns
     ("warp-screen-picked", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        warps(s, true);
-        roster(s);
-        s.screen = Screen::Warps;
-        s.warps.featured.insert(crate::warps::Pool::Character, 1506);
+        warp_screen(s, WarpPage::Banner);
+        s.warps.featured.insert(Pool::Character, 1506);
     }),
     // A character's banner art on its own: the one `WARP_HERO` names, as a running banner, picked
     ("warp-screen-hero", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        warps(s, true);
-        roster(s);
-        s.screen = Screen::Warps;
+        warp_screen(s, WarpPage::Banner);
         let Some(hero) = std::env::var("WARP_HERO").ok().and_then(|id| id.parse::<u32>().ok()) else {
             return;
         };
@@ -275,7 +216,7 @@ pub const SCENES: &[Scene] = &[
             banner.fives = vec![hero];
             summary.banners.push(banner);
         }
-        s.warps.featured.insert(crate::warps::Pool::Character, hero);
+        s.warps.featured.insert(Pool::Character, hero);
     }),
     // Not logged in this run: no funds or roster, so no budget
     ("warp-screen-offline", |s| {
@@ -285,60 +226,30 @@ pub const SCENES: &[Scene] = &[
         s.screen = Screen::Warps;
     }),
     ("warp-screen-lc", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
-        warps(s, true);
-        roster(s);
-        s.screen = Screen::Warps;
-        s.warps.pool = crate::warps::Pool::LightCone;
+        warp_screen(s, WarpPage::Banner);
+        s.warps.pool = Pool::LightCone;
     }),
     // The warp screen with a real database, the one `WARPS_DB` names
-    ("warp-screen-db", |s| {
-        running(s, 1);
-        let Some(summary) = std::env::var_os("WARPS_DB").and_then(|path| crate::warps::service::summary_of(path.as_ref(), None)) else {
-            return;
-        };
-        logged_in(s, summary.uid, Some(INVENTORY));
-        s.warps.accounts = vec![summary.uid];
-        s.warps.summaries.insert(summary.uid, summary);
-        s.screen = Screen::Warps;
-        if let Ok(pool) = std::env::var("WARPS_POOL") {
-            s.warps.pool = crate::warps::Pool::from_gacha_type(pool.parse().unwrap_or(11)).unwrap_or(crate::warps::Pool::Character);
-        }
-    }),
+    ("warp-screen-db", |s| from_db(s, WarpPage::Banner)),
     // The history page of a real database, the one `WARPS_DB` names
-    ("warp-history-db", |s| {
-        running(s, 1);
-        let Some(summary) = std::env::var_os("WARPS_DB").and_then(|path| crate::warps::service::summary_of(path.as_ref(), None)) else {
-            return;
-        };
-        logged_in(s, summary.uid, Some(INVENTORY));
-        s.warps.accounts = vec![summary.uid];
-        s.warps.summaries.insert(summary.uid, summary);
-        s.screen = Screen::Warps;
-        s.warps.page = crate::gui::state::WarpPage::History;
-        if let Ok(pool) = std::env::var("WARPS_POOL") {
-            s.warps.pool = crate::warps::Pool::from_gacha_type(pool.parse().unwrap_or(11)).unwrap_or(crate::warps::Pool::Character);
-        }
-    }),
+    ("warp-history-db", |s| from_db(s, WarpPage::History)),
     ("warps-pick", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         warps(s, false);
         s.screen = Screen::Warps;
-        s.warps.page = crate::gui::state::WarpPage::ImportExport;
-        s.warps.choose = Some(crate::gui::state::ProfilePick {
+        s.warps.page = WarpPage::ImportExport;
+        s.warps.choose = Some(ProfilePick {
             path: "starrailstation-backup.dat".into(),
             uid: UID,
             profiles: vec![
-                crate::warps::service::ProfileChoice {
+                ProfileChoice {
                     key: "1".into(),
                     name: "Default".into(),
                     pulls: 521,
                     latest: Some(1_685_664_600),
                     fits: true,
                 },
-                crate::warps::service::ProfileChoice {
+                ProfileChoice {
                     key: "2".into(),
                     name: "slate".into(),
                     pulls: 7399,
@@ -349,21 +260,22 @@ pub const SCENES: &[Scene] = &[
         });
     }),
     ("saved", |s| {
-        running(s, 1);
-        logged_in(s, UID, Some(INVENTORY));
+        linked(s);
         s.notice = Some(Notice {
             id: 0,
             title: "Export saved".into(),
             detail: Some("archive_output-2026-11-07T21-14-03.json".into()),
             error: false,
             file: Some("archive_output-2026-11-07T21-14-03.json".into()),
-            until: Instant::now() + std::time::Duration::from_secs(60),
+            until: Instant::now() + Duration::from_secs(60),
         });
     }),
 ];
 
-const UID: u32 = 801_234_567;
-const INVENTORY: Inventory = Inventory {
+/// The made-up account the scenes log in
+pub(super) const UID: u32 = 801_234_567;
+/// What it holds
+pub(super) const INVENTORY: Inventory = Inventory {
     relics: 1532,
     light_cones: 218,
     characters: 54,
@@ -375,6 +287,8 @@ const INVENTORY: Inventory = Inventory {
         undying_starlight: 592,
     },
 };
+/// Why capturing failed, in the scenes that show it
+pub(super) const CAPTURE_ERROR: &str = "could not open capture source: wpcap.dll was not found";
 
 const LOG: &str = "\
 2026-11-07T21:12:40.120Z  INFO reliquary_archiver::gui::settings: Loaded settings from C:\\Users\\Player\\AppData\\Local\\reliquary-archiver\\settings.json
@@ -389,12 +303,59 @@ fn running(s: &mut Ui, clients: usize) {
     s.sync = LiveSync::Running { port: 23313, clients };
 }
 
-/// A stand-in for a user's own background: the image `SCENE_BACKGROUND` names, else the splash
-/// image in the repository
+/// The made-up account read, with an optimizer linked
+fn linked(s: &mut Ui) {
+    running(s, 1);
+    logged_in(s, UID, Some(INVENTORY));
+}
+
+/// The made-up account's warps on the warp screen, turned to `page`
+fn warp_screen(s: &mut Ui, page: WarpPage) {
+    linked(s);
+    warps(s, true);
+    roster(s);
+    s.screen = Screen::Warps;
+    s.warps.page = page;
+}
+
+/// The warp screen with a real database, the one `WARPS_DB` names, turned to `page` and to the
+/// pool whose gacha type `WARPS_POOL` names
+fn from_db(s: &mut Ui, page: WarpPage) {
+    running(s, 1);
+    let Some(summary) = std::env::var_os("WARPS_DB").and_then(|path| crate::warps::service::summary_of(path.as_ref(), None)) else {
+        return;
+    };
+    logged_in(s, summary.uid, Some(INVENTORY));
+    s.warps.accounts = vec![summary.uid];
+    s.warps.summaries.insert(summary.uid, summary);
+    s.screen = Screen::Warps;
+    s.warps.page = page;
+    if let Ok(pool) = std::env::var("WARPS_POOL") {
+        let gacha_type = pool.parse().unwrap_or(Pool::Character.gacha_type());
+        s.warps.pool = Pool::from_gacha_type(gacha_type).unwrap_or(Pool::Character);
+    }
+}
+
+/// A stand-in for a user's own background
 fn background(s: &mut Ui, opacity: f32) {
-    s.settings.background_image =
-        std::env::var("SCENE_BACKGROUND").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/hsr_hyperdrive.jpg").into());
+    s.settings.background_image = background_path();
     s.settings.background_opacity = opacity;
+}
+
+/// The image `SCENE_BACKGROUND` names, else the splash image in the repository
+pub(super) fn background_path() -> String {
+    std::env::var("SCENE_BACKGROUND").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/hsr_hyperdrive.jpg").into())
+}
+
+/// The background contained, the color around it picked in the settings
+fn background_color(s: &mut Ui) {
+    linked(s);
+    background(s, 0.6);
+    s.settings.image_fit = ImageFit::Contain;
+    s.settings.background_fill = BackgroundFill::Color;
+    s.settings.background_color = Some("#2a1f4d".into());
+    s.background.hex.replace_text("#2a1f4d");
+    s.panel = Some(Panel::Settings);
 }
 
 /// An accent while an account is read, so face up and face down tiles both show
@@ -406,7 +367,7 @@ fn gem(s: &mut Ui, accent: Accent) {
 
 /// What the made-up account owns
 fn roster(s: &mut Ui) {
-    let roster = super::state::Roster {
+    let roster = Roster {
         eidolons: [(1506, 0), (1308, 2), (1501, 1)].into_iter().collect(),
         superimpositions: [(23048, 1)].into_iter().collect(),
     };
@@ -422,8 +383,7 @@ fn logged_in(s: &mut Ui, uid: u32, inventory: Option<Inventory>) {
 /// A made-up account's warps: a few hundred pulls on each pool, with 5 stars at believable pity,
 /// the last requests only seen live. `synced` gives it a fresh authkey and sync
 fn warps(s: &mut Ui, synced: bool) {
-    use crate::warps::stats::{Featured, RateUps, pool_stats};
-    use crate::warps::{Pool, Pull, source};
+    use crate::warps::{Pull, source};
 
     let now = jiff::Timestamp::now().as_second();
     // (pool, banner, featured 5 star, standard 5 star, pulls, 5 star pity in order)
@@ -504,7 +464,11 @@ fn warps(s: &mut Ui, synced: bool) {
     let pools: Vec<_> = plans
         .iter()
         .map(|plan| plan.0)
-        .map(|pool| pool_stats(pool, &refs, &rate_ups))
+        .map(|pool| {
+            pool_stats(pool, &refs, &rate_ups, |item| {
+                reliquary_archiver::export::database::get_database().warp_item_rarity(item)
+            })
+        })
         .collect();
     let db = reliquary_archiver::export::database::get_database();
     let names = pulls
@@ -512,14 +476,14 @@ fn warps(s: &mut Ui, synced: bool) {
         .map(|p| (p.item_id, db.warp_item_name(p.item_id).unwrap_or_else(|| format!("#{}", p.item_id))))
         .collect();
     let unconfirmed = pulls.iter().filter(|p| p.id.is_none()).count();
-    let summary = crate::warps::service::Summary {
+    let mut summary = Summary {
         uid: UID,
         total: pulls.len(),
         unconfirmed,
         requests: pulls.len() - 2,
         request_counter: Some(pulls.len() as u32 + 5),
-        key: Some(crate::warps::service::KeyState {
-            origin: "capture".into(),
+        key: Some(KeyState {
+            origin: crate::warps::store::KeyOrigin::Capture,
             obtained_at: if synced { now - 1800 } else { now - 3 * 86400 },
             expired: !synced,
         }),
@@ -530,7 +494,6 @@ fn warps(s: &mut Ui, synced: bool) {
         names,
         banners: running_banners(now),
     };
-    let mut summary = summary;
     for banner in &summary.banners {
         for &item in banner.fives.iter().chain(&banner.fours) {
             summary
@@ -544,14 +507,12 @@ fn warps(s: &mut Ui, synced: bool) {
 }
 
 /// An account that's never been synced and has nothing kept
-fn empty_summary() -> crate::warps::service::Summary {
-    use crate::warps::Pool;
-    use crate::warps::stats::{RateUps, pool_stats};
-    crate::warps::service::Summary {
+pub(super) fn empty_summary() -> Summary {
+    Summary {
         uid: UID,
         pools: [Pool::Character, Pool::LightCone, Pool::Standard]
             .into_iter()
-            .map(|pool| pool_stats(pool, &[], &RateUps::new()))
+            .map(|pool| pool_stats(pool, &[], &RateUps::new(), |_| None))
             .collect(),
         total: 0,
         unconfirmed: 0,
@@ -567,9 +528,7 @@ fn empty_summary() -> crate::warps::service::Summary {
 }
 
 /// The banners of 4.7's first half, as the game describes them
-fn running_banners(now: i64) -> Vec<crate::warps::service::RunningBanner> {
-    use crate::warps::Pool;
-    use crate::warps::service::RunningBanner;
+fn running_banners(now: i64) -> Vec<RunningBanner> {
     let banner = |gacha_id, pool, five, fours: &[u32]| RunningBanner {
         gacha_id,
         pool,

@@ -13,10 +13,10 @@ use reliquary_archiver::export::database::get_database;
 use tracing::{error, info, warn};
 
 use super::api::{self, ApiError, Client, HistoryKey};
-use super::reconcile::group_requests;
+use super::reconcile::{LiveKey, group_live, group_requests};
 use super::srs::{self, Profile};
-use super::stats::{PoolStats, pool_stats};
-use super::store::{Store, StoredKey};
+use super::stats::{PoolStats, RecentPull, pool_stats, recorded_outcomes};
+use super::store::{KeyOrigin, Store, StoredKey};
 use super::{Pool, Pull, WarpEvent, csv, source};
 
 /// The game's history is filled in an hour at a time, the hour a pull's id names: its pulls show
@@ -29,8 +29,22 @@ const LATE_RECHECK: i64 = 10 * 60;
 const LATE_FOR: i64 = 3 * 3600;
 /// How long to wait after a sync failed before trying again
 const RETRY_AFTER_FAILURE: i64 = 10 * 60;
+/// Where a new authkey comes from, for the notices about an old one
+const NEW_KEY_HINT: &str = "Open Warp → View Details in the game for a new one";
 /// Authkeys stop working after about a day, there's no use asking with an older one
 const KEY_LIFETIME: i64 = 24 * 3600;
+/// A banner end this far off (Unix seconds, in 2096) means it doesn't end, as 0 does
+const NEVER_ENDS: i64 = 4_000_000_000;
+
+/// Who asked for a sync
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SyncKind {
+    /// The user: looks at every pool and always says how it went
+    Asked,
+    /// The schedule: looks only at the pools with live pulls waiting, and says nothing when
+    /// nothing changed
+    Timed,
+}
 
 /// When to look in the history next for a live pull made at `pulled`, at `now`, both in Unix seconds
 fn next_look(pulled: i64, now: i64) -> i64 {
@@ -85,7 +99,7 @@ pub enum Update {
     Notice {
         title: String,
         detail: Option<String>,
-        error: bool,
+        tone: Tone,
     },
     /// The backup has several profiles and none clearly is the account
     ChooseProfile {
@@ -93,6 +107,19 @@ pub enum Update {
         uid: u32,
         profiles: Vec<ProfileChoice>,
     },
+}
+
+/// Whether a notice says something went wrong
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tone {
+    Info,
+    Error,
+}
+
+impl Tone {
+    pub fn is_error(self) -> bool {
+        self == Tone::Error
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -161,8 +188,22 @@ impl Summary {
     }
 
     pub fn name(&self, item_id: u32) -> String {
-        self.names.get(&item_id).cloned().unwrap_or_else(|| format!("#{item_id}"))
+        self.names.get(&item_id).cloned().unwrap_or_else(|| item_name(item_id))
     }
+
+    /// The pulls seen live from `since` on, in Unix seconds, of those each pool keeps in
+    /// [`PoolStats::recent`]
+    pub fn session(&self, since: i64) -> impl Iterator<Item = &RecentPull> {
+        self.pools
+            .iter()
+            .flat_map(|stats| &stats.recent)
+            .filter(move |recent| recent.pull.sources & source::LIVE != 0 && recent.pull.time >= since)
+    }
+}
+
+/// What the game's data calls an item, or its id when it doesn't know it
+pub fn item_name(item_id: u32) -> String {
+    get_database().warp_item_name(item_id).unwrap_or_else(|| format!("#{item_id}"))
 }
 
 /// The order running banners are shown in, each warp's featured one first. The game's own list
@@ -181,8 +222,7 @@ pub fn featured_first(a: &RunningBanner, b: &RunningBanner) -> std::cmp::Orderin
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct KeyState {
-    /// capture, cache or link
-    pub origin: String,
+    pub origin: KeyOrigin,
     /// Unix seconds
     pub obtained_at: i64,
     pub expired: bool,
@@ -208,23 +248,19 @@ impl WarpService {
         std::thread::Builder::new()
             .name("warps".into())
             .spawn(move || {
-                let store = match &path {
-                    Some(path) => Store::open(path),
-                    None => Err(rusqlite::Error::InvalidPath(PathBuf::new())),
+                let Some(path) = path else {
+                    error!("there's no folder to keep the warp database in");
+                    report(Update::Unavailable("There's no folder to keep it in".into()));
+                    return;
                 };
-                match store {
+                match Store::open(&path) {
                     Ok(store) => {
-                        if let Some(path) = &path {
-                            info!("keeping warps in {}", path.display());
-                        }
+                        info!("keeping warps in {}", path.display());
                         Worker::new(store, Box::new(report)).run(rx)
                     }
                     Err(e) => {
                         error!(%e, "couldn't open the warp database");
-                        report(Update::Unavailable(match path {
-                            Some(path) => format!("Couldn't open {}: {e}", path.display()),
-                            None => "There's no folder to keep it in".into(),
-                        }));
+                        report(Update::Unavailable(format!("Couldn't open {}: {e}", path.display())));
                     }
                 }
             })
@@ -278,7 +314,7 @@ impl Worker {
                     let due: Vec<u32> = self.due.iter().filter(|(_, at)| **at <= now).map(|(uid, _)| *uid).collect();
                     for uid in due {
                         self.due.remove(&uid);
-                        self.sync(uid, true);
+                        self.sync(uid, SyncKind::Timed);
                     }
                 }
                 Err(RecvTimeoutError::Disconnected) => return,
@@ -319,24 +355,24 @@ impl Worker {
             Command::Event(WarpEvent::Authkey { uid, authkey }) => {
                 info!(uid, "the game handed out a warp history authkey");
                 let key = HistoryKey::for_account(uid, authkey);
-                self.use_key(uid, &key, "capture");
+                self.use_key(uid, &key, KeyOrigin::Capture);
             }
             Command::Event(WarpEvent::Banners { banners }) => {
                 if let Err(e) = self.store.save_banners(&banners) {
                     warn!(%e, "couldn't keep the banners");
                 }
             }
-            Command::Sync(uid) => self.sync(uid, false),
+            Command::Sync(uid) => self.sync(uid, SyncKind::Asked),
             Command::FindCachedKey => match super::authkey::from_game_cache() {
-                Ok(key) => self.adopt_key(key, "cache"),
-                Err(e) => self.notice("No authkey found", Some(e), true),
+                Ok(key) => self.adopt_key(key, KeyOrigin::Cache),
+                Err(e) => self.notice("No authkey found", Some(e), Tone::Error),
             },
             Command::UseLink(link) => match super::authkey::from_url(&link) {
-                Some(key) => self.adopt_key(key, "link"),
+                Some(key) => self.adopt_key(key, KeyOrigin::Link),
                 None => self.notice(
                     "That isn't a warp history link",
                     Some("It needs to have an authkey in it".into()),
-                    true,
+                    Tone::Error,
                 ),
             },
             Command::ImportSrs { path, uid, profile } => self.import_srs(path, uid, profile),
@@ -347,43 +383,41 @@ impl Worker {
     }
 
     /// A key whose account isn't known yet: find out whose it is from the history
-    fn adopt_key(&mut self, key: HistoryKey, origin: &str) {
+    fn adopt_key(&mut self, key: HistoryKey, origin: KeyOrigin) {
         self.busy(Some("Checking the authkey…".into()));
         let result = api::probe(&key);
         self.busy(None);
         match result {
             Ok(Some(uid)) => self.use_key(uid, &key, origin),
-            Ok(None) => self.notice("No warps on this account", None, false),
-            Err(ApiError::Expired) => self.notice(
-                "That authkey has expired",
-                Some("Open Warp → View Details in the game for a new one".into()),
-                true,
-            ),
-            Err(e) => self.notice("The authkey didn't work", Some(e.to_string()), true),
+            Ok(None) => self.notice("No warps on this account", None, Tone::Info),
+            Err(ApiError::Expired) => self.notice("That authkey has expired", Some(NEW_KEY_HINT.into()), Tone::Error),
+            Err(e) => self.notice("The authkey didn't work", Some(e.to_string()), Tone::Error),
         }
     }
 
-    fn use_key(&mut self, uid: u32, key: &HistoryKey, origin: &str) {
+    fn use_key(&mut self, uid: u32, key: &HistoryKey, origin: KeyOrigin) {
         if let Err(e) = self.store.set_authkey(uid, key, origin, now()) {
             error!(%e, "couldn't keep the authkey");
             return;
         }
         self.report_accounts();
-        self.sync(uid, false);
+        self.sync(uid, SyncKind::Asked);
     }
 
     /// Plans the next look for the account's live pulls: once the hour of the oldest one waiting
     /// has been published, or not at all when none are waiting or the key no longer works
     fn schedule(&mut self, uid: u32) {
-        let oldest = self.store.oldest_unconfirmed(uid).ok().flatten();
-        match oldest {
-            Some(pulled) if self.key_usable(uid) => {
-                let now = now();
-                let at = next_look(pulled, now);
+        let now = now();
+        match next_look_for(&self.store, uid, now) {
+            Ok(Some(at)) => {
                 info!(uid, in_minutes = (at - now) / 60, "looking for the live pulls in the history later");
                 self.due.insert(uid, Instant::now() + Duration::from_secs((at - now).max(5) as u64));
             }
-            _ => {
+            Ok(None) => {
+                self.due.remove(&uid);
+            }
+            Err(e) => {
+                warn!(%e, uid, "couldn't plan when to look for the live pulls");
                 self.due.remove(&uid);
             }
         }
@@ -391,7 +425,7 @@ impl Worker {
 
     /// Tries a failed sync again in a while, as long as the key works
     fn retry_later(&mut self, uid: u32) -> bool {
-        if !self.key_usable(uid) {
+        if !matches!(key_usable(&self.store, uid, now()), Ok(true)) {
             return false;
         }
         let at = Instant::now() + Duration::from_secs(RETRY_AFTER_FAILURE as u64);
@@ -400,18 +434,9 @@ impl Worker {
         true
     }
 
-    fn key_usable(&self, uid: u32) -> bool {
-        self.store
-            .authkey(uid)
-            .ok()
-            .flatten()
-            .is_some_and(|key| key_state(&key).usable(now()))
-    }
-
-    /// Brings the account up to date with the game's history. `quiet` is for the syncs that run by
-    /// themselves: they only look at the pools with live pulls waiting, and say nothing when
-    /// nothing changed
-    fn sync(&mut self, uid: u32, quiet: bool) {
+    /// Brings the account up to date with the game's history
+    fn sync(&mut self, uid: u32, kind: SyncKind) {
+        let quiet = kind == SyncKind::Timed;
         let key = match self.store.authkey(uid) {
             Ok(Some(key)) if !key.expired => key,
             _ => {
@@ -419,7 +444,7 @@ impl Worker {
                     self.notice(
                         "No authkey to sync with",
                         Some("Open Warp → View Details in the game while the archiver runs".into()),
-                        true,
+                        Tone::Error,
                     );
                 }
                 return;
@@ -429,15 +454,41 @@ impl Worker {
         let pools: Vec<Pool> = if full {
             Pool::ALL.to_vec()
         } else {
-            self.store.unconfirmed_pools(uid).unwrap_or_default()
+            self.store.unconfirmed_pools(uid).unwrap_or_else(|e| {
+                warn!(%e, uid, "couldn't read which pools have live pulls waiting");
+                Vec::new()
+            })
         };
         if pools.is_empty() {
             self.schedule(uid);
             return;
         }
-        let known = self.store.history_ids(uid).unwrap_or_default();
-        let client = Client::new(key.key.clone());
 
+        let (fetched, failure) = self.fetch(uid, key.key, pools);
+
+        if let Some(other) = fetched.iter().find(|pull| pull.uid != uid) {
+            warn!(uid, other = other.uid, "the authkey is another account's");
+            self.invalidate_key(uid);
+            let detail = format!("It belongs to UID {}", other.uid);
+            self.notice("That authkey belongs to another account", Some(detail), Tone::Error);
+            self.report_accounts();
+            self.show(uid);
+            return;
+        }
+
+        match failure {
+            Some(error) => self.sync_failed(uid, error, &fetched, full, quiet),
+            None => self.sync_succeeded(uid, &fetched, full, quiet),
+        }
+    }
+
+    /// Fetches the pools' new pulls, up to the first pool that fails, and why it failed
+    fn fetch(&self, uid: u32, key: HistoryKey, pools: Vec<Pool>) -> (Vec<Pull>, Option<ApiError>) {
+        let known = self.store.history_ids(uid).unwrap_or_else(|e| {
+            warn!(%e, uid, "couldn't read the pulls already synced, fetching them all");
+            HashSet::new()
+        });
+        let client = Client::new(key);
         let mut fetched: Vec<Pull> = Vec::new();
         let mut failure = None;
         for (i, pool) in pools.into_iter().enumerate() {
@@ -462,68 +513,56 @@ impl Worker {
             }
         }
         self.busy(None);
+        (fetched, failure)
+    }
 
-        if let Some(error) = failure {
-            warn!(uid, %error, "couldn't sync warps");
-            // The pools fetched before it failed are whole, keep them. The one it failed in isn't:
-            // keeping its newest pulls would let the next sync stop at them, short of the rest
-            if !fetched.is_empty() && fetched.iter().all(|pull| pull.uid == uid) {
-                match self.store.merge_history(uid, &fetched, source::API) {
-                    Ok(merged) => info!(
-                        uid,
-                        added = merged.added,
-                        confirmed = merged.confirmed,
-                        "kept what synced before the failure"
-                    ),
-                    Err(e) => error!(%e, "couldn't keep the synced warps"),
+    fn sync_failed(&mut self, uid: u32, error: ApiError, fetched: &[Pull], full: bool, quiet: bool) {
+        warn!(uid, %error, "couldn't sync warps");
+        // The pools fetched before it failed are whole, keep them. The one it failed in isn't:
+        // keeping its newest pulls would let the next sync stop at them, short of the rest
+        if !fetched.is_empty() {
+            match self.store.merge_history(uid, fetched, source::API) {
+                Ok(merged) => info!(
+                    uid,
+                    added = merged.added,
+                    confirmed = merged.confirmed,
+                    "kept what synced before the failure"
+                ),
+                Err(e) => error!(%e, "couldn't keep the synced warps"),
+            }
+        }
+        self.mark_synced(uid, Some(&error.to_string()));
+        match error {
+            ApiError::Expired => {
+                self.invalidate_key(uid);
+                self.notice("The authkey has expired", Some(NEW_KEY_HINT.into()), Tone::Error);
+            }
+            ApiError::Rejected(_) => {
+                self.invalidate_key(uid);
+                self.notice("The authkey was refused", Some(error.to_string()), Tone::Error);
+            }
+            _ => {
+                // Slowed down or offline: the key still works, try again in a while
+                if full {
+                    self.full_pending.insert(uid);
+                }
+                let retry = self.retry_later(uid);
+                if !quiet {
+                    let detail = if retry {
+                        format!("{error}. What synced so far is kept, the rest is tried again in a few minutes.")
+                    } else {
+                        error.to_string()
+                    };
+                    self.notice("Couldn't sync warps", Some(detail), Tone::Error);
                 }
             }
-            let _ = self.store.set_synced(uid, now(), Some(&error.to_string()));
-            match error {
-                ApiError::Expired => {
-                    let _ = self.store.expire_authkey(uid);
-                    self.due.remove(&uid);
-                    self.full_pending.remove(&uid);
-                    self.notice(
-                        "The authkey has expired",
-                        Some("Open Warp → View Details in the game for a new one".into()),
-                        true,
-                    );
-                }
-                ApiError::Rejected(_) => {
-                    let _ = self.store.expire_authkey(uid);
-                    self.due.remove(&uid);
-                    self.full_pending.remove(&uid);
-                    self.notice("The authkey was refused", Some(error.to_string()), true);
-                }
-                _ => {
-                    // Slowed down or offline: the key still works, try again in a while
-                    if full {
-                        self.full_pending.insert(uid);
-                    }
-                    let retry = self.retry_later(uid);
-                    if !quiet {
-                        let detail = if retry {
-                            format!("{error}. What synced so far is kept, the rest is tried again in a few minutes.")
-                        } else {
-                            error.to_string()
-                        };
-                        self.notice("Couldn't sync warps", Some(detail), true);
-                    }
-                }
-            }
-            self.show(uid);
-            return;
         }
+        self.show(uid);
+    }
 
-        if let Some(other) = fetched.iter().find(|pull| pull.uid != uid) {
-            let detail = format!("It belongs to UID {}", other.uid);
-            self.notice("That authkey belongs to another account", Some(detail), true);
-            return;
-        }
-
-        let merged = self.store.merge_history(uid, &fetched, source::API);
-        let _ = self.store.set_synced(uid, now(), None);
+    fn sync_succeeded(&mut self, uid: u32, fetched: &[Pull], full: bool, quiet: bool) {
+        let merged = self.store.merge_history(uid, fetched, source::API);
+        self.mark_synced(uid, None);
         if full {
             self.full_pending.remove(&uid);
         }
@@ -548,16 +587,31 @@ impl Worker {
                     } else {
                         parts.join(", ")
                     };
-                    self.notice("Warps synced", Some(detail), false);
+                    self.notice("Warps synced", Some(detail), Tone::Info);
                 }
             }
             Err(e) => {
                 error!(%e, "couldn't keep the synced warps");
-                self.notice("Couldn't keep the synced warps", Some(e.to_string()), true);
+                self.notice("Couldn't keep the synced warps", Some(e.to_string()), Tone::Error);
             }
         }
         self.report_accounts();
         self.show(uid);
+    }
+
+    fn mark_synced(&mut self, uid: u32, error: Option<&str>) {
+        if let Err(e) = self.store.set_synced(uid, now(), error) {
+            warn!(%e, uid, "couldn't note the sync");
+        }
+    }
+
+    /// Stops using the account's key: it expired, was refused, or is another account's
+    fn invalidate_key(&mut self, uid: u32) {
+        if let Err(e) = self.store.expire_authkey(uid) {
+            warn!(%e, uid, "couldn't mark the authkey expired");
+        }
+        self.due.remove(&uid);
+        self.full_pending.remove(&uid);
     }
 
     fn import_srs(&mut self, path: PathBuf, uid: u32, profile: Option<String>) {
@@ -566,8 +620,8 @@ impl Worker {
         self.busy(None);
         let profiles = match profiles {
             Ok(profiles) if !profiles.is_empty() => profiles,
-            Ok(_) => return self.notice("The backup has no warps in it", None, true),
-            Err(e) => return self.notice("Couldn't import that file", Some(e), true),
+            Ok(_) => return self.notice("The backup has no warps in it", None, Tone::Error),
+            Err(e) => return self.notice("Couldn't import that file", Some(e), Tone::Error),
         };
 
         let chosen: Option<&Profile> = match &profile {
@@ -596,15 +650,16 @@ impl Worker {
         };
         if !chosen.fits(uid) {
             let detail = format!("Pull IDs don't match UID {uid}");
-            return self.notice("That profile is another account's", Some(detail), true);
+            return self.notice("That profile is another account's", Some(detail), Tone::Error);
         }
 
-        let pulls: Vec<Pull> = chosen.pulls.iter().map(|p| Pull { uid, ..p.clone() }).collect();
-        let merged = self.store.merge_history(uid, &pulls, source::SRS);
-        let _ = self.store.add_rate_ups(&chosen.rate_ups);
+        let merged = self.store.merge_history(uid, &chosen.pulls, source::SRS);
+        if let Err(e) = self.store.add_rate_ups(&chosen.rate_ups) {
+            warn!(%e, "couldn't keep what the backup tells about banners");
+        }
         match merged {
             Ok(merged) => {
-                let known = pulls.len() - merged.added - merged.confirmed;
+                let known = chosen.pulls.len() - merged.added - merged.confirmed;
                 let detail = format!("{} new pulls, {known} already kept", merged.added + merged.confirmed);
                 info!(
                     uid,
@@ -612,9 +667,9 @@ impl Worker {
                     added = merged.added,
                     "imported a Star Rail Station backup"
                 );
-                self.notice("Imported from Star Rail Station", Some(detail), false);
+                self.notice("Imported from Star Rail Station", Some(detail), Tone::Info);
             }
-            Err(e) => self.notice("Couldn't import the backup", Some(e.to_string()), true),
+            Err(e) => self.notice("Couldn't import the backup", Some(e.to_string()), Tone::Error),
         }
         self.report_accounts();
         self.show(uid);
@@ -623,51 +678,57 @@ impl Worker {
     fn export_csv(&mut self, path: &std::path::Path, uid: u32) {
         let mut pulls = match self.store.pulls(uid) {
             Ok(pulls) => pulls,
-            Err(e) => return self.notice("Couldn't read the warps to export", Some(e.to_string()), true),
+            Err(e) => return self.notice("Couldn't read the warps to export", Some(e.to_string()), Tone::Error),
         };
         pulls.sort_by_key(Pull::sort_key);
         let db = get_database();
-        let text = csv::write(&pulls, |item| db.warp_item_name(item));
+        let rate_ups = self.store.rate_ups().unwrap_or_else(|e| {
+            warn!(%e, "couldn't read what banners feature, exporting without outcomes");
+            Default::default()
+        });
+        let outcomes = recorded_outcomes(&pulls, &rate_ups, |item| db.warp_item_rarity(item));
+        let text = csv::write(&pulls, &outcomes, |item| db.warp_item_name(item));
         match std::fs::write(path, text) {
             Ok(()) => {
                 info!(uid, pulls = pulls.len(), "exported the warps as CSV");
                 let detail = format!("{} pulls to {}", pulls.len(), path.display());
-                self.notice("Exported the warp history", Some(detail), false);
+                self.notice("Exported the warp history", Some(detail), Tone::Info);
             }
-            Err(e) => self.notice("Couldn't write the CSV", Some(format!("{}: {e}", path.display())), true),
+            Err(e) => self.notice("Couldn't write the CSV", Some(format!("{}: {e}", path.display())), Tone::Error),
         }
     }
 
     fn import_csv(&mut self, path: &std::path::Path, uid: u32) {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
-            Err(e) => return self.notice("Couldn't import that file", Some(format!("{}: {e}", path.display())), true),
+            Err(e) => return self.notice("Couldn't import that file", Some(format!("{}: {e}", path.display())), Tone::Error),
         };
         let db = get_database();
         let read = match csv::read(&text, |item| db.warp_item_rarity(item)) {
             Ok(read) => read,
-            Err(e) => return self.notice("Couldn't import that file", Some(format!("It isn't a warp history: {e}")), true),
+            Err(e) => {
+                return self.notice(
+                    "Couldn't import that file",
+                    Some(format!("It isn't a warp history: {e}")),
+                    Tone::Error,
+                );
+            }
         };
         if read.pulls.is_empty() {
-            return self.notice("The file has no warps with ids in it", None, true);
+            return self.notice("The file has no warps with ids in it", None, Tone::Error);
         }
         // Ids end in the account's last two digits, a file of another account's pulls is turned away
         if let Some(pull) = read.pulls.iter().find(|p| !super::id_belongs_to(p.id.unwrap_or_default(), uid)) {
             let detail = format!("Pull {} doesn't match UID {uid}", pull.id.unwrap_or_default());
-            return self.notice("Those are another account's warps", Some(detail), true);
+            return self.notice("Those are another account's warps", Some(detail), Tone::Error);
         }
-        let pulls: Vec<Pull> = read
-            .pulls
-            .into_iter()
-            .map(|p| Pull {
-                uid,
-                sources: source::CSV,
-                ..p
-            })
-            .collect();
-        match self.store.merge_history(uid, &pulls, source::CSV) {
+        let merged = self.store.merge_history(uid, &read.pulls, source::CSV);
+        if let Err(e) = self.store.add_rate_ups(&read.rate_ups) {
+            warn!(%e, "couldn't keep what the CSV tells about banners");
+        }
+        match merged {
             Ok(merged) => {
-                let known = pulls.len() - merged.added - merged.confirmed;
+                let known = read.pulls.len() - merged.added - merged.confirmed;
                 let mut detail = format!("{} new pulls, {known} already kept", merged.added + merged.confirmed);
                 if read.without_id > 0 {
                     detail.push_str(&format!(
@@ -676,111 +737,19 @@ impl Worker {
                     ));
                 }
                 info!(uid, added = merged.added, "imported warps from a CSV");
-                self.notice("Imported the warp history", Some(detail), false);
+                self.notice("Imported the warp history", Some(detail), Tone::Info);
             }
-            Err(e) => self.notice("Couldn't import the CSV", Some(e.to_string()), true),
+            Err(e) => self.notice("Couldn't import the CSV", Some(e.to_string()), Tone::Error),
         }
         self.report_accounts();
         self.show(uid);
     }
 
     fn show(&self, uid: u32) {
-        match self.summary(uid) {
+        match summary(&self.store, uid, now()) {
             Ok(summary) => (self.report)(Update::Summary(Box::new(summary))),
             Err(e) => error!(%e, "couldn't read the warps"),
         }
-    }
-
-    fn summary(&self, uid: u32) -> rusqlite::Result<Summary> {
-        let pulls = self.store.pulls(uid)?;
-        let rate_ups = self.store.rate_ups()?;
-        let refs: Vec<&Pull> = pulls.iter().collect();
-
-        let pools: Vec<PoolStats> = Pool::ALL
-            .iter()
-            .filter(|&&pool| matches!(pool, Pool::Character | Pool::LightCone | Pool::Standard) || pulls.iter().any(|p| p.pool == pool))
-            .map(|&pool| pool_stats(pool, &refs, &rate_ups))
-            .collect();
-
-        let db = get_database();
-        let mut names = HashMap::new();
-        for stats in &pools {
-            let items = stats
-                .fives
-                .iter()
-                .map(|h| h.item_id)
-                .chain(stats.recent.iter().map(|(p, _, _)| p.item_id));
-            for item in items {
-                names
-                    .entry(item)
-                    .or_insert_with(|| db.warp_item_name(item).unwrap_or_else(|| format!("#{item}")));
-            }
-        }
-
-        // The banners running now, the standard one aside: it features its whole pool
-        let mut banners: Vec<RunningBanner> = self
-            .store
-            .running_banners(now())?
-            .into_iter()
-            .filter_map(|banner| {
-                let pool = Pool::from_gacha_id(banner.gacha_id)?;
-                if !pool.has_rate_up() {
-                    return None;
-                }
-                let rarity = |r: u8| {
-                    banner
-                        .rate_up
-                        .iter()
-                        .copied()
-                        .filter(move |&item| db.warp_item_rarity(item) == Some(r))
-                };
-                Some(RunningBanner {
-                    gacha_id: banner.gacha_id,
-                    pool,
-                    fives: rarity(5).collect(),
-                    fours: rarity(4).collect(),
-                    begin: banner.begin,
-                    end: (banner.end > 0 && banner.end < 4_000_000_000).then_some(banner.end),
-                })
-            })
-            .filter(|banner| !banner.fives.is_empty())
-            .collect();
-        banners.sort_by(featured_first);
-        for item in banners.iter().flat_map(|b| b.fives.iter().chain(&b.fours)) {
-            names
-                .entry(*item)
-                .or_insert_with(|| db.warp_item_name(*item).unwrap_or_else(|| format!("#{item}")));
-        }
-
-        // Requests: the history's, and the live ones still waiting
-        let with_ids: Vec<Pull> = pulls.iter().filter(|p| p.id.is_some()).cloned().collect();
-        let waiting: HashSet<(Option<u32>, i64)> = pulls
-            .iter()
-            .filter(|p| p.id.is_none())
-            .map(|p| (p.request_no, if p.request_no.is_some() { 0 } else { p.time }))
-            .collect();
-        let requests = group_requests(&with_ids).len() + waiting.len();
-
-        let account = self.store.account(uid)?;
-        let key = self.store.authkey(uid)?.map(|key| key_state(&key));
-        let next_look = match (self.store.oldest_unconfirmed(uid)?, &key) {
-            (Some(pulled), Some(key)) if key.usable(now()) => Some(next_look(pulled, now())),
-            _ => None,
-        };
-        Ok(Summary {
-            next_look,
-            uid,
-            total: pulls.len(),
-            unconfirmed: pulls.iter().filter(|p| p.id.is_none()).count(),
-            requests,
-            request_counter: account.request_counter,
-            key,
-            last_sync: account.last_sync,
-            last_error: account.last_error,
-            pools,
-            names,
-            banners,
-        })
     }
 
     fn report_accounts(&self) {
@@ -793,25 +762,123 @@ impl Worker {
         (self.report)(Update::Busy(what));
     }
 
-    fn notice(&self, title: &str, detail: Option<String>, error: bool) {
+    fn notice(&self, title: &str, detail: Option<String>, tone: Tone) {
         (self.report)(Update::Notice {
             title: title.into(),
             detail,
-            error,
+            tone,
         });
     }
+}
+
+/// How the account stands at `now`, in Unix seconds
+fn summary(store: &Store, uid: u32, now: i64) -> rusqlite::Result<Summary> {
+    let pulls = store.pulls(uid)?;
+    let rate_ups = store.rate_ups()?;
+    let refs: Vec<&Pull> = pulls.iter().collect();
+    let db = get_database();
+
+    let pools: Vec<PoolStats> = Pool::ALL
+        .iter()
+        .filter(|&&pool| matches!(pool, Pool::Character | Pool::LightCone | Pool::Standard) || pulls.iter().any(|p| p.pool == pool))
+        .map(|&pool| pool_stats(pool, &refs, &rate_ups, |item| db.warp_item_rarity(item)))
+        .collect();
+
+    let mut names = HashMap::new();
+    for stats in &pools {
+        let items = stats
+            .fives
+            .iter()
+            .map(|h| h.item_id)
+            .chain(stats.recent.iter().map(|recent| recent.pull.item_id));
+        for item in items {
+            names.entry(item).or_insert_with(|| item_name(item));
+        }
+    }
+
+    // The banners running now, the standard one aside: it features its whole pool
+    let mut banners: Vec<RunningBanner> = store
+        .running_banners(now)?
+        .into_iter()
+        .filter_map(|banner| {
+            let pool = Pool::from_gacha_id(banner.gacha_id)?;
+            if !pool.has_rate_up() {
+                return None;
+            }
+            let rarity = |r: u8| {
+                banner
+                    .rate_up
+                    .iter()
+                    .copied()
+                    .filter(move |&item| db.warp_item_rarity(item) == Some(r))
+            };
+            Some(RunningBanner {
+                gacha_id: banner.gacha_id,
+                pool,
+                fives: rarity(5).collect(),
+                fours: rarity(4).collect(),
+                begin: banner.begin,
+                end: (banner.end > 0 && banner.end < NEVER_ENDS).then_some(banner.end),
+            })
+        })
+        .filter(|banner| !banner.fives.is_empty())
+        .collect();
+    banners.sort_by(featured_first);
+    for &item in banners.iter().flat_map(|b| b.fives.iter().chain(&b.fours)) {
+        names.entry(item).or_insert_with(|| item_name(item));
+    }
+
+    // Requests: the history's, and the live ones still waiting
+    let waiting = group_live(
+        pulls
+            .iter()
+            .filter(|p| p.id.is_none())
+            .map(|p| LiveKey::new(p.gacha_id, p.time, p.request_no)),
+    );
+    let requests = group_requests(&pulls).len() + waiting.len();
+
+    let account = store.account(uid)?;
+    let key = store.authkey(uid)?.map(|key| key_state(&key));
+    Ok(Summary {
+        next_look: next_look_for(store, uid, now)?,
+        uid,
+        total: pulls.len(),
+        unconfirmed: pulls.iter().filter(|p| p.id.is_none()).count(),
+        requests,
+        request_counter: account.request_counter,
+        key,
+        last_sync: account.last_sync,
+        last_error: account.last_error,
+        pools,
+        names,
+        banners,
+    })
+}
+
+/// When to look in the history next for the account's live pulls, at `now`: none when none are
+/// waiting or the key no longer works
+fn next_look_for(store: &Store, uid: u32, now: i64) -> rusqlite::Result<Option<i64>> {
+    let Some(pulled) = store.oldest_unconfirmed(uid)? else {
+        return Ok(None);
+    };
+    Ok(key_usable(store, uid, now)?.then(|| next_look(pulled, now)))
+}
+
+/// Whether the account's key is worth asking the history with at `now`
+fn key_usable(store: &Store, uid: u32, now: i64) -> rusqlite::Result<bool> {
+    Ok(store.authkey(uid)?.is_some_and(|key| key_state(&key).usable(now)))
 }
 
 /// What the window would show for an account of the database at `path`, for snapshots of real data
 pub fn summary_of(path: &std::path::Path, uid: Option<u32>) -> Option<Summary> {
     let store = Store::open(path).ok()?;
     let uid = uid.or_else(|| store.accounts().ok()?.first().copied())?;
-    Worker::new(store, Box::new(|_| {})).summary(uid).ok()
+    summary(&store, uid, now()).ok()
 }
 
 fn key_state(key: &StoredKey) -> KeyState {
     KeyState {
-        origin: key.origin.clone(),
+        origin: key.origin,
         obtained_at: key.obtained_at,
         expired: key.expired,
     }
@@ -884,6 +951,7 @@ mod tests {
 
     use super::*;
     use crate::warps::LiveRequest;
+    use crate::warps::stats::{Featured, RateUps};
 
     /// The whole way through with real data, when `RQA_E2E` is set: a Star Rail Station backup
     /// (`SRS_BACKUP`), the live pulls and authkey of the captures in `RQA_CAPTURES`, and a sync
@@ -927,7 +995,7 @@ mod tests {
             uid: UID,
             profile: Some("2".into()),
         });
-        let after_import = worker.summary(UID).unwrap();
+        let after_import = summary(&worker.store, UID, now()).unwrap();
         println!("after import: {} pulls, {} requests", after_import.total, after_import.requests);
 
         // The live pulls happened about an hour before this test runs; the capture time is when
@@ -948,7 +1016,7 @@ mod tests {
             // The authkey syncs at once
             worker.handle(Command::Event(event));
         }
-        let synced = worker.summary(UID).unwrap();
+        let synced = summary(&worker.store, UID, now()).unwrap();
         for notice in notices.lock().unwrap().iter() {
             println!("notice: {notice}");
         }
@@ -1004,11 +1072,11 @@ mod tests {
             Worker::new(
                 Store::open_in_memory().unwrap(),
                 Box::new(move |update| {
-                    if let Update::Notice { title, detail, error } = update {
+                    if let Update::Notice { title, detail, tone } = update {
                         heard
                             .lock()
                             .unwrap()
-                            .push((format!("{title}: {}", detail.unwrap_or_default()), error));
+                            .push((format!("{title}: {}", detail.unwrap_or_default()), tone.is_error()));
                     }
                 }),
             )
@@ -1066,5 +1134,83 @@ mod tests {
             "Imported the warp history: 0 new pulls, 2 already kept"
         ]);
         assert!(notices[3].1 && notices[3].0.starts_with("Those are another account's warps"));
+    }
+
+    #[test]
+    fn outcomes_known_from_banners_survive_a_csv_round_trip_and_guesses_do_not() {
+        const UID: u32 = 801234567;
+        let pull = |n: i64, gacha_id: u32, item_id: u32, rarity: u8| Pull {
+            id: Some(1_700_000_000_000_000_067 + n * 100),
+            uid: UID,
+            pool: Pool::Character,
+            gacha_id,
+            item_id,
+            rarity,
+            time: 1_700_000_000 + n,
+            request_no: None,
+            batch_index: 0,
+            sources: source::API,
+        };
+        let mut from = Worker::new(Store::open_in_memory().unwrap(), Box::new(|_| {}));
+        let pulls = [
+            pull(0, 2142, 1003, 5),
+            pull(1, 2142, 1105, 4),
+            pull(2, 2142, 1006, 5),
+            pull(3, 2142, 20000, 3),
+            pull(4, 2143, 1102, 5),
+        ];
+        from.store.merge_history(UID, &pulls, source::API).unwrap();
+        let mut known = RateUps::new();
+        known.insert(2142, Featured {
+            items: [1006, 1105].into_iter().collect(),
+            not: [1003].into_iter().collect(),
+        });
+        from.store.add_rate_ups(&known).unwrap();
+        let path = std::env::temp_dir().join(format!("rqa-warps-outcomes-{}.csv", std::process::id()));
+        from.handle(Command::ExportCsv {
+            path: path.clone(),
+            uid: UID,
+        });
+        let text = std::fs::read_to_string(&path).unwrap();
+        let results: Vec<&str> = text.lines().skip(1).map(|row| row.rsplit(',').next().unwrap()).collect();
+        // 1102 is only taken for featured by not being a standard 5 star
+        assert_eq!(results, ["lost", "won", "guaranteed", "", ""]);
+
+        let mut into = Worker::new(Store::open_in_memory().unwrap(), Box::new(|_| {}));
+        into.handle(Command::ImportCsv {
+            path: path.clone(),
+            uid: UID,
+        });
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(into.store.rate_ups().unwrap(), known);
+        let outcomes = |store: &Store| {
+            let mut pulls = store.pulls(UID).unwrap();
+            pulls.sort_by_key(Pull::sort_key);
+            let refs: Vec<&Pull> = pulls.iter().collect();
+            let db = get_database();
+            let stats = pool_stats(Pool::Character, &refs, &store.rate_ups().unwrap(), |item| db.warp_item_rarity(item));
+            stats.recent.iter().map(|r| r.outcome).collect::<Vec<_>>()
+        };
+        assert_eq!(outcomes(&into.store), outcomes(&from.store));
+    }
+
+    #[test]
+    fn live_requests_without_a_counter_count_apart_on_different_banners() {
+        const UID: u32 = 801234567;
+        let mut store = Store::open_in_memory().unwrap();
+        for (gacha_id, items) in [(1001, vec![20000]), (2142, vec![20000, 20001])] {
+            let request = LiveRequest {
+                uid: UID,
+                gacha_id,
+                request_no: None,
+                items,
+                captured_at: 1_700_000_000_000,
+            };
+            store.record_live(&request, |_| 3).unwrap();
+        }
+        let summary = summary(&store, UID, 1_700_000_100).unwrap();
+        assert_eq!((summary.total, summary.requests), (3, 2));
+        assert_eq!(summary.session(1_700_000_000).count(), 3);
+        assert_eq!(summary.session(1_700_000_001).count(), 0);
     }
 }

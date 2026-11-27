@@ -7,29 +7,19 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::types::Type;
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 
 use super::api::HistoryKey;
-use super::reconcile::{Request, group_requests, match_requests};
+use super::reconcile::{self, LiveRow};
 use super::stats::{Featured, RateUps};
 use super::{BannerInfo, LiveRequest, Pool, Pull, source};
 
-/// Where the database lives: the local app data folder on Windows (beside the settings),
-/// Application Support on macOS, the XDG data folder elsewhere
+/// Where the database lives
 pub fn default_path() -> Option<PathBuf> {
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-    } else if cfg!(target_os = "macos") {
-        std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Library").join("Application Support"))
-    } else {
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("share")))
-    };
-    base.filter(|path| path.is_absolute())
-        .map(|path| path.join("reliquary-archiver").join("warps.sqlite3"))
+    crate::dirs::data_dir().map(|dir| dir.join("warps.sqlite3"))
 }
 
 const SCHEMA_VERSION: i64 = 1;
@@ -84,11 +74,46 @@ CREATE TABLE banners (
 );
 ";
 
+/// Where an authkey came from
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyOrigin {
+    /// The capture saw the game ask for it
+    Capture,
+    /// The game's web cache
+    Cache,
+    /// A link the user pasted
+    Link,
+}
+
+impl KeyOrigin {
+    /// As the database keeps it
+    pub fn as_str(self) -> &'static str {
+        match self {
+            KeyOrigin::Capture => "capture",
+            KeyOrigin::Cache => "cache",
+            KeyOrigin::Link => "link",
+        }
+    }
+}
+
+impl FromStr for KeyOrigin {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, String> {
+        Ok(match text {
+            "capture" => KeyOrigin::Capture,
+            "cache" => KeyOrigin::Cache,
+            "link" => KeyOrigin::Link,
+            _ => return Err(format!("no authkey origin is called {text:?}")),
+        })
+    }
+}
+
 /// An authkey and where it came from
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredKey {
     pub key: HistoryKey,
-    pub origin: String,
+    pub origin: KeyOrigin,
     /// Unix seconds
     pub obtained_at: i64,
     pub expired: bool,
@@ -153,26 +178,29 @@ impl Store {
         statement.query_map([], |row| row.get(0))?.collect()
     }
 
+    /// The account's pulls. A pull from a warp type this version doesn't know is left out
     pub fn pulls(&self, uid: u32) -> rusqlite::Result<Vec<Pull>> {
         let mut statement = self
             .conn
             .prepare("SELECT id, pool, gacha_id, item_id, rarity, time, request_no, batch_index, sources FROM pulls WHERE uid = ?1")?;
-        statement
-            .query_map([uid], |row| {
-                Ok(Pull {
-                    id: row.get(0)?,
-                    uid,
-                    pool: Pool::from_gacha_type(row.get(1)?).unwrap_or(Pool::Standard),
-                    gacha_id: row.get(2)?,
-                    item_id: row.get(3)?,
-                    rarity: row.get(4)?,
-                    time: row.get(5)?,
-                    request_no: row.get(6)?,
-                    batch_index: row.get(7)?,
-                    sources: row.get(8)?,
-                })
-            })?
-            .collect()
+        let rows = statement.query_map([uid], |row| {
+            let Some(pool) = known_pool(row, 1)? else {
+                return Ok(None);
+            };
+            Ok(Some(Pull {
+                id: row.get(0)?,
+                uid,
+                pool,
+                gacha_id: row.get(2)?,
+                item_id: row.get(3)?,
+                rarity: row.get(4)?,
+                time: row.get(5)?,
+                request_no: row.get(6)?,
+                batch_index: row.get(7)?,
+                sources: row.get(8)?,
+            }))
+        })?;
+        rows.filter_map(Result::transpose).collect()
     }
 
     /// Ids the game's history already gave, so a sync can stop where it reaches them
@@ -198,13 +226,11 @@ impl Store {
             .query_row("SELECT MIN(time) FROM pulls WHERE uid = ?1 AND id IS NULL", [uid], |row| row.get(0))
     }
 
-    /// The pools that have live pulls waiting for their ids
+    /// The pools that have live pulls waiting for their ids, of those this version knows
     pub fn unconfirmed_pools(&self, uid: u32) -> rusqlite::Result<Vec<Pool>> {
         let mut statement = self.conn.prepare("SELECT DISTINCT pool FROM pulls WHERE uid = ?1 AND id IS NULL")?;
-        statement
-            .query_map([uid], |row| row.get::<_, u32>(0))?
-            .map(|pool| pool.map(|pool| Pool::from_gacha_type(pool).unwrap_or(Pool::Standard)))
-            .collect()
+        let rows = statement.query_map([uid], |row| known_pool(row, 0))?;
+        rows.filter_map(Result::transpose).collect()
     }
 
     /// Keeps a request the capture saw. Seeing the same request again changes nothing.
@@ -214,15 +240,26 @@ impl Store {
             return Ok(false);
         };
         let tx = self.conn.transaction()?;
-        if let Some(n) = request.request_no {
-            let seen: bool = tx.query_row(
+        let time = request.captured_at.div_euclid(1000);
+        // Without a counter, a request is known by its banner and second, as `LiveKey` tells them
+        // apart
+        let seen: bool = match request.request_no {
+            Some(n) => tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM pulls WHERE uid = ?1 AND request_no = ?2)",
                 params![request.uid, n],
                 |row| row.get(0),
-            )?;
-            if seen {
-                return Ok(false);
-            }
+            )?,
+            None => tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM pulls
+                 WHERE uid = ?1 AND gacha_id = ?2 AND time = ?3 AND request_no IS NULL AND sources & ?4 != 0)",
+                params![request.uid, request.gacha_id, time, source::LIVE],
+                |row| row.get(0),
+            )?,
+        };
+        if seen {
+            return Ok(false);
+        }
+        if let Some(n) = request.request_no {
             tx.execute(
                 "INSERT INTO accounts (uid, request_counter) VALUES (?1, ?2)
                  ON CONFLICT (uid) DO UPDATE SET request_counter = MAX(COALESCE(request_counter, 0), ?2)",
@@ -239,7 +276,7 @@ impl Store {
                     request.gacha_id,
                     item,
                     rarity(item),
-                    request.captured_at.div_euclid(1000),
+                    time,
                     request.request_no,
                     index as u8,
                     source::LIVE
@@ -291,11 +328,11 @@ impl Store {
         Ok(merged)
     }
 
-    pub fn set_authkey(&self, uid: u32, key: &HistoryKey, origin: &str, obtained_at: i64) -> rusqlite::Result<()> {
+    pub fn set_authkey(&self, uid: u32, key: &HistoryKey, origin: KeyOrigin, obtained_at: i64) -> rusqlite::Result<()> {
         self.conn.execute(
             "INSERT OR REPLACE INTO authkeys (uid, authkey, host, game_biz, origin, obtained_at, expired)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)",
-            params![uid, key.authkey, key.host, key.game_biz, origin, obtained_at],
+            params![uid, key.authkey, key.host, key.game_biz, origin.as_str(), obtained_at],
         )?;
         Ok(())
     }
@@ -312,7 +349,10 @@ impl Store {
                             host: row.get(1)?,
                             game_biz: row.get(2)?,
                         },
-                        origin: row.get(3)?,
+                        origin: row
+                            .get::<_, String>(3)?
+                            .parse()
+                            .map_err(|e: String| rusqlite::Error::FromSqlConversionFailure(3, Type::Text, e.into()))?,
                         obtained_at: row.get(4)?,
                         expired: row.get(5)?,
                     })
@@ -354,9 +394,10 @@ impl Store {
     }
 
     /// Keeps what banners feature. A banner's list from the game replaces one pieced together
-    pub fn save_banners(&self, banners: &[BannerInfo]) -> rusqlite::Result<()> {
+    pub fn save_banners(&mut self, banners: &[BannerInfo]) -> rusqlite::Result<()> {
+        let tx = self.conn.transaction()?;
         for banner in banners {
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO banners (gacha_id, rate_up, begin, end) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (gacha_id) DO UPDATE SET rate_up = ?2, begin = ?3, end = ?4",
                 params![
@@ -367,13 +408,14 @@ impl Store {
                 ],
             )?;
         }
-        Ok(())
+        tx.commit()
     }
 
     /// Adds what outcomes in a backup tell about banners. A banner the game described keeps its
     /// own list of what it features, but learns what it gives on a lost 50/50
-    pub fn add_rate_ups(&self, rate_ups: &RateUps) -> rusqlite::Result<()> {
+    pub fn add_rate_ups(&mut self, rate_ups: &RateUps) -> rusqlite::Result<()> {
         let known = self.rate_ups()?;
+        let tx = self.conn.transaction()?;
         let json = |items: &mut dyn Iterator<Item = &u32>| {
             let mut all: Vec<u32> = items.copied().collect();
             all.sort_unstable();
@@ -384,13 +426,13 @@ impl Store {
             let before = known.get(gacha_id).cloned().unwrap_or_default();
             let items = json(&mut before.items.iter().chain(&learned.items));
             let off = json(&mut before.not.iter().chain(&learned.not));
-            self.conn.execute(
+            tx.execute(
                 "INSERT INTO banners (gacha_id, rate_up, off) VALUES (?1, ?2, ?3)
                  ON CONFLICT (gacha_id) DO UPDATE SET off = ?3, rate_up = CASE WHEN begin IS NULL THEN ?2 ELSE rate_up END",
                 params![gacha_id, items, off],
             )?;
         }
-        Ok(())
+        tx.commit()
     }
 
     /// Banners the game described that are running at `now`, in Unix seconds
@@ -425,70 +467,52 @@ impl Store {
     }
 }
 
+/// Above every request counter, which is a `u32`: live pulls without one sort after the rest
+const AFTER_ANY_COUNTER: i64 = 1 << 32;
+
+/// A column's pool, `None` (with a warning) for a warp type this version doesn't know
+fn known_pool(row: &Row, column: usize) -> rusqlite::Result<Option<Pool>> {
+    let gacha_type: u32 = row.get(column)?;
+    let pool = Pool::from_gacha_type(gacha_type);
+    if pool.is_none() {
+        tracing::warn!(gacha_type, "left out a pull from a warp type this version doesn't know");
+    }
+    Ok(pool)
+}
+
 /// Gives live pulls that `fresh` history pulls turn out to be their ids, and takes those pulls
 /// out of `fresh`. Returns how many live pulls were confirmed
 fn confirm_live(tx: &Transaction, uid: u32, fresh: &mut Vec<Pull>, from: u8) -> rusqlite::Result<usize> {
-    // Live pulls without an id, a request at a time
-    let mut statement = tx.prepare(
-        "SELECT rowid, gacha_id, item_id, time, request_no FROM pulls WHERE uid = ?1 AND id IS NULL
-         ORDER BY COALESCE(request_no, 4294967296), time, batch_index",
-    )?;
-    let rows: Vec<(i64, u32, u32, i64, Option<u32>)> = statement
-        .query_map([uid], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    drop(statement);
-    if rows.is_empty() || fresh.is_empty() {
+    if fresh.is_empty() {
         return Ok(0);
     }
+    // Live pulls without an id, in the order they were made
+    let mut statement = tx.prepare(
+        "SELECT rowid, gacha_id, item_id, time, request_no FROM pulls WHERE uid = ?1 AND id IS NULL
+         ORDER BY COALESCE(request_no, ?2), time, batch_index",
+    )?;
+    let live: Vec<LiveRow> = statement
+        .query_map(params![uid, AFTER_ANY_COUNTER], |row| {
+            Ok(LiveRow {
+                rowid: row.get(0)?,
+                gacha_id: row.get(1)?,
+                item_id: row.get(2)?,
+                time: row.get(3)?,
+                request_no: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    drop(statement);
 
-    let mut live: Vec<Vec<&(i64, u32, u32, i64, Option<u32>)>> = Vec::new();
-    for row in &rows {
-        let same = live.last().is_some_and(|request| {
-            let first = request[0];
-            match (first.4, row.4) {
-                (Some(a), Some(b)) => a == b,
-                (None, None) => first.1 == row.1 && first.3 == row.3,
-                _ => false,
-            }
-        });
-        if same {
-            live.last_mut().unwrap().push(row);
-        } else {
-            live.push(vec![row]);
-        }
-    }
-    let live_requests: Vec<Request> = live
-        .iter()
-        .map(|request| Request::new(request[0].1, request.iter().map(|row| row.2).collect(), request[0].3))
-        .collect();
-
-    let groups = group_requests(fresh);
-    let history_requests: Vec<Request> = groups
-        .iter()
-        .map(|group| {
-            let first = &fresh[group[0]];
-            Request::new(first.gacha_id, group.iter().map(|&i| fresh[i].item_id).collect(), first.time)
-        })
-        .collect();
-
-    let mut confirmed = 0;
+    let pairs = reconcile::confirm(&live, fresh);
     let mut used = HashSet::new();
-    for (l, h) in match_requests(&live_requests, &history_requests) {
-        let mut rows: Vec<&(i64, u32, u32, i64, Option<u32>)> = live[l].clone();
-        // The history's order within the request is the real one, the items are the same
-        for &i in &groups[h] {
-            let pull = &fresh[i];
-            let Some(at) = rows.iter().position(|row| row.2 == pull.item_id) else {
-                continue;
-            };
-            let row = rows.remove(at);
-            tx.execute(
-                "UPDATE pulls SET id = ?2, time = ?3, rarity = ?4, sources = sources | ?5 WHERE rowid = ?1",
-                params![row.0, pull.id, pull.time, pull.rarity, from],
-            )?;
-            used.insert(i);
-            confirmed += 1;
-        }
+    for &(l, h) in &pairs {
+        let pull = &fresh[h];
+        tx.execute(
+            "UPDATE pulls SET id = ?2, time = ?3, rarity = ?4, sources = sources | ?5 WHERE rowid = ?1",
+            params![live[l].rowid, pull.id, pull.time, pull.rarity, from],
+        )?;
+        used.insert(h);
     }
     let mut index = 0;
     fresh.retain(|_| {
@@ -496,7 +520,7 @@ fn confirm_live(tx: &Transaction, uid: u32, fresh: &mut Vec<Pull>, from: u8) -> 
         index += 1;
         keep
     });
-    Ok(confirmed)
+    Ok(pairs.len())
 }
 
 #[cfg(test)]
@@ -582,10 +606,11 @@ mod tests {
 
     #[test]
     fn keys_and_banners_are_kept() {
-        let store = Store::open_in_memory().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
         let key = HistoryKey::for_account(UID, "secret".into());
-        store.set_authkey(UID, &key, "capture", 100).unwrap();
-        assert_eq!(store.authkey(UID).unwrap().unwrap().key, key);
+        store.set_authkey(UID, &key, KeyOrigin::Link, 100).unwrap();
+        let stored = store.authkey(UID).unwrap().unwrap();
+        assert_eq!((stored.key, stored.origin), (key, KeyOrigin::Link));
         store.expire_authkey(UID).unwrap();
         assert!(store.authkey(UID).unwrap().unwrap().expired);
 
@@ -608,5 +633,83 @@ mod tests {
         assert!(rate_ups[&2116].not.contains(&21002));
         assert!(rate_ups[&2142].items.contains(&1506));
         assert_eq!(store.accounts().unwrap(), vec![UID]);
+    }
+
+    #[test]
+    fn a_request_without_a_counter_is_kept_once() {
+        let mut store = Store::open_in_memory().unwrap();
+        let request = LiveRequest {
+            request_no: None,
+            ..live(0, 1001, vec![20000, 20001], 1010)
+        };
+        assert!(store.record_live(&request, |_| 3).unwrap());
+        assert!(!store.record_live(&request, |_| 3).unwrap());
+        assert_eq!(store.unconfirmed(UID).unwrap(), 2);
+    }
+
+    #[test]
+    fn pulls_from_an_unknown_warp_type_are_left_out() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.merge_history(UID, &[history(100086, 1001, 20000, 5)], source::API).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO pulls (uid, pool, gacha_id, item_id, rarity, time, sources) VALUES (?1, 99, 9001, 20000, 3, 6, ?2)",
+                params![UID, source::LIVE],
+            )
+            .unwrap();
+        let pools: Vec<Pool> = store.pulls(UID).unwrap().iter().map(|p| p.pool).collect();
+        assert_eq!(pools, [Pool::Standard]);
+        assert!(store.unconfirmed_pools(UID).unwrap().is_empty());
+    }
+
+    #[test]
+    fn banners_are_kept_all_or_none() {
+        let mut store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER refuse BEFORE INSERT ON banners WHEN NEW.gacha_id = 9999
+                 BEGIN SELECT RAISE(ABORT, 'refused'); END",
+            )
+            .unwrap();
+        let banner = |gacha_id| BannerInfo {
+            gacha_id,
+            begin: 1,
+            end: 2,
+            rate_up: vec![1506],
+        };
+        assert!(store.save_banners(&[banner(2142), banner(9999)]).is_err());
+        let mut learned = RateUps::new();
+        for gacha_id in [2116, 9999] {
+            learned.insert(gacha_id, Featured {
+                items: HashSet::from([1214]),
+                not: HashSet::new(),
+            });
+        }
+        assert!(store.add_rate_ups(&learned).is_err());
+        assert!(store.rate_ups().unwrap().is_empty());
+    }
+
+    #[test]
+    fn live_requests_without_a_counter_on_different_banners_in_one_second_stay_apart() {
+        let mut store = Store::open_in_memory().unwrap();
+        let unnumbered = |gacha_id, item| LiveRequest {
+            request_no: None,
+            ..live(0, gacha_id, vec![item], 1000)
+        };
+        assert!(store.record_live(&unnumbered(1001, 20000), |_| 3).unwrap());
+        assert!(store.record_live(&unnumbered(2142, 20000), |_| 3).unwrap());
+        let merged = store
+            .merge_history(
+                UID,
+                &[
+                    history(1777245000000100086, 1001, 20000, 1000),
+                    history(1777245000000300086, 2142, 20000, 1000),
+                ],
+                source::API,
+            )
+            .unwrap();
+        assert_eq!(merged, Merged { added: 0, confirmed: 2 });
     }
 }

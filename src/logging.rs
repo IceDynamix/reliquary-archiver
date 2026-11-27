@@ -49,12 +49,10 @@ const DEFAULT_DIRECTIVES: &str = "reliquary_archiver=info,reliquary=warn,pktmon=
 
 /// One step up from [`DEFAULT_DIRECTIVES`]. The libraries' info logs include every decoded
 /// command and every new conversation, which is what diagnosing a stuck capture needs.
-#[cfg(any(feature = "gui", test))]
 const DEBUG_DIRECTIVES: &str = "reliquary_archiver=debug,reliquary=info,pktmon=info";
 
-/// The console filter for a level picked in the GUI. The capture libraries stay one level
-/// quieter than the app, other crates stay quiet, and trace shows everything.
-#[cfg(feature = "gui")]
+/// The console filter for a level picked in the GUI or with `-v`. The capture libraries stay one
+/// level quieter than the app, other crates stay quiet, and trace shows everything.
 fn directives_for_level(level: LevelFilter) -> String {
     match level {
         LevelFilter::INFO => DEFAULT_DIRECTIVES.to_string(),
@@ -123,7 +121,8 @@ impl<A: io::Write, B: io::Write> io::Write for DualWriter<A, B> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let mut m = self.m.lock().unwrap();
         m.0.write_all(buf)?;
-        m.1.write(buf)
+        m.1.write_all(buf)?;
+        Ok(buf.len())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -141,7 +140,10 @@ impl<'a, A: io::Write, B: io::Write> MakeWriter<'a> for DualWriter<A, B> {
     }
 }
 
-pub fn tracing_init(verbose: u8, log_path: Option<&Path>) {
+/// Sets up logging to the console and the log buffer, and to `log_path` as JSON.
+///
+/// The console log is set up even when the log file can't be created, so the error can be logged.
+pub fn tracing_init(verbose: u8, log_path: Option<&Path>) -> io::Result<()> {
     tracing_log::LogTracer::init().unwrap();
 
     // RUST_LOG replaces the defaults entirely when it's set
@@ -149,13 +151,11 @@ pub fn tracing_init(verbose: u8, log_path: Option<&Path>) {
         .ok()
         .filter(|directives| !directives.is_empty())
         .unwrap_or_else(|| {
-            match verbose {
-                0 => DEFAULT_DIRECTIVES,
-                1 => "info",
-                2 => "debug",
-                _ => "trace",
-            }
-            .to_string()
+            directives_for_level(match verbose {
+                0 => LevelFilter::INFO,
+                1 => LevelFilter::DEBUG,
+                _ => LevelFilter::TRACE,
+            })
         });
 
     let (filter, handle) = reload::Layer::new(console_filter(&directives));
@@ -166,17 +166,25 @@ pub fn tracing_init(verbose: u8, log_path: Option<&Path>) {
 
     CONSOLE_FILTER.set(handle).ok();
 
-    let file_log = log_path.map(|log_path| {
-        let log_file = File::create(log_path).unwrap();
-        tracing_subscriber::fmt::layer()
-            .json()
-            .with_writer(Mutex::new(log_file))
-            .with_filter(LevelFilter::TRACE)
+    let mut result = Ok(());
+    let file_log = log_path.and_then(|log_path| match File::create(log_path) {
+        Ok(log_file) => Some(
+            tracing_subscriber::fmt::layer()
+                .json()
+                .with_writer(Mutex::new(log_file))
+                .with_filter(LevelFilter::TRACE),
+        ),
+        Err(e) => {
+            result = Err(io::Error::new(e.kind(), format!("{}: {e}", log_path.display())));
+            None
+        }
     });
 
     let subscriber = Registry::default().with(console_log).with(file_log);
 
     tracing::subscriber::set_global_default(subscriber).expect("unable to set up logging");
+
+    result
 }
 
 /// Writes the buffered log and the panic message to crashlog.txt

@@ -3,74 +3,102 @@
 
 use rune::Icon;
 
+/// An icon's body in the round 1.75 point strokes most of them are drawn with
+macro_rules! stroked {
+    ($shapes:literal) => {
+        concat!(
+            r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">"#,
+            $shapes,
+            "</g>"
+        )
+    };
+}
+
+/// The warp glint's outline, a four-pointed star, for [`WARP`] and [`WARP_FILLED`]
+macro_rules! warp_glint {
+    () => {
+        "M12 3.5c.7 4.6 3.9 7.8 8.5 8.5-4.6.7-7.8 3.9-8.5 8.5-.7-4.6-3.9-7.8-8.5-8.5 4.6-.7 7.8-3.9 8.5-8.5z"
+    };
+}
+
 /// Settings: two sliders
 pub static SETTINGS: Icon = Icon {
     name: "ra-settings",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.25" fill="currentColor"/><circle cx="15" cy="17" r="2.25" fill="currentColor"/></g>"#,
+    body: stroked!(
+        r#"<line x1="4" y1="7" x2="20" y2="7"/><line x1="4" y1="17" x2="20" y2="17"/><circle cx="9" cy="7" r="2.25" fill="currentColor"/><circle cx="15" cy="17" r="2.25" fill="currentColor"/>"#
+    ),
 };
 
 /// Logs: a terminal prompt
 pub static LOGS: Icon = Icon {
     name: "ra-logs",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 8 9 12 5 16"/><line x1="12" y1="16" x2="19" y2="16"/></g>"#,
+    body: stroked!(r#"<polyline points="5 8 9 12 5 16"/><line x1="12" y1="16" x2="19" y2="16"/>"#),
 };
 
 /// Opening a capture file
 pub static FOLDER: Icon = Icon {
     name: "ra-folder",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></g>"#,
+    body: stroked!(r#"<path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/>"#),
 };
 
 /// Saving an export
 pub static DOWNLOAD: Icon = Icon {
     name: "ra-download",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="4" x2="12" y2="15"/><polyline points="7.5 10.5 12 15 16.5 10.5"/><line x1="5" y1="19.5" x2="19" y2="19.5"/></g>"#,
+    body: stroked!(
+        r#"<line x1="12" y1="4" x2="12" y2="15"/><polyline points="7.5 10.5 12 15 16.5 10.5"/><line x1="5" y1="19.5" x2="19" y2="19.5"/>"#
+    ),
 };
 
 /// Live sync
 pub static BROADCAST: Icon = Icon {
     name: "ra-broadcast",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.75" fill="currentColor"/><path d="M8.2 15.8a5.4 5.4 0 0 1 0-7.6"/><path d="M15.8 8.2a5.4 5.4 0 0 1 0 7.6"/><path d="M5.3 18.7a9.5 9.5 0 0 1 0-13.4"/><path d="M18.7 5.3a9.5 9.5 0 0 1 0 13.4"/></g>"#,
+    body: stroked!(
+        r#"<circle cx="12" cy="12" r="1.75" fill="currentColor"/><path d="M8.2 15.8a5.4 5.4 0 0 1 0-7.6"/><path d="M15.8 8.2a5.4 5.4 0 0 1 0 7.6"/><path d="M5.3 18.7a9.5 9.5 0 0 1 0-13.4"/><path d="M18.7 5.3a9.5 9.5 0 0 1 0 13.4"/>"#
+    ),
 };
 
 /// Done
 pub static CHECK: Icon = Icon {
     name: "ra-check",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="5 12.5 10 17.5 19 7"/></g>"#,
+    body: stroked!(r#"<polyline points="5 12.5 10 17.5 19 7"/>"#),
 };
 
 /// Something needs attention
 pub static ALERT: Icon = Icon {
     name: "ra-alert",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 4.6 3.2 17a2 2 0 0 0 1.7 3h14.2a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9.5" x2="12" y2="13.5"/><circle cx="12" cy="16.75" r="0.6" fill="currentColor"/></g>"#,
+    body: stroked!(
+        r#"<path d="M10.3 4.6 3.2 17a2 2 0 0 0 1.7 3h14.2a2 2 0 0 0 1.7-3L13.7 4.6a2 2 0 0 0-3.4 0z"/><line x1="12" y1="9.5" x2="12" y2="13.5"/><circle cx="12" cy="16.75" r="0.6" fill="currentColor"/>"#
+    ),
 };
 
 /// Administrator rights
 pub static SHIELD: Icon = Icon {
     name: "ra-shield",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5 5 6.2v5.3c0 4.3 3 7.7 7 9 4-1.3 7-4.7 7-9V6.2z"/></g>"#,
+    body: stroked!(r#"<path d="M12 3.5 5 6.2v5.3c0 4.3 3 7.7 7 9 4-1.3 7-4.7 7-9V6.2z"/>"#),
 };
 
 /// An update
 pub static ARROW_UP: Icon = Icon {
     name: "ra-arrow-up",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/></g>"#,
+    body: stroked!(r#"<line x1="12" y1="19" x2="12" y2="5"/><polyline points="6 11 12 5 18 11"/>"#),
 };
 
 /// Copying
 pub static COPY: Icon = Icon {
     name: "ra-copy",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/></g>"#,
+    body: stroked!(
+        r#"<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5v-2a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2"/>"#
+    ),
 };
 
 pub static GITHUB: Icon = Icon {
@@ -89,14 +117,14 @@ pub static DISCORD: Icon = Icon {
 pub static CHEVRON: Icon = Icon {
     name: "ra-chevron",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></g>"#,
+    body: stroked!(r#"<polyline points="9 6 15 12 9 18"/>"#),
 };
 
 /// Dismisses
 pub static CLOSE: Icon = Icon {
     name: "ra-close",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="6.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="6.5" y2="17.5"/></g>"#,
+    body: stroked!(r#"<line x1="6.5" y1="6.5" x2="17.5" y2="17.5"/><line x1="17.5" y1="6.5" x2="6.5" y2="17.5"/>"#),
 };
 
 /// 中, the red dragon on the app's tile, in the icon's rounded strokes
@@ -110,35 +138,43 @@ pub static ZHONG: Icon = Icon {
 pub static SYNC: Icon = Icon {
     name: "ra-sync",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M19 11a7 7 0 0 0-12.5-4.3L5 8.5"/><polyline points="5 4.5 5 8.5 9 8.5"/><path d="M5 13a7 7 0 0 0 12.5 4.3L19 15.5"/><polyline points="19 19.5 19 15.5 15 15.5"/></g>"#,
+    body: stroked!(
+        r#"<path d="M19 11a7 7 0 0 0-12.5-4.3L5 8.5"/><polyline points="5 4.5 5 8.5 9 8.5"/><path d="M5 13a7 7 0 0 0 12.5 4.3L19 15.5"/><polyline points="19 19.5 19 15.5 15 15.5"/>"#
+    ),
 };
 
 /// The authkey the history opens with
 pub static KEY: Icon = Icon {
     name: "ra-key",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5 19 4"/><path d="M16 7l2.5 2.5"/><path d="M14 9l1.5 1.5"/></g>"#,
+    body: stroked!(r#"<circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5 19 4"/><path d="M16 7l2.5 2.5"/><path d="M14 9l1.5 1.5"/>"#),
 };
 
 /// Importing a backup: an arrow into a tray
 pub static IMPORT: Icon = Icon {
     name: "ra-import",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v10"/><polyline points="8 10 12 14 16 10"/><path d="M4.5 15v3a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-3"/></g>"#,
+    body: stroked!(
+        r#"<path d="M12 4v10"/><polyline points="8 10 12 14 16 10"/><path d="M4.5 15v3a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-3"/>"#
+    ),
 };
 
 /// Warps: a four-pointed star, like the game's warp glint
 pub static WARP: Icon = Icon {
     name: "ra-warp",
     view: 24.0,
-    body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3.5c.7 4.6 3.9 7.8 8.5 8.5-4.6.7-7.8 3.9-8.5 8.5-.7-4.6-3.9-7.8-8.5-8.5 4.6-.7 7.8-3.9 8.5-8.5z"/></g>"#,
+    body: concat!(
+        r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d=""#,
+        warp_glint!(),
+        r#""/></g>"#
+    ),
 };
 
 /// A 5 star's rarity mark: the warp glint, filled
 pub static WARP_FILLED: Icon = Icon {
     name: "ra-warp-filled",
     view: 24.0,
-    body: r#"<path fill="currentColor" d="M12 3.5c.7 4.6 3.9 7.8 8.5 8.5-4.6.7-7.8 3.9-8.5 8.5-.7-4.6-3.9-7.8-8.5-8.5 4.6-.7 7.8-3.9 8.5-8.5z"/>"#,
+    body: concat!(r#"<path fill="currentColor" d=""#, warp_glint!(), r#""/>"#),
 };
 
 /// A list of every pull

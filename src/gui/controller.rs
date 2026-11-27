@@ -10,26 +10,15 @@ use std::time::Instant;
 
 use rune::{App, AppHandle, AppSpec, Cx, El, ScrollSpec, Tx, WindowSpec, col, row, text};
 
-use super::scenes::SCENES;
+use super::background::Background;
+use super::scenes::{CAPTURE_ERROR, INVENTORY, SCENES, UID, background_path};
 use super::settings::{Accent, Anchor, Settings, ThemeMode};
-use super::state::{Account, CaptureError, Funds, Inventory, LiveSync, Panel, Ui, Update};
+use super::state::{Account, CaptureError, Inventory, LiveSync, Panel, Ui, Update};
 use super::theme::{self, Theme};
-use super::view::parts::{Pill, kicker, pill_for};
+use super::view::parts::{Pill, kicker, pill};
 
 /// The accounts the controller logs in, in order
-const UIDS: [u32; 3] = [801_234_567, 700_514_288, 602_118_903];
-const INVENTORY: Inventory = Inventory {
-    relics: 1532,
-    light_cones: 218,
-    characters: 54,
-    materials: 311,
-    funds: Funds {
-        stellar_jade: 6420,
-        passes: 12,
-        special_passes: 37,
-        undying_starlight: 592,
-    },
-};
+const UIDS: [u32; 3] = [UID, 700_514_288, 602_118_903];
 
 /// Something the controller does to the app
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -146,7 +135,7 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
         Act::NeedsAdmin(on) => s.needs_admin = on,
         Act::CaptureError(on) => {
             s.capture.error = on.then(|| CaptureError {
-                message: "could not open capture source: wpcap.dll was not found".into(),
+                message: CAPTURE_ERROR.into(),
                 // Never expires while the controller shows it
                 at: Instant::now() + std::time::Duration::from_secs(3600),
             });
@@ -164,7 +153,7 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
         }
         Act::SyncFailed => {
             s.sync = LiveSync::Starting;
-            s.sync_failed("Address already in use".into());
+            s.sync_failed(crate::websocket::ServerError::PortInUse(s.settings.ws_port));
         }
         Act::SyncPaused => s.sync = LiveSync::Closed,
 
@@ -180,16 +169,9 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
 
         Act::NoticeSaved => {
             let file = std::env::temp_dir().join("archive_output-2026-11-07T21-14-03.json");
-            let name = file.file_name().map(|n| n.to_string_lossy().into_owned());
-            s.notify("Export saved", name, false, Some(file), tx);
+            s.notify_saved("Export saved", file, tx);
         }
-        Act::NoticeError => s.notify(
-            "Couldn't save the export",
-            Some("Access is denied. (os error 5)".into()),
-            true,
-            None,
-            tx,
-        ),
+        Act::NoticeError => s.notify_error("Couldn't save the export", "Access is denied. (os error 5)", tx),
         Act::NoticeNone => s.notice = None,
 
         Act::Open(panel) => match panel {
@@ -208,40 +190,25 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
             s.settings.background_image = if on { background_path() } else { String::new() };
         }
     }
-    s.load_background();
+    s.background.load(&s.settings.background_image);
 }
 
-/// Everything that happened goes, the appearance stays
+/// Everything that happened goes, the appearance stays, and the background image as loaded
 fn reset(s: &mut Ui) {
-    let settings = Settings {
-        theme: s.settings.theme,
-        accent: s.settings.accent,
-        card_anchor: s.settings.card_anchor,
-        background_image: s.settings.background_image.clone(),
-        background_opacity: s.settings.background_opacity,
-        image_fit: s.settings.image_fit,
-        background_zoom: s.settings.background_zoom,
-        background_anchor: s.settings.background_anchor,
-        background_target: s.settings.background_target,
-        background_fill: s.settings.background_fill,
-        background_color: s.settings.background_color.clone(),
-        ..Settings::default()
-    };
-    let images = s.images.take();
-    let background = s.background.take();
-    let loader = s.background_loader.take();
-    let loading = s.background_loading.take();
+    let mut settings = Settings::default();
+    settings.keep_appearance_of(&s.settings);
+    let old = std::mem::replace(&mut s.background, Background::new(None));
     *s = mock_ui();
     s.settings = settings;
-    s.images = images;
-    s.background = background;
-    s.background_loader = loader;
-    s.background_loading = loading;
-}
-
-/// The image `SCENE_BACKGROUND` names, else the splash image in the repository
-fn background_path() -> String {
-    std::env::var("SCENE_BACKGROUND").unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/hsr_hyperdrive.jpg").into())
+    s.background = Background {
+        images: old.images,
+        loader: old.loader,
+        loaded: old.loaded,
+        loading: old.loading,
+        edges: old.edges,
+        sample: old.sample,
+        ..Background::new(None)
+    };
 }
 
 /// The controller's own state: the app it drives
@@ -280,11 +247,10 @@ fn view(_: &Controller, cx: &mut Cx<Controller>) -> El {
             ),
     );
 
-    let scenes: Vec<(String, Act)> = SCENES.iter().map(|(name, _)| ((*name).to_string(), Act::Scene(name))).collect();
-    sections = sections.child(section("Scenes", &scenes, &t));
+    let scenes = SCENES.iter().map(|&(name, _)| (name, Act::Scene(name)));
+    sections = sections.child(section("Scenes", scenes, &t));
     for (title, acts) in SECTIONS {
-        let acts: Vec<(String, Act)> = acts.iter().map(|(label, act)| ((*label).to_string(), *act)).collect();
-        sections = sections.child(section(title, &acts, &t));
+        sections = sections.child(section(title, acts.iter().copied(), &t));
     }
 
     col()
@@ -358,15 +324,15 @@ const SECTIONS: &[(&str, &[(&str, Act)])] = &[
     ]),
 ];
 
-fn section(title: &str, acts: &[(String, Act)], t: &Theme) -> El {
-    let buttons = acts.iter().map(|(label, act)| {
-        let act = *act;
+fn section<'a>(title: &str, acts: impl Iterator<Item = (&'a str, Act)>, t: &Theme) -> El {
+    let buttons = acts.map(|(label, act)| {
         let key = format!("act-{}", label.to_lowercase().replace(' ', "-"));
-        pill_for(&key, label, None, Pill::Secondary, true, t, move |c: &mut Controller, _| {
-            c.app.update(move |s, tx| apply(act, s, tx));
-        })
-        .h(28.0)
-        .px(12.0)
+        pill(&key, label, Pill::Secondary)
+            .build_for(t, move |c: &mut Controller, _| {
+                c.app.update(move |s, tx| apply(act, s, tx));
+            })
+            .h(28.0)
+            .px(12.0)
     });
     col()
         .key(format!("section-{}", title.to_lowercase().replace(' ', "-")))
@@ -385,7 +351,7 @@ mod tests {
 
     /// Runs `acts` against a fresh app, the way the controller would
     fn after(acts: &[Act]) -> Ui {
-        let mut rt = Runtime::new(mock_ui(), crate::gui::view::view, (460.0, 700.0), Env {
+        let mut rt = Runtime::new(mock_ui(), crate::gui::view::view, (540.0, 800.0), Env {
             system_dark: true,
             scale: 1.0,
         });

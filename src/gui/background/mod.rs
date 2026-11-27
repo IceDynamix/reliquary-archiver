@@ -1,4 +1,4 @@
-//! Getting a background image ready to draw.
+//! The background image: getting it ready to draw, and what the window keeps of it.
 //!
 //! Rune decodes and mip maps an image file at its full size, and a wallpaper is often several
 //! times larger than any window it's shown in: a 5760×3240 JPEG took over ten seconds before it
@@ -11,8 +11,11 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use image::{DynamicImage, ImageDecoder, ImageReader};
+use rune::{Image, ImageCache, TextEdit};
 
 use super::settings::ImageFit;
+
+pub mod preview;
 
 /// Images are scaled down until they just cover this many pixels
 const COVER: (u32, u32) = (2560, 1600);
@@ -64,6 +67,220 @@ impl Sample {
         }
         let [r, g, b] = sum.map(|v| (v + n / 2) / n);
         Some(format!("#{r:02x}{g:02x}{b:02x}"))
+    }
+}
+
+/// The size, in points, vector images are loaded at. Rune draws them at the size they're shown
+/// at, which only needs the size
+const VECTOR_SIZE: f32 = 1024.0;
+
+/// The background image as the window has it, and what the settings' preview of it is doing
+pub struct Background {
+    /// Decodes images off the UI thread, set up once the window's waker exists
+    pub images: Option<ImageCache>,
+    /// Gets images ready off the UI thread, set up with the window
+    pub loader: Option<rune::Latest<(String, Result<Prepared, String>)>>,
+    /// The image and the path it was loaded from
+    pub loaded: Option<(String, Image)>,
+    /// The image is still decoding: until it's done its size isn't known, so the view is built
+    /// again when it is (see [`Background::ready`])
+    pub decoding: bool,
+    /// The path the loader is working on
+    pub loading: Option<String>,
+    /// Why the image couldn't be read
+    pub error: Option<String>,
+    /// The average color along each edge of the image (top, right, bottom, left), for
+    /// [`BackgroundFill::EdgeColor`](super::settings::BackgroundFill::EdgeColor); none for vector
+    /// images
+    pub edges: Option<[rune::Color; 4]>,
+    /// A small copy of the image, to pick colors from; not for vector images
+    pub sample: Option<std::sync::Arc<Sample>>,
+    /// The eyedropper is on: pressing on the image picks the color around it
+    pub dropper: bool,
+    /// What a drag on the settings' preview is doing, picked where it was pressed
+    pub grab: Option<Grab>,
+    /// What a press on the settings' preview would take, where the pointer is over it
+    pub hover: Option<Grab>,
+    /// The window size the settings' preview tries in place of the window's own, to see how the
+    /// image holds up when the window resizes
+    pub trial: Option<[f32; 2]>,
+    /// The color around the image as it's being picked: its hue kept through grays, which have none
+    pub hsv: Option<rune_kit::Hsv>,
+    /// That color's hex code, typed or kept in step with the picker
+    pub hex: TextEdit,
+}
+
+/// What a drag on the settings' background preview does, picked by where it was pressed
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Grab {
+    /// Moves the image, which was this far from the window's top-left when pressed
+    Pan([f32; 2]),
+    /// Moves the point that holds still as the window resizes, leaving the image where it is:
+    /// `from` the window's top-left, as it was when pressed. Dragged past the window's edges,
+    /// the pin is `out` there, in the window's points, until it's let go
+    Pin { from: [f32; 2], out: Option<[f32; 2]> },
+    /// Tries another window size
+    Resize,
+}
+
+impl Background {
+    /// Nothing loaded, with `color` (`#rrggbb`) picked for around the image
+    pub fn new(color: Option<&str>) -> Self {
+        Self {
+            images: None,
+            loader: None,
+            loaded: None,
+            decoding: false,
+            loading: None,
+            error: None,
+            edges: None,
+            sample: None,
+            dropper: false,
+            grab: None,
+            hover: None,
+            trial: None,
+            hsv: None,
+            hex: TextEdit::new(color.unwrap_or_default()),
+        }
+    }
+
+    /// Starts loading the image at `path`, if it isn't loaded or on its way. An empty path clears it
+    pub fn load(&mut self, path: &str) {
+        if path.is_empty() {
+            self.clear();
+            return;
+        }
+        if self.loaded.as_ref().is_some_and(|(loaded, _)| loaded == path) || self.loading.as_deref() == Some(path) {
+            return;
+        }
+        let (Some(_), Some(loader)) = (&self.images, &self.loader) else {
+            return;
+        };
+        self.error = None;
+        if is_raster(path) {
+            self.loading = Some(path.to_string());
+            loader.request(path.to_string(), |path| {
+                let prepared = prepare(&path);
+                (path, prepared)
+            });
+        } else if let Some(image) = self.install_vector(path) {
+            self.show(path.to_string(), image);
+        }
+    }
+
+    /// Loads the image at `path` on this thread and waits for it, for snapshots, which draw a
+    /// single frame
+    pub fn load_now(&mut self, path: &str) {
+        if path.is_empty() {
+            return;
+        }
+        let image = if is_raster(path) {
+            match prepare(path) {
+                Ok(prepared) => self.install_prepared(prepared),
+                Err(e) => {
+                    self.error = Some(e);
+                    return;
+                }
+            }
+        } else {
+            self.install_vector(path)
+        };
+        let Some(image) = image else {
+            return;
+        };
+        let _ = image.wait();
+        self.loaded = Some((path.to_string(), image));
+    }
+
+    /// Takes an image the loader finished for `path`, or notices the image it handed over
+    /// finished decoding (it wakes the window then, but the view has to be built again to see its
+    /// size). True when that changed anything
+    pub fn ready(&mut self, path: &str) -> bool {
+        let taken = self.take(path);
+        let decoded = self.decoding && self.loaded.as_ref().is_none_or(|(_, image)| image.is_ready());
+        if decoded {
+            self.decoding = false;
+        }
+        taken || decoded
+    }
+
+    /// Takes an image the loader finished, if it's for `path`. True when that changed anything
+    fn take(&mut self, path: &str) -> bool {
+        let Some((taken, prepared)) = self.loader.as_ref().and_then(|loader| loader.take()) else {
+            return false;
+        };
+        if self.loading.as_ref() == Some(&taken) {
+            self.loading = None;
+        }
+        // Another image was picked meanwhile
+        if taken != path {
+            return false;
+        }
+        match prepared {
+            Ok(prepared) => {
+                if let Some(image) = self.install_prepared(prepared) {
+                    self.show(taken, image);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(%e, "couldn't load the background");
+                self.clear();
+                self.error = Some(e);
+            }
+        }
+        true
+    }
+
+    /// Hands a prepared image to Rune, keeping its edge colors and sample
+    fn install_prepared(&mut self, prepared: Prepared) -> Option<Image> {
+        let image = self.images.as_ref()?.rgba(prepared.width, prepared.height, prepared.rgba);
+        self.edges = Some(prepared.edges);
+        self.sample = Some(prepared.sample);
+        Some(image)
+    }
+
+    /// Has Rune load the vector image at `path`, which has no edge colors or sample to pick from
+    fn install_vector(&mut self, path: &str) -> Option<Image> {
+        let image = self.images.as_ref()?.file(path, VECTOR_SIZE, 1.0);
+        self.edges = None;
+        self.sample = None;
+        self.dropper = false;
+        Some(image)
+    }
+
+    /// Shows `image`, loaded from `path`, once it's decoded
+    fn show(&mut self, path: String, image: Image) {
+        self.loaded = Some((path, image));
+        self.decoding = true;
+    }
+
+    /// Forgets the image and everything taken from it
+    pub fn clear(&mut self) {
+        self.loaded = None;
+        self.loading = None;
+        self.error = None;
+        self.edges = None;
+        self.sample = None;
+        self.dropper = false;
+    }
+
+    /// The image behind the window, when there is one that decoded
+    pub fn image(&self) -> Option<&Image> {
+        self.loaded.as_ref().map(|(_, image)| image).filter(|image| image.error().is_none())
+    }
+
+    /// The image's darkest edge color
+    pub fn darkest_edge(&self) -> Option<rune_kit::Hsv> {
+        self.edges?
+            .into_iter()
+            .min_by(|a, b| a.luminance().total_cmp(&b.luminance()))
+            .map(rune_kit::Hsv::of)
+    }
+
+    /// The color around `at` (0 to 1 across and down) of the image, as the eyedropper picks it
+    pub fn color_at(&self, at: [f32; 2]) -> Option<rune_kit::Hsv> {
+        let hex = self.sample.as_ref()?.hex_at(at)?;
+        rune_kit::Hsv::from_hex(&hex)
     }
 }
 
@@ -182,7 +399,7 @@ fn edge_colors(width: u32, height: u32, rgba: &[u8]) -> [rune::Color; 4] {
                 let Some(px) = rgba.get(i..i + 4) else { continue };
                 let a = f64::from(px[3]) / 255.0;
                 for c in 0..3 {
-                    sum[c] += srgb_to_linear(f64::from(px[c]) / 255.0) * a;
+                    sum[c] += f64::from(super::srgb_to_linear(f32::from(px[c]) / 255.0)) * a;
                 }
                 sum[3] += a;
                 n += 1.0;
@@ -204,11 +421,6 @@ fn edge_colors(width: u32, height: u32, rgba: &[u8]) -> [rune::Color; 4] {
         average(0..w, h.saturating_sub(down)..h),
         average(0..across, 0..h),
     ]
-}
-
-/// An sRGB-encoded channel in linear light
-fn srgb_to_linear(c: f64) -> f64 {
-    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
 }
 
 /// How far the background image zooms from its fit, smallest and largest
@@ -256,7 +468,7 @@ fn cache_path(path: &Path) -> Option<PathBuf> {
     meta.len().hash(&mut hasher);
     meta.modified().ok()?.hash(&mut hasher);
     COVER.hash(&mut hasher);
-    let folder = super::settings::data_dir()?.join(FOLDER);
+    let folder = crate::dirs::config_dir()?.join(FOLDER);
     Some(folder.join(format!("{:016x}.qoi", hasher.finish())))
 }
 
@@ -270,13 +482,10 @@ fn keep(image: image::RgbaImage, at: &Path) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
-    let written = std::fs::create_dir_all(folder).map_err(|e| e.to_string()).and_then(|()| {
-        // Written beside it and moved in place, so a half written copy is never read
-        let temp = at.with_extension(format!("qoi.{}.tmp", std::process::id()));
+    let written = crate::dirs::write_atomic(at, |temp| {
         DynamicImage::ImageRgba8(image)
-            .save_with_format(&temp, image::ImageFormat::Qoi)
-            .map_err(|e| e.to_string())?;
-        std::fs::rename(&temp, at).map_err(|e| e.to_string())
+            .save_with_format(temp, image::ImageFormat::Qoi)
+            .map_err(std::io::Error::other)
     });
     if let Err(e) = written {
         tracing::warn!(%e, "couldn't keep a scaled copy of the background");
@@ -390,11 +599,6 @@ mod tests {
         assert_eq!((bottom.r, bottom.b), (0.0, 1.0));
         assert!((right.r - 0.25).abs() < 1e-6, "a quarter of the right edge is red");
     }
-}
-
-#[cfg(test)]
-mod sample_tests {
-    use super::*;
 
     #[test]
     fn a_picked_color_averages_the_pixels_around_it() {

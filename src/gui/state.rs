@@ -10,15 +10,16 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use reliquary_archiver::export::fribbels::Export;
-use rune::{FileDialogOptions, FileDialogResult, Image, ImageCache, TextEdit, Tx};
+use rune::{FileDialogOptions, FileDialogResult, TextEdit, Tx};
 use tracing::level_filters::LevelFilter;
 
-use super::background;
+use super::background::{self, Background};
 use super::services::{self, Services};
 use super::settings::{BackgroundFill, ImageFit, Settings};
 use crate::session::SessionEvent;
-use crate::warps::Pool;
 use crate::warps::service::{Command as WarpCommand, ProfileChoice, Summary, Update as WarpUpdate};
+use crate::warps::{Pool, item};
+use crate::websocket::ServerError;
 
 /// A capture error that isn't repeated for this long has resolved itself
 pub const CAPTURE_ERROR_TTL: Duration = Duration::from_secs(15);
@@ -45,15 +46,7 @@ pub struct Ui {
     pub update_dismissed: bool,
     pub settings: Settings,
     /// The port field in the settings panel
-    pub port_edit: TextEdit,
-    /// The background color as it's being picked: its hue kept through grays, which have none
-    pub background_hsv: Option<rune_kit::Hsv>,
-    /// The background color's hex code, typed or kept in step with the picker
-    pub background_hex: TextEdit,
-    /// A port that was asked for and hasn't been opened yet
-    pub pending_port: Option<u16>,
-    /// Why the port in the settings panel couldn't be used
-    pub port_error: Option<String>,
+    pub port: PortField,
     /// Why run on startup couldn't be changed
     pub run_on_start_error: Option<String>,
     pub panel: Option<Panel>,
@@ -70,34 +63,17 @@ pub struct Ui {
     /// This build can update itself and wasn't told not to
     pub updates_supported: bool,
     pub services: Option<Services>,
-    /// Decodes images off the UI thread, set up once the window's waker exists
-    pub images: Option<ImageCache>,
-    /// The background image and the path it was loaded from
-    pub background: Option<(String, Image)>,
-    /// The background image is still decoding: until it's done its size isn't known, so the view
-    /// is built again when it is (see [`Ui::background_ready`])
-    pub background_decoding: bool,
-    /// The average color along each edge of the background image (top, right, bottom, left), for
-    /// [`BackgroundFill::EdgeColor`]; none for vector images
-    pub background_edges: Option<[rune::Color; 4]>,
-    /// A small copy of the background image, to pick colors from; not for vector images
-    pub background_sample: Option<std::sync::Arc<background::Sample>>,
-    /// The eyedropper is on: pressing on the image picks the color around it
-    pub background_dropper: bool,
-    /// What a drag on the settings' background preview is doing, picked where it was pressed
-    pub background_grab: Option<Grab>,
-    /// What a press on the settings' background preview would take, where the pointer is over it
-    pub background_hover: Option<Grab>,
-    /// The window size the settings' background preview tries in place of the window's own, to
-    /// see how the image holds up when the window resizes
-    pub background_trial: Option<[f32; 2]>,
-    /// Gets background images ready off the UI thread, set up with the window
-    pub background_loader: Option<rune::Latest<(String, Result<background::Prepared, String>)>>,
-    /// The background the loader is working on
-    pub background_loading: Option<String>,
-    /// Why the background couldn't be read
-    pub background_error: Option<String>,
+    pub background: Background,
     pub warps: Warps,
+}
+
+/// The port field in the settings panel, and the port it asked for
+pub struct PortField {
+    pub edit: TextEdit,
+    /// A port that was asked for and hasn't been opened yet
+    pub pending: Option<u16>,
+    /// Why the port in the field couldn't be used
+    pub error: Option<String>,
 }
 
 /// The warp tracker: what the warp database reports, and the warp screen's own state
@@ -209,10 +185,32 @@ impl PageScroll {
     }
 }
 
-/// A wheel or trackpad scroll `dy` points over the page (down negative, as Rune gives it). True
-/// takes it: it turned the page, or pulls towards turning it, or comes too soon after a turn.
-/// False lets the page scroll itself. `now` is Rune's clock, in seconds
-pub fn snap_wheel(s: &mut Ui, dy: f32, notch: bool, momentum: bool, scroll: PageScroll, now: f64) -> bool {
+/// A wheel or trackpad scroll, as [`snap_wheel`] tells them apart
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wheel {
+    /// Points, down negative, as Rune gives it
+    pub dy: f32,
+    /// A notch of a mouse wheel, a step
+    pub notch: bool,
+    /// Coasting after the fingers lifted
+    pub momentum: bool,
+}
+
+impl From<rune::WheelEvent> for Wheel {
+    fn from(wheel: rune::WheelEvent) -> Self {
+        Wheel {
+            dy: wheel.dy,
+            notch: wheel.notch,
+            momentum: wheel.momentum,
+        }
+    }
+}
+
+/// A wheel or trackpad scroll over the page. True takes it: it turned the page, or pulls towards
+/// turning it, or comes too soon after a turn. False lets the page scroll itself. `now` is Rune's
+/// clock, in seconds
+pub fn snap_wheel(s: &mut Ui, wheel: Wheel, scroll: PageScroll, now: f64) -> bool {
+    let Wheel { dy, notch, momentum } = wheel;
     let snap = &mut s.warps.snap;
     let inner = std::mem::take(&mut snap.inner);
     if snap.turned.is_some_and(|at| now - at < SNAP_SETTLE) {
@@ -382,19 +380,6 @@ pub enum LiveSync {
     Closed,
 }
 
-/// What a drag on the settings' background preview does, picked by where it was pressed
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Grab {
-    /// Moves the image, which was this far from the window's top-left when pressed
-    Pan([f32; 2]),
-    /// Moves the point that holds still as the window resizes, leaving the image where it is:
-    /// `from` the window's top-left, as it was when pressed. Dragged past the window's edges,
-    /// the pin is `out` there, in the window's points, until it's let go
-    Pin { from: [f32; 2], out: Option<[f32; 2]> },
-    /// Tries another window size
-    Resize,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum Update {
     /// Not checked, or checking isn't possible on this platform
@@ -429,6 +414,13 @@ pub struct Notice {
     pub until: Instant,
 }
 
+/// Which file dialog to ask with
+#[derive(Clone, Copy, Debug)]
+enum Dialog {
+    Open,
+    Save,
+}
+
 /// Where getting an account's data stands, which is what the window leads with
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -451,12 +443,13 @@ impl Ui {
             sync: LiveSync::Starting,
             update: Update::Idle,
             update_dismissed: false,
-            port_edit: TextEdit::new(settings.ws_port.to_string()),
-            background_hsv: None,
-            background_hex: TextEdit::new(settings.background_color.clone().unwrap_or_default()),
+            port: PortField {
+                edit: TextEdit::new(settings.ws_port.to_string()),
+                pending: None,
+                error: None,
+            },
+            background: Background::new(settings.background_color.as_deref()),
             settings,
-            pending_port: None,
-            port_error: None,
             run_on_start_error: None,
             panel: None,
             notice: None,
@@ -467,18 +460,6 @@ impl Ui {
             has_tray: false,
             updates_supported: false,
             services: None,
-            images: None,
-            background: None,
-            background_decoding: false,
-            background_loader: None,
-            background_edges: None,
-            background_sample: None,
-            background_dropper: false,
-            background_grab: None,
-            background_hover: None,
-            background_trial: None,
-            background_loading: None,
-            background_error: None,
             warps: Warps::default(),
         }
     }
@@ -509,11 +490,26 @@ impl Ui {
         }
     }
 
-    pub fn notify(&mut self, title: impl Into<String>, detail: Option<String>, error: bool, file: Option<PathBuf>, tx: &mut Tx) {
+    /// Puts up a notice that something went wrong
+    pub fn notify_error(&mut self, title: impl Into<String>, detail: impl Into<String>, tx: &mut Tx) {
+        self.notify(title.into(), Some(detail.into()), true, None, tx);
+    }
+
+    /// Puts up a notice that something was done
+    pub fn notify_info(&mut self, title: impl Into<String>, detail: impl Into<String>, tx: &mut Tx) {
+        self.notify(title.into(), Some(detail.into()), false, None, tx);
+    }
+
+    /// Puts up a notice that a file was saved at `path`, which it can show in its folder
+    pub fn notify_saved(&mut self, title: impl Into<String>, path: PathBuf, tx: &mut Tx) {
+        self.notify(title.into(), Some(services::file_name(&path)), false, Some(path), tx);
+    }
+
+    fn notify(&mut self, title: String, detail: Option<String>, error: bool, file: Option<PathBuf>, tx: &mut Tx) {
         let id = self.notice.as_ref().map_or(0, |n| n.id + 1);
         self.notice = Some(Notice {
             id,
-            title: title.into(),
+            title,
             detail,
             error,
             file,
@@ -685,19 +681,19 @@ impl Ui {
             _ => opening_pool(summary).unwrap_or(self.warps.pool),
         };
         let has = |item: u32| {
-            let banner = art.banner(item);
-            let layers = banner
-                .as_ref()
-                .filter(|banner| banner.placed())
-                .map(|banner| {
+            art.with_banner(item, |banner| {
+                let layers = if banner.placed() {
                     [Layer::Backdrop, Layer::Back, Layer::Main, Layer::Front, Layer::Front2]
                         .into_iter()
                         .filter(|&layer| banner.layer(layer).is_some())
                         .collect()
-                })
-                .unwrap_or_default();
-            let pattern = banner.is_some_and(|banner| banner.surface.as_ref().is_some_and(|s| s.pattern.is_some()));
-            (layers, pattern)
+                } else {
+                    Vec::new()
+                };
+                let pattern = banner.surface.as_ref().is_some_and(|s| s.pattern.is_some());
+                (layers, pattern)
+            })
+            .unwrap_or_default()
         };
         for wanted in warp_art_order(summary, first, has) {
             let _ = art.get(wanted);
@@ -706,7 +702,7 @@ impl Ui {
 
     fn warp_command(&self, command: WarpCommand) {
         if let Some(services) = &self.services {
-            services.warps.send(command);
+            services.warp_command(command);
         }
     }
 
@@ -736,7 +732,7 @@ impl Ui {
                 self.preload_warp_art();
             }
             WarpUpdate::Busy(busy) => self.warps.busy = busy,
-            WarpUpdate::Notice { title, detail, error } => self.notify(title, detail, error, None, tx),
+            WarpUpdate::Notice { title, detail, tone } => self.notify(title, detail, tone.is_error(), None, tx),
             WarpUpdate::ChooseProfile { path, uid, profiles } => {
                 self.warps.choose = Some(ProfilePick { path, uid, profiles });
                 // The pick is on the warp screen's import and export page, under where backups are imported
@@ -770,60 +766,75 @@ impl Ui {
 
     /// Asks for a Star Rail Station backup, then imports it into the account the tracker shows
     pub fn import_srs(&mut self, tx: &mut Tx) {
-        let Some(uid) = self.warps_uid() else {
-            return;
-        };
-        let options = FileDialogOptions {
-            title: "Import a Star Rail Station backup".into(),
-            ..Default::default()
-        }
-        .filter("Star Rail Station backups", &["dat"]);
-        tx.open_file(options, move |s: &mut Ui, result, tx| {
-            if let Some(path) = s.dialog_path(result, tx) {
-                s.warps.choose = None;
-                s.warp_command(WarpCommand::ImportSrs { path, uid, profile: None });
+        let options = |_| {
+            FileDialogOptions {
+                title: "Import a Star Rail Station backup".into(),
+                ..Default::default()
             }
+            .filter("Star Rail Station backups", &["dat"])
+        };
+        self.warp_file(tx, Dialog::Open, options, |s, path, uid| {
+            s.warps.choose = None;
+            s.warp_command(WarpCommand::ImportSrs { path, uid, profile: None });
         });
     }
 
     /// Asks where to save the warp history of the account the tracker shows, as CSV, then writes it
     pub fn export_warps_csv(&mut self, tx: &mut Tx) {
-        let Some(uid) = self.warps_uid() else {
-            return;
-        };
-        let options = FileDialogOptions {
-            title: "Export the warp history".into(),
-            file_name: Some(
-                jiff::ZonedDateTime::now()
-                    .strftime(&format!("warps-{uid}-%Y-%m-%d.csv"))
-                    .to_string(),
-            ),
-            ..Default::default()
-        }
-        .filter("CSV files", &["csv"]);
-        tx.save_file(options, move |s: &mut Ui, result, tx| {
-            if let Some(path) = s.dialog_path(result, tx) {
-                s.warp_command(WarpCommand::ExportCsv { path, uid });
+        let options = |uid| {
+            FileDialogOptions {
+                title: "Export the warp history".into(),
+                file_name: Some(
+                    jiff::ZonedDateTime::now()
+                        .strftime(&format!("warps-{uid}-%Y-%m-%d.csv"))
+                        .to_string(),
+                ),
+                ..Default::default()
             }
+            .filter("CSV files", &["csv"])
+        };
+        self.warp_file(tx, Dialog::Save, options, |s, path, uid| {
+            s.warp_command(WarpCommand::ExportCsv { path, uid })
         });
     }
 
     /// Asks for a CSV of warps, as the export writes them, then imports it into the account the
     /// tracker shows
     pub fn import_warps_csv(&mut self, tx: &mut Tx) {
+        let options = |_| {
+            FileDialogOptions {
+                title: "Import a warp history".into(),
+                ..Default::default()
+            }
+            .filter("CSV files", &["csv"])
+        };
+        self.warp_file(tx, Dialog::Open, options, |s, path, uid| {
+            s.warp_command(WarpCommand::ImportCsv { path, uid })
+        });
+    }
+
+    /// Asks for a file for the account the tracker shows, in the dialog `options` makes for it,
+    /// then hands `then` the path picked and the account
+    fn warp_file(
+        &mut self,
+        tx: &mut Tx,
+        dialog: Dialog,
+        options: impl FnOnce(u32) -> FileDialogOptions,
+        then: impl FnOnce(&mut Ui, PathBuf, u32) + 'static,
+    ) {
         let Some(uid) = self.warps_uid() else {
             return;
         };
-        let options = FileDialogOptions {
-            title: "Import a warp history".into(),
-            ..Default::default()
-        }
-        .filter("CSV files", &["csv"]);
-        tx.open_file(options, move |s: &mut Ui, result, tx| {
+        let options = options(uid);
+        let answered = move |s: &mut Ui, result, tx: &mut Tx| {
             if let Some(path) = s.dialog_path(result, tx) {
-                s.warp_command(WarpCommand::ImportCsv { path, uid });
+                then(s, path, uid);
             }
-        });
+        };
+        match dialog {
+            Dialog::Open => tx.open_file(options, answered),
+            Dialog::Save => tx.save_file(options, answered),
+        }
     }
 
     pub fn choose_profile(&mut self, key: Option<String>) {
@@ -844,28 +855,26 @@ impl Ui {
     /// The server is now running on `port`
     pub fn sync_opened(&mut self, port: u16) {
         self.sync = LiveSync::Running { port, clients: 0 };
-        self.port_error = None;
+        self.port.error = None;
         // Only a port the server could open is saved. 0 stays 0, it asks for any free port every time
-        if let Some(requested) = self.pending_port.take()
+        if let Some(requested) = self.port.pending.take()
             && (requested == 0 || requested == port)
         {
             self.settings_mut(|s| s.ws_port = requested);
         }
     }
 
-    pub fn sync_failed(&mut self, error: String) {
-        let port = self.pending_port.unwrap_or(self.settings.ws_port);
-        let error = if error.starts_with("Address already in use") {
-            format!("Port {port} is in use. Close other copies or choose another port.")
-        } else {
-            error
+    pub fn sync_failed(&mut self, error: ServerError) {
+        let error = match error {
+            ServerError::PortInUse(port) => format!("Port {port} is in use. Close other copies or choose another port."),
+            ServerError::Other(error) => error,
         };
         // A server that was already running keeps running on its old port
         if !matches!(self.sync, LiveSync::Running { .. }) {
             self.sync = LiveSync::Failed(error.clone());
         }
-        if self.pending_port.take().is_some() || matches!(self.sync, LiveSync::Failed(_)) {
-            self.port_error = Some(error);
+        if self.port.pending.take().is_some() || matches!(self.sync, LiveSync::Failed(_)) {
+            self.port.error = Some(error);
         }
     }
 
@@ -877,17 +886,17 @@ impl Ui {
 
     /// Moves the server to the port typed into the settings panel
     pub fn apply_port(&mut self) {
-        let text = self.port_edit.text.trim();
+        let text = self.port.edit.text.trim();
         let Ok(port) = text.parse::<u16>() else {
-            self.port_error = Some(format!("\"{text}\" isn't a port, use a number from 0 to 65535"));
+            self.port.error = Some(format!("\"{text}\" isn't a port, use a number from 0 to 65535"));
             return;
         };
         if matches!(self.sync, LiveSync::Running { port: running, .. } if running == port) {
-            self.port_error = None;
+            self.port.error = None;
             return;
         }
-        self.port_error = None;
-        self.pending_port = Some(port);
+        self.port.error = None;
+        self.port.pending = Some(port);
         if let Some(services) = &self.services {
             services.open_port(port);
         }
@@ -895,7 +904,7 @@ impl Ui {
 
     pub fn port_edited(&self) -> bool {
         match self.sync {
-            LiveSync::Running { port, .. } => self.port_edit.text.trim() != port.to_string(),
+            LiveSync::Running { port, .. } => self.port.edit.text.trim() != port.to_string(),
             _ => true,
         }
     }
@@ -976,7 +985,7 @@ impl Ui {
         self.reading_file = false;
         let Some(export) = export else {
             let detail = "No complete login found. Start capturing before logging in.";
-            self.notify("No account found in that file", Some(detail.into()), true, None, tx);
+            self.notify_error("No account found in that file", detail, tx);
             return;
         };
         tx.save_file(services::export_dialog(), move |s: &mut Ui, result, tx| {
@@ -1008,7 +1017,7 @@ impl Ui {
         match result {
             Ok(path) => path,
             Err(e) => {
-                self.notify("Couldn't show the file dialog", Some(e.to_string()), true, None, tx);
+                self.notify_error("Couldn't show the file dialog", e.to_string(), tx);
                 None
             }
         }
@@ -1032,111 +1041,6 @@ impl Ui {
 
     // Background
 
-    /// Starts loading the background image the settings name, if it isn't loaded or on its way
-    pub fn load_background(&mut self) {
-        let path = self.settings.background_image.clone();
-        if path.is_empty() {
-            self.background = None;
-            self.background_loading = None;
-            self.background_error = None;
-            return;
-        }
-        if self.background.as_ref().is_some_and(|(loaded, _)| *loaded == path) || self.background_loading.as_ref() == Some(&path) {
-            return;
-        }
-        let (Some(images), Some(loader)) = (&self.images, &self.background_loader) else {
-            return;
-        };
-        self.background_error = None;
-        if background::is_raster(&path) {
-            self.background_loading = Some(path.clone());
-            loader.request(path, |path| {
-                let prepared = background::prepare(&path);
-                (path, prepared)
-            });
-        } else {
-            // Rune draws vector images at the size they're shown at, which only needs the size
-            let image = images.file(&path, 1024.0, 1.0);
-            self.background_edges = None;
-            self.background_sample = None;
-            self.background_dropper = false;
-            self.background_decoding = true;
-            self.background = Some((path, image));
-        }
-    }
-
-    /// Loads the background on this thread and waits for it, for snapshots, which draw a single frame
-    pub fn load_background_now(&mut self) {
-        let path = self.settings.background_image.clone();
-        let Some(images) = &self.images else {
-            return;
-        };
-        if path.is_empty() {
-            return;
-        }
-        let image = if background::is_raster(&path) {
-            match background::prepare(&path) {
-                Ok(prepared) => {
-                    self.background_edges = Some(prepared.edges);
-                    self.background_sample = Some(prepared.sample.clone());
-                    images.rgba(prepared.width, prepared.height, prepared.rgba)
-                }
-                Err(e) => {
-                    self.background_error = Some(e);
-                    return;
-                }
-            }
-        } else {
-            self.background_edges = None;
-            self.background_sample = None;
-            images.file(&path, 1024.0, 1.0)
-        };
-        let _ = image.wait();
-        self.background = Some((path, image));
-    }
-
-    /// Takes a background the loader finished, or notices the image it handed over finished
-    /// decoding (it wakes the window then, but the view has to be built again to see its size).
-    /// True when that changed anything
-    pub fn background_ready(&mut self) -> bool {
-        let taken = self.take_background();
-        let decoded = self.background_decoding && self.background.as_ref().is_none_or(|(_, image)| image.is_ready());
-        if decoded {
-            self.background_decoding = false;
-        }
-        taken || decoded
-    }
-
-    /// Takes a background the loader finished. True when that changed anything
-    fn take_background(&mut self) -> bool {
-        let Some((path, prepared)) = self.background_loader.as_ref().and_then(|loader| loader.take()) else {
-            return false;
-        };
-        if self.background_loading.as_ref() == Some(&path) {
-            self.background_loading = None;
-        }
-        // The user picked another image meanwhile
-        if path != self.settings.background_image {
-            return false;
-        }
-        match prepared {
-            Ok(prepared) => {
-                if let Some(images) = &self.images {
-                    self.background_edges = Some(prepared.edges);
-                    self.background_sample = Some(prepared.sample.clone());
-                    self.background = Some((path, images.rgba(prepared.width, prepared.height, prepared.rgba)));
-                    self.background_decoding = true;
-                }
-            }
-            Err(e) => {
-                tracing::warn!(%e, "couldn't load the background");
-                self.background = None;
-                self.background_error = Some(e);
-            }
-        }
-        true
-    }
-
     pub fn choose_background(&mut self, tx: &mut Tx) {
         let options = FileDialogOptions {
             title: "Choose a background image".into(),
@@ -1146,22 +1050,22 @@ impl Ui {
         tx.open_file(options, |s: &mut Ui, result, tx| {
             if let Some(path) = s.dialog_path(result, tx) {
                 s.settings_mut(|settings| settings.background_image = path.to_string_lossy().into_owned());
-                s.load_background();
+                s.background.load(&s.settings.background_image);
             }
         });
     }
 
     pub fn remove_background(&mut self) {
         self.settings_mut(|s| s.background_image.clear());
-        self.load_background();
+        self.background.load(&self.settings.background_image);
     }
 
     pub fn set_image_fit(&mut self, fit: ImageFit) {
         self.settings_mut(|s| s.image_fit = fit);
     }
 
-    /// Sets the point of the background image that matters. Whole percents, so dragging doesn't
-    /// save a new file for every pixel moved
+    /// Sets the point of the background image that matters. Whole percents, as the zoom and
+    /// opacity are too, so dragging doesn't save a new file for every pixel moved
     pub fn set_background_anchor(&mut self, anchor: [f32; 2]) {
         let anchor = anchor.map(whole_percent);
         if anchor != self.settings.background_anchor {
@@ -1197,65 +1101,47 @@ impl Ui {
     /// The color [`BackgroundFill::Color`] fills with: the one picked, else the image's darkest
     /// edge color, else the window's own
     pub fn background_color(&self, fallback: rune::Color) -> rune_kit::Hsv {
-        self.background_hsv
+        self.background
+            .hsv
             .or_else(|| self.settings.background_color.as_deref().and_then(rune_kit::Hsv::from_hex))
-            .or_else(|| {
-                let edges = self.background_edges?;
-                edges
-                    .into_iter()
-                    .min_by(|a, b| a.luminance().total_cmp(&b.luminance()))
-                    .map(rune_kit::Hsv::of)
-            })
+            .or_else(|| self.background.darkest_edge())
             .unwrap_or_else(|| rune_kit::Hsv::of(fallback))
     }
 
     /// Picks the color around `at` (0 to 1 across and down) of the background image for
     /// [`BackgroundFill::Color`], as the eyedropper does
     pub fn pick_background_color(&mut self, at: [f32; 2]) {
-        let Some(hsv) = self
-            .background_sample
-            .as_ref()
-            .and_then(|sample| sample.hex_at(at))
-            .and_then(|hex| rune_kit::Hsv::from_hex(&hex))
-        else {
+        let Some(hsv) = self.background.color_at(at) else {
             return;
         };
         self.set_background_color(hsv);
-        self.background_hex.replace_text(hsv.hex());
+        self.background.hex.replace_text(hsv.hex());
     }
 
     /// Picks the color [`BackgroundFill::Color`] fills with
     pub fn set_background_color(&mut self, hsv: rune_kit::Hsv) {
-        self.background_hsv = Some(hsv);
+        self.background.hsv = Some(hsv);
         let hex = hsv.hex();
         if self.settings.background_color.as_deref() != Some(hex.as_str()) {
             self.settings_mut(|s| s.background_color = Some(hex));
         }
     }
 
+    /// Sets how far the background image zooms from its fit, in whole percents in its range
     pub fn set_background_zoom(&mut self, zoom: f32) {
-        // Whole percents in its range, so dragging doesn't save a new file for every pixel moved
-        let [least, most] = crate::gui::background::ZOOM;
-        let zoom = (zoom.clamp(least, most) * 100.0).round() / 100.0;
+        let [least, most] = background::ZOOM;
+        let zoom = round_percent(zoom, least, most);
         if zoom != self.settings.background_zoom {
             self.settings_mut(|s| s.background_zoom = zoom);
         }
     }
 
+    /// Sets how strongly the background image shows, in whole percents
     pub fn set_background_opacity(&mut self, opacity: f32) {
-        // Whole percents, so dragging doesn't save a new file for every pixel moved
-        let opacity = (opacity.clamp(0.0, 1.0) * 100.0).round() / 100.0;
+        let opacity = whole_percent(opacity);
         if opacity != self.settings.background_opacity {
             self.settings_mut(|s| s.background_opacity = opacity);
         }
-    }
-
-    /// The image behind the window, when there is one that decoded
-    pub fn background_image(&self) -> Option<&Image> {
-        self.background
-            .as_ref()
-            .map(|(_, image)| image)
-            .filter(|image| image.error().is_none())
     }
 
     // Panels
@@ -1267,8 +1153,8 @@ impl Ui {
         }
         if self.panel == Some(Panel::Settings) {
             // The field starts from what is in use, not from whatever was left typed in it
-            self.port_edit.replace_text(self.settings.ws_port.to_string());
-            self.port_error = None;
+            self.port.edit.replace_text(self.settings.ws_port.to_string());
+            self.port.error = None;
         }
     }
 
@@ -1288,7 +1174,7 @@ fn opening_pool(summary: &Summary) -> Option<Pool> {
     summary
         .pools
         .iter()
-        .filter_map(|p| p.recent.first().map(|(pull, _, _)| (pull.sort_key(), p.pool)))
+        .filter_map(|p| p.recent.first().map(|recent| (recent.pull.sort_key(), p.pool)))
         .max()
         .map(|(_, pool)| pool)
 }
@@ -1367,10 +1253,20 @@ fn warp_art_order(summary: &Summary, first: Pool, has: impl Fn(u32) -> (Vec<supe
     for item in summary.banners.iter().flat_map(|banner| banner.fives.iter().copied()) {
         shown(&mut order, item);
     }
-    for pass in [101, 102] {
+    for pass in [item::PASS, item::SPECIAL_PASS] {
         push(&mut order, Art::Item(pass));
     }
     order
+}
+
+/// `v` between `least` and `most`, to the nearest whole percent
+fn round_percent(v: f32, least: f32, most: f32) -> f32 {
+    (v.clamp(least, most) * 100.0).round() / 100.0
+}
+
+/// 0 to 1, to the nearest whole percent
+fn whole_percent(v: f32) -> f32 {
+    round_percent(v, 0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -1381,7 +1277,6 @@ mod tests {
     fn the_warp_it_opens_on_is_preloaded_first() {
         use super::super::art::{Art, Layer, Ticket};
         use crate::warps::service::RunningBanner;
-        use crate::warps::stats::{RateUps, pool_stats};
         let banner = |pool, five| RunningBanner {
             gacha_id: 0,
             pool,
@@ -1391,26 +1286,13 @@ mod tests {
             end: None,
         };
         let summary = Summary {
-            uid: 1,
-            pools: [Pool::Character, Pool::LightCone, Pool::Standard]
-                .into_iter()
-                .map(|pool| pool_stats(pool, &[], &RateUps::new()))
-                .collect(),
-            total: 0,
-            unconfirmed: 0,
-            requests: 0,
-            request_counter: None,
-            key: None,
-            last_sync: None,
-            last_error: None,
-            next_look: None,
-            names: HashMap::new(),
             // Newest first: a light cone banner between the two character ones
             banners: vec![
                 banner(Pool::Character, 1511),
                 banner(Pool::LightCone, 23053),
                 banner(Pool::Character, 1415),
             ],
+            ..super::super::scenes::empty_summary()
         };
         // 1511's banner art is placed in layers; the others show portraits
         let has = |item| match item {
@@ -1441,7 +1323,7 @@ mod tests {
         assert!(at(Art::Pattern(1511)) < at(Art::Layer(1511, Layer::Back)));
         // Nothing twice, and the passes last
         assert_eq!(order.iter().filter(|a| **a == Art::Preview(1511)).count(), 1);
-        assert_eq!(order[order.len() - 2..], [Art::Item(101), Art::Item(102)]);
+        assert_eq!(order[order.len() - 2..], [Art::Item(item::PASS), Art::Item(item::SPECIAL_PASS)]);
 
         // Opening on the light cone warp turns it around
         let order = warp_art_order(&summary, Pool::LightCone, has);
@@ -1465,12 +1347,12 @@ mod tests {
     #[test]
     fn a_wheel_notch_past_the_banner_turns_to_the_history_and_back() {
         let mut s = ui();
-        assert!(snap_wheel(&mut s, -100.0, true, false, BOTH, 1.0));
+        assert!(snap_wheel(&mut s, notch(-100.0), BOTH, 1.0));
         assert_eq!(s.warps.page, WarpPage::History);
         // The rest of the gesture is held, it doesn't turn the page straight back
-        assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 1.2));
+        assert!(snap_wheel(&mut s, notch(100.0), BOTH, 1.2));
         assert_eq!(s.warps.page, WarpPage::History);
-        assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 2.0));
+        assert!(snap_wheel(&mut s, notch(100.0), BOTH, 2.0));
         assert_eq!(s.warps.page, WarpPage::Banner);
     }
 
@@ -1478,11 +1360,11 @@ mod tests {
     fn import_export_is_under_the_history_and_nothing_under_it() {
         let mut s = ui();
         s.warps.page = WarpPage::History;
-        assert!(snap_wheel(&mut s, -100.0, true, false, BOTH, 1.0));
+        assert!(snap_wheel(&mut s, notch(-100.0), BOTH, 1.0));
         assert_eq!(s.warps.page, WarpPage::ImportExport);
-        assert!(!snap_wheel(&mut s, -100.0, true, false, BOTH, 2.0), "the last page scrolls nowhere");
+        assert!(!snap_wheel(&mut s, notch(-100.0), BOTH, 2.0), "the last page scrolls nowhere");
         assert_eq!(s.warps.page, WarpPage::ImportExport);
-        assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 3.0));
+        assert!(snap_wheel(&mut s, notch(100.0), BOTH, 3.0));
         assert_eq!(s.warps.page, WarpPage::History);
         // The header's button goes back to the banner from either
         s.warps.page = WarpPage::ImportExport;
@@ -1500,11 +1382,11 @@ mod tests {
             at_bottom: false,
         };
         assert!(!leave_wheel(&mut s, 100.0, partway));
-        assert!(!snap_wheel(&mut s, 100.0, true, false, BOTH, 1.0));
+        assert!(!snap_wheel(&mut s, notch(100.0), BOTH, 1.0));
         assert_eq!(s.warps.page, WarpPage::History);
         // Back at its top, the next scroll up turns the page
         assert!(!leave_wheel(&mut s, 100.0, AT_TOP));
-        assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 2.0));
+        assert!(snap_wheel(&mut s, notch(100.0), BOTH, 2.0));
         assert_eq!(s.warps.page, WarpPage::Banner);
     }
 
@@ -1516,14 +1398,14 @@ mod tests {
             at_top: false,
             at_bottom: false,
         };
-        assert!(!snap_wheel(&mut s, -100.0, true, false, partway, 1.0));
+        assert!(!snap_wheel(&mut s, notch(-100.0), partway, 1.0));
         assert_eq!(s.warps.page, WarpPage::Banner);
         // Scrolling up at the banner's top goes nowhere either
-        assert!(!snap_wheel(&mut s, 100.0, true, false, AT_TOP, 2.0));
+        assert!(!snap_wheel(&mut s, notch(100.0), AT_TOP, 2.0));
 
         s.warps.page = WarpPage::History;
-        assert!(!snap_wheel(&mut s, -100.0, true, false, AT_TOP, 3.0), "the history scrolls down");
-        assert!(!snap_wheel(&mut s, 100.0, true, false, AT_BOTTOM, 4.0), "and back up");
+        assert!(!snap_wheel(&mut s, notch(-100.0), AT_TOP, 3.0), "the history scrolls down");
+        assert!(!snap_wheel(&mut s, notch(100.0), AT_BOTTOM, 4.0), "and back up");
         assert_eq!(s.warps.page, WarpPage::History);
     }
 
@@ -1531,26 +1413,53 @@ mod tests {
     fn a_trackpad_turns_the_page_once_it_pulls_far_enough() {
         let mut s = ui();
         for i in 0..5 {
-            assert!(snap_wheel(&mut s, -10.0, false, false, AT_BOTTOM, 1.0 + i as f64 * 0.016));
+            assert!(snap_wheel(&mut s, swipe(-10.0), AT_BOTTOM, 1.0 + i as f64 * 0.016));
         }
         assert_eq!(s.warps.page, WarpPage::Banner, "50 points isn't enough");
         // A pause starts the pull over
-        assert!(snap_wheel(&mut s, -10.0, false, false, AT_BOTTOM, 2.0));
+        assert!(snap_wheel(&mut s, swipe(-10.0), AT_BOTTOM, 2.0));
         assert_eq!(s.warps.page, WarpPage::Banner);
         for i in 1..6 {
-            snap_wheel(&mut s, -10.0, false, false, AT_BOTTOM, 2.0 + i as f64 * 0.016);
+            snap_wheel(&mut s, swipe(-10.0), AT_BOTTOM, 2.0 + i as f64 * 0.016);
         }
         assert_eq!(s.warps.page, WarpPage::History);
         // Coasting after the fingers lift never turns it
         let mut s = ui();
         for i in 0..20 {
-            snap_wheel(&mut s, -30.0, false, true, AT_BOTTOM, 1.0 + i as f64 * 0.016);
+            snap_wheel(&mut s, coast(-30.0), AT_BOTTOM, 1.0 + i as f64 * 0.016);
         }
         assert_eq!(s.warps.page, WarpPage::Banner);
     }
 
     fn ui() -> Ui {
         Ui::new(Settings::default())
+    }
+
+    /// A notch of a mouse wheel
+    fn notch(dy: f32) -> Wheel {
+        Wheel {
+            dy,
+            notch: true,
+            momentum: false,
+        }
+    }
+
+    /// A trackpad's fingers moving
+    fn swipe(dy: f32) -> Wheel {
+        Wheel {
+            dy,
+            notch: false,
+            momentum: false,
+        }
+    }
+
+    /// A trackpad coasting after the fingers lifted
+    fn coast(dy: f32) -> Wheel {
+        Wheel {
+            dy,
+            notch: false,
+            momentum: true,
+        }
     }
 
     #[test]
@@ -1619,20 +1528,20 @@ mod tests {
     fn a_requested_port_is_saved_once_the_server_runs_on_it() {
         let mut ui = ui();
         ui.sync_opened(23313);
-        ui.port_edit.replace_text("4000");
+        ui.port.edit.replace_text("4000");
         ui.apply_port();
-        assert_eq!(ui.pending_port, Some(4000));
+        assert_eq!(ui.port.pending, Some(4000));
         assert_eq!(ui.settings.ws_port, 23313);
 
         ui.sync_opened(4000);
         assert_eq!(ui.settings.ws_port, 4000);
-        assert_eq!(ui.pending_port, None);
+        assert_eq!(ui.port.pending, None);
     }
 
     #[test]
     fn port_zero_is_saved_as_zero() {
         let mut ui = ui();
-        ui.port_edit.replace_text("0");
+        ui.port.edit.replace_text("0");
         ui.apply_port();
         ui.sync_opened(51234);
         assert_eq!(ui.settings.ws_port, 0);
@@ -1643,12 +1552,12 @@ mod tests {
     fn a_port_that_cant_be_opened_keeps_the_running_server() {
         let mut ui = ui();
         ui.sync_opened(23313);
-        ui.port_edit.replace_text("80");
+        ui.port.edit.replace_text("80");
         ui.apply_port();
-        ui.sync_failed("Address already in use, please close any other instances".into());
+        ui.sync_failed(ServerError::PortInUse(80));
         assert_eq!(ui.sync, LiveSync::Running { port: 23313, clients: 0 });
         assert_eq!(
-            ui.port_error.as_deref(),
+            ui.port.error.as_deref(),
             Some("Port 80 is in use. Close other copies or choose another port.")
         );
         assert_eq!(ui.settings.ws_port, 23313);
@@ -1657,20 +1566,20 @@ mod tests {
     #[test]
     fn a_server_that_never_started_reports_why() {
         let mut ui = ui();
-        ui.sync_failed("Address already in use, please close any other instances".into());
+        ui.sync_failed(ServerError::PortInUse(23313));
         let expected = "Port 23313 is in use. Close other copies or choose another port.";
         assert_eq!(ui.sync, LiveSync::Failed(expected.into()));
-        ui.sync_failed("permission denied".into());
+        ui.sync_failed(ServerError::Other("permission denied".into()));
         assert_eq!(ui.sync, LiveSync::Failed("permission denied".into()));
     }
 
     #[test]
     fn text_that_isnt_a_port_is_refused() {
         let mut ui = ui();
-        ui.port_edit.replace_text("70000");
+        ui.port.edit.replace_text("70000");
         ui.apply_port();
-        assert!(ui.port_error.is_some());
-        assert_eq!(ui.pending_port, None);
+        assert!(ui.port.error.is_some());
+        assert_eq!(ui.port.pending, None);
     }
 
     #[test]
@@ -1700,23 +1609,33 @@ mod tests {
         ui.settings.background_image = "wallpaper.png".into();
         ui.remove_background();
         assert!(ui.settings.background_image.is_empty());
-        assert!(ui.background.is_none());
+        assert!(ui.background.loaded.is_none());
     }
 
     #[test]
-    fn settings_from_before_the_rewrite_keep_their_background_and_tray_choice() {
-        let old = r#"{"background_image":"C:\\bg.png","image_fit":"Contain","background_opacity":0.3,"text_shadow_enabled":true,
-            "always_update":false,"minimize_to_tray_on_close":true,"minimize_to_tray_on_minimize":true,"run_on_start":false,
-            "start_minimized":false,"ws_port":4000}"#;
-        let settings: Settings = serde_json::from_str(old).unwrap();
-        assert_eq!(settings.background_image, "C:\\bg.png");
-        assert_eq!(settings.image_fit, ImageFit::Contain);
-        assert_eq!(settings.background_opacity, 0.3);
-        assert!(settings.close_to_tray);
-        assert_eq!(settings.ws_port, 4000);
-        // Older files have no theme or accent, they get the defaults
-        assert_eq!(settings.theme, super::super::settings::ThemeMode::System);
-        assert_eq!(settings.accent, super::super::settings::Accent::Gold);
+    fn removing_the_background_forgets_its_colors() {
+        let mut ui = ui();
+        ui.settings.background_image = "wallpaper.png".into();
+        let white = rune::Color {
+            r: 1.0,
+            g: 1.0,
+            b: 1.0,
+            a: 1.0,
+        };
+        ui.background.edges = Some([white; 4]);
+        ui.background.sample = Some(std::sync::Arc::new(background::Sample {
+            width: 1,
+            height: 1,
+            rgba: vec![255; 4],
+        }));
+        ui.background.dropper = true;
+        ui.remove_background();
+        assert!(ui.background.edges.is_none() && ui.background.sample.is_none() && !ui.background.dropper);
+        // The color around the image falls back to the window's, not the removed image's edges
+        assert_eq!(
+            ui.background_color(rune::Color::BLACK).hex(),
+            rune_kit::Hsv::of(rune::Color::BLACK).hex()
+        );
     }
 
     #[test]
@@ -1731,9 +1650,4 @@ mod tests {
         assert!(ui.expire(now + CAPTURE_ERROR_TTL));
         assert!(ui.capture.error.is_none());
     }
-}
-
-/// 0 to 1, to the nearest whole percent
-fn whole_percent(v: f32) -> f32 {
-    (v.clamp(0.0, 1.0) * 100.0).round() / 100.0
 }

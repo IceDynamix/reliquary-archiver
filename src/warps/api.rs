@@ -21,19 +21,24 @@ pub struct HistoryKey {
     pub game_biz: String,
 }
 
+/// The history's server and game name for mainland China's accounts, and everyone else's
+const MAINLAND: (&str, &str) = ("public-operation-hkrpg.mihoyo.com", "hkrpg_cn");
+const GLOBAL: (&str, &str) = ("public-operation-hkrpg-sg.hoyoverse.com", "hkrpg_global");
+
 impl HistoryKey {
-    /// The server an account's history is on
-    pub fn for_account(uid: u32, authkey: String) -> Self {
-        let (host, game_biz) = if super::is_mainland(uid) {
-            ("public-operation-hkrpg.mihoyo.com", "hkrpg_cn")
-        } else {
-            ("public-operation-hkrpg-sg.hoyoverse.com", "hkrpg_global")
-        };
+    /// The server a region's history is on
+    pub fn for_region(mainland: bool, authkey: String) -> Self {
+        let (host, game_biz) = if mainland { MAINLAND } else { GLOBAL };
         Self {
             authkey,
             host: host.into(),
             game_biz: game_biz.into(),
         }
+    }
+
+    /// The server an account's history is on
+    pub fn for_account(uid: u32, authkey: String) -> Self {
+        Self::for_region(super::is_mainland(uid), authkey)
     }
 }
 
@@ -46,6 +51,8 @@ pub enum ApiError {
     /// Asked too often, try again later
     Throttled,
     Network(String),
+    /// The server answered with something that isn't a history page
+    Malformed(String),
     Other(i64, String),
 }
 
@@ -56,6 +63,7 @@ impl std::fmt::Display for ApiError {
             ApiError::Rejected(message) => write!(f, "the authkey was refused ({message})"),
             ApiError::Throttled => write!(f, "the server asks to slow down"),
             ApiError::Network(message) => write!(f, "couldn't reach the server: {message}"),
+            ApiError::Malformed(message) => write!(f, "the server's answer didn't make sense: {message}"),
             ApiError::Other(code, message) => write!(f, "the server said {message} ({code})"),
         }
     }
@@ -88,26 +96,25 @@ struct Record {
 
 /// The longest wait after being told to slow down, the waits before it double up from 2 seconds
 const THROTTLE_GIVE_UP: Duration = Duration::from_secs(32);
+/// The pause between pages, the server refuses clients that ask too fast
+const PACE: Duration = Duration::from_millis(600);
+const TIMEOUT: Duration = Duration::from_secs(20);
+/// The most pulls the server gives in a page
+const PAGE_SIZE: u32 = 20;
 
 /// Fetches pages
 pub struct Client {
     agent: ureq::Agent,
     key: HistoryKey,
-    /// The pause between pages, the server refuses clients that ask too fast
-    pace: Duration,
 }
 
 impl Client {
     pub fn new(key: HistoryKey) -> Self {
         let agent = ureq::AgentBuilder::new()
-            .timeout(Duration::from_secs(20))
+            .timeout(TIMEOUT)
             .user_agent(concat!("reliquary-archiver/", env!("CARGO_PKG_VERSION")))
             .build();
-        Self {
-            agent,
-            key,
-            pace: Duration::from_millis(600),
-        }
+        Self { agent, key }
     }
 
     /// One page of a pool, the pulls before `end_id` (0 for the newest). When the server asks to
@@ -143,12 +150,15 @@ impl Client {
             .query("size", &size.to_string())
             .query("end_id", &end_id.to_string());
 
-        let response: Response = request
-            .call()
-            .map_err(|e| ApiError::Network(e.to_string()))?
-            .into_string()
-            .map_err(|e| ApiError::Network(e.to_string()))
-            .and_then(|body| serde_json::from_str(&body).map_err(|e| ApiError::Other(0, format!("unexpected response: {e}"))))?;
+        let body = match request.call() {
+            Ok(response) => response.into_string().map_err(|e| ApiError::Network(e.to_string()))?,
+            Err(ureq::Error::Status(429 | 503, _)) => return Err(ApiError::Throttled),
+            Err(ureq::Error::Status(code, response)) => {
+                return Err(ApiError::Other(code.into(), response.status_text().to_owned()));
+            }
+            Err(e) => return Err(ApiError::Network(e.to_string())),
+        };
+        let response: Response = serde_json::from_str(&body).map_err(|e| ApiError::Malformed(e.to_string()))?;
 
         match response.retcode {
             0 => {}
@@ -157,23 +167,25 @@ impl Client {
             -110 => return Err(ApiError::Throttled),
             code => return Err(ApiError::Other(code, response.message)),
         }
-        let page = response.data.ok_or_else(|| ApiError::Other(0, "no data".into()))?;
+        let page = response.data.ok_or_else(|| ApiError::Malformed("no data".into()))?;
         page.list.iter().map(|record| to_pull(record, page.region_time_zone)).collect()
     }
 
     /// The pause the server wants between requests
     pub fn pause(&self) {
-        std::thread::sleep(self.pace);
+        std::thread::sleep(PACE);
     }
 
     /// Which account the key belongs to, from its newest pull in any pool. `None` for an account
     /// that never warped
     pub fn account(&self) -> Result<Option<u32>, ApiError> {
-        for pool in [Pool::Character, Pool::Standard, Pool::LightCone, Pool::Departure] {
+        for (i, pool) in Pool::ALL.into_iter().enumerate() {
+            if i > 0 {
+                self.pause();
+            }
             if let Some(pull) = self.page(pool, 0, 1)?.first() {
                 return Ok(Some(pull.uid));
             }
-            std::thread::sleep(self.pace);
         }
         Ok(None)
     }
@@ -184,12 +196,12 @@ impl Client {
         let mut pulls = Vec::new();
         let mut end_id = 0;
         loop {
-            let page = self.page(pool, end_id, 20)?;
+            let page = self.page(pool, end_id, PAGE_SIZE)?;
             let Some(last) = page.last() else {
                 break;
             };
             end_id = last.id.unwrap_or_default();
-            let full = page.len() == 20;
+            let full = page.len() == PAGE_SIZE as usize;
             let mut reached_known = false;
             for pull in page {
                 if known(pull.id.unwrap_or_default()) {
@@ -202,7 +214,7 @@ impl Client {
             if reached_known || !full {
                 break;
             }
-            std::thread::sleep(self.pace);
+            self.pause();
         }
         debug!(?pool, fetched = pulls.len(), "fetched warp history");
         Ok(pulls)
@@ -210,23 +222,23 @@ impl Client {
 }
 
 fn to_pull(record: &Record, time_zone: i32) -> Result<Pull, ApiError> {
-    let bad = |what: &str| ApiError::Other(0, format!("unexpected {what} in the history: {record:?}"));
-    let number = |text: &str, what: &str| text.parse::<i64>().map_err(|_| bad(what));
-    let gacha_type = number(&record.gacha_type, "warp type")? as u32;
-    let pool = Pool::from_gacha_type(gacha_type).ok_or_else(|| bad("warp type"))?;
+    fn number<T: std::str::FromStr>(text: &str, what: &str, record: &Record) -> Result<T, ApiError> {
+        text.parse()
+            .map_err(|_| ApiError::Malformed(format!("unexpected {what} in the history: {record:?}")))
+    }
+    let pool = Pool::from_gacha_type(number(&record.gacha_type, "warp type", record)?)
+        .ok_or_else(|| ApiError::Malformed(format!("unknown warp type in the history: {record:?}")))?;
     // The server's own time of day, `time_zone` hours ahead of UTC
-    let local = jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", &record.time)
-        .ok()
-        .and_then(|t| t.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok())
-        .ok_or_else(|| bad("time"))?;
+    let local =
+        super::parse_datetime(&record.time).ok_or_else(|| ApiError::Malformed(format!("unexpected time in the history: {record:?}")))?;
     Ok(Pull {
-        id: Some(number(&record.id, "id")?),
-        uid: number(&record.uid, "uid")? as u32,
+        id: Some(number(&record.id, "id", record)?),
+        uid: number(&record.uid, "uid", record)?,
         pool,
-        gacha_id: number(&record.gacha_id, "banner")? as u32,
-        item_id: number(&record.item_id, "item")? as u32,
-        rarity: number(&record.rank_type, "rarity")? as u8,
-        time: local.timestamp().as_second() - i64::from(time_zone) * 3600,
+        gacha_id: number(&record.gacha_id, "banner", record)?,
+        item_id: number(&record.item_id, "item", record)?,
+        rarity: number(&record.rank_type, "rarity", record)?,
+        time: local - i64::from(time_zone) * 3600,
         request_no: None,
         batch_index: 0,
         sources: source::API,

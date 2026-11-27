@@ -5,8 +5,7 @@ use reliquary::resource::excel::{
     RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
 };
 use reliquary::resource::text_map::TextMap;
-use serde::de::DeserializeOwned;
-use tracing::{info, instrument};
+use tracing::instrument;
 
 pub struct Database {
     pub avatar_config: AvatarConfigMap,
@@ -33,34 +32,32 @@ impl Default for Database {
     }
 }
 
+/// Parses a config file that the build script wrote to OUT_DIR
+macro_rules! config {
+    ($file:literal) => {
+        serde_json::from_str(include_str!(concat!(env!("OUT_DIR"), "/", $file))).unwrap()
+    };
+}
+
 impl Database {
+    /// Trailblazer avatar ids start here, one for each path and gender
+    const FIRST_TRAILBLAZER_ID: u32 = 8000;
+
     #[instrument(name = "config_map")]
     pub fn new() -> Self {
-        info!("using local database");
-
-        // config files are downloaded by the build script
-        //
-        // i *would* create a fn load_local_config<T: ResourceMap + DeserializeOwned>()
-        // to avoid duplicating the json file names by using T::get_json_name,
-        // but concat!() only takes string literals. it doesn't even take `&'static str`!!
-        // https://github.com/rust-lang/rust/issues/53749
         Database {
-            avatar_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/AvatarConfig.json"))),
-            avatar_ex_rank_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/AvatarExRankConfig.json"))),
-            avatar_skill_tree_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/AvatarSkillTreeConfig.json"))),
-            equipment_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/EquipmentConfig.json"))),
-            item_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/ItemConfig.json"))),
-            multipath_avatar_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/MultiplePathAvatarConfig.json"))),
-            relic_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicConfig.json"))),
-            relic_set_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicSetConfig.json"))),
-            relic_main_affix_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicMainAffixConfig.json"))),
-            relic_sub_affix_config: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/RelicSubAffixConfig.json"))),
-            text_map: Self::parse_json(include_str!(concat!(env!("OUT_DIR"), "/TextMapEN.json"))),
+            avatar_config: config!("AvatarConfig.json"),
+            avatar_ex_rank_config: config!("AvatarExRankConfig.json"),
+            avatar_skill_tree_config: config!("AvatarSkillTreeConfig.json"),
+            equipment_config: config!("EquipmentConfig.json"),
+            item_config: config!("ItemConfig.json"),
+            multipath_avatar_config: config!("MultiplePathAvatarConfig.json"),
+            relic_config: config!("RelicConfig.json"),
+            relic_set_config: config!("RelicSetConfig.json"),
+            relic_main_affix_config: config!("RelicMainAffixConfig.json"),
+            relic_sub_affix_config: config!("RelicSubAffixConfig.json"),
+            text_map: config!("TextMapEN.json"),
         }
-    }
-
-    fn parse_json<T: DeserializeOwned>(str: &'static str) -> T {
-        serde_json::de::from_str(str).unwrap()
     }
 
     /// The English name of a character or light cone that can be pulled from a warp
@@ -98,12 +95,17 @@ impl Database {
         self.equipment_config.get(&item_id).is_some()
     }
 
+    /// Whether the avatar is one of the trailblazers
+    pub fn is_trailblazer(avatar_id: u32) -> bool {
+        avatar_id >= Self::FIRST_TRAILBLAZER_ID
+    }
+
     pub(crate) fn lookup_avatar_name(&self, avatar_id: u32) -> Option<String> {
         if avatar_id == 0 {
             return None;
         }
 
-        if avatar_id >= 8000 {
+        if Self::is_trailblazer(avatar_id) {
             Some("Trailblazer".to_owned())
         } else {
             let cfg = self.avatar_config.get(&avatar_id)?;

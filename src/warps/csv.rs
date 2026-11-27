@@ -8,11 +8,16 @@
 //!
 //! Pulls seen live that the game's history doesn't have yet are written without an id. Reading skips
 //! them, as an import from anywhere else would: the game's history fills them in.
+//!
+//! `result` is how a 4 or 5 star on a banner with a raised rate turned out: `won`, `lost` or
+//! `guaranteed`, or empty when that isn't known from a record of the banner. Reading it tells what
+//! banners featured, as a Star Rail Station backup does.
 
+use super::stats::{Outcome, RateUps};
 use super::{Pool, Pull};
 
 /// The columns written, in order
-const COLUMNS: [&str; 11] = [
+const COLUMNS: [&str; 12] = [
     "id",
     "uid",
     "gacha_type",
@@ -24,13 +29,15 @@ const COLUMNS: [&str; 11] = [
     "time",
     "request_no",
     "batch_index",
+    "result",
 ];
 
-/// The pulls as CSV, in the order given, with `name` naming each item
-pub fn write(pulls: &[Pull], name: impl Fn(u32) -> Option<String>) -> String {
+/// The pulls as CSV, in the order given, with `outcomes` their outcomes in the same order and
+/// `name` naming each item
+pub fn write(pulls: &[Pull], outcomes: &[Outcome], name: impl Fn(u32) -> Option<String>) -> String {
     let mut out = COLUMNS.join(",");
     out.push('\n');
-    for pull in pulls {
+    for (i, pull) in pulls.iter().enumerate() {
         let time = jiff::Timestamp::from_second(pull.time)
             .map_or_else(|_| pull.time.to_string(), |t| t.strftime("%Y-%m-%dT%H:%M:%SZ").to_string());
         let fields = [
@@ -45,6 +52,13 @@ pub fn write(pulls: &[Pull], name: impl Fn(u32) -> Option<String>) -> String {
             time,
             pull.request_no.map_or_else(String::new, |n| n.to_string()),
             pull.batch_index.to_string(),
+            match outcomes.get(i) {
+                Some(Outcome::Won) => "won",
+                Some(Outcome::Lost) => "lost",
+                Some(Outcome::Guaranteed) => "guaranteed",
+                _ => "",
+            }
+            .to_string(),
         ];
         let row: Vec<String> = fields.iter().map(|field| quoted(field)).collect();
         out.push_str(&row.join(","));
@@ -65,55 +79,64 @@ fn quoted(field: &str) -> String {
 
 /// What reading a CSV found
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Read {
+pub struct CsvImport {
     /// The pulls with an id, `uid` 0 (the account they go into decides it)
     pub pulls: Vec<Pull>,
     /// Rows without an id: pulls the game's history didn't have yet when they were written
     pub without_id: usize,
+    /// What each banner featured, from the `result` column
+    pub rate_ups: RateUps,
 }
 
 /// The pulls in a CSV. `rarity` gives an item's rarity when the file has no `rarity` column, or
 /// an empty one. Fails on the first row it can't read, naming it
-pub fn read(text: &str, rarity: impl Fn(u32) -> Option<u8>) -> Result<Read, String> {
+pub fn read(text: &str, rarity: impl Fn(u32) -> Option<u8>) -> Result<CsvImport, String> {
     let mut rows = rows(text.trim_start_matches('\u{feff}'));
     let header = rows.next().ok_or("the file is empty")?;
     let column = |name: &str| header.iter().position(|h| h.trim().eq_ignore_ascii_case(name));
-    let missing = ["id", "gacha_type", "gacha_id", "item_id", "time"]
-        .into_iter()
-        .filter(|name| column(name).is_none())
-        .collect::<Vec<_>>();
-    if !missing.is_empty() {
+    let required = ["id", "gacha_type", "gacha_id", "item_id", "time"];
+    let [Some(id), Some(gacha_type), Some(gacha_id), Some(item_id), Some(time)] = required.map(column) else {
+        let missing: Vec<&str> = required.into_iter().filter(|name| column(name).is_none()).collect();
         return Err(format!("it has no {} column", missing.join(", ")));
-    }
-    let at = |name: &str| column(name).unwrap_or(usize::MAX);
-    let (id, gacha_type, gacha_id, item_id, time) = (at("id"), at("gacha_type"), at("gacha_id"), at("item_id"), at("time"));
+    };
     let (rarity_at, request_no, batch_index) = (column("rarity"), column("request_no"), column("batch_index"));
+    let result = column("result");
 
-    let mut read = Read::default();
+    let mut read = CsvImport::default();
     for (n, row) in rows.enumerate() {
         // Line numbers as a spreadsheet shows them, the header being line 1
         let line = n + 2;
         if row.iter().all(|field| field.trim().is_empty()) {
             continue;
         }
-        let field = |i: Option<usize>| i.and_then(|i| row.get(i)).map(|f| f.trim()).filter(|f| !f.is_empty());
+        let opt_field = |i: Option<usize>| i.and_then(|i| row.get(i)).map(|f| f.trim()).filter(|f| !f.is_empty());
+        let field = |i: usize| opt_field(Some(i));
         let bad = |what: &str| format!("row {line} has no usable {what}");
-        let Some(id) = field(Some(id)) else {
+        let Some(id) = field(id) else {
             read.without_id += 1;
             continue;
         };
         let id: i64 = id.parse().map_err(|_| bad("id"))?;
-        let pool = field(Some(gacha_type))
+        let pool = field(gacha_type)
             .and_then(|t| t.parse().ok())
             .and_then(Pool::from_gacha_type)
             .ok_or_else(|| bad("gacha_type"))?;
-        let gacha_id: u32 = field(Some(gacha_id)).and_then(|g| g.parse().ok()).ok_or_else(|| bad("gacha_id"))?;
-        let item_id: u32 = field(Some(item_id)).and_then(|i| i.parse().ok()).ok_or_else(|| bad("item_id"))?;
-        let time = field(Some(time)).and_then(parse_time).ok_or_else(|| bad("time"))?;
-        let rarity = field(rarity_at)
+        let gacha_id: u32 = field(gacha_id).and_then(|g| g.parse().ok()).ok_or_else(|| bad("gacha_id"))?;
+        let item_id: u32 = field(item_id).and_then(|i| i.parse().ok()).ok_or_else(|| bad("item_id"))?;
+        let time = field(time).and_then(parse_time).ok_or_else(|| bad("time"))?;
+        let rarity = opt_field(rarity_at)
             .and_then(|r| r.parse().ok())
             .or_else(|| rarity(item_id))
             .ok_or_else(|| bad("rarity"))?;
+        let featured = match opt_field(result).map(str::to_ascii_lowercase).as_deref() {
+            Some("won" | "guaranteed") => Some(true),
+            Some("lost") => Some(false),
+            _ => None,
+        };
+        if let Some(featured) = featured {
+            let banner = read.rate_ups.entry(gacha_id).or_default();
+            if featured { &mut banner.items } else { &mut banner.not }.insert(item_id);
+        }
         read.pulls.push(Pull {
             id: Some(id),
             uid: 0,
@@ -122,8 +145,8 @@ pub fn read(text: &str, rarity: impl Fn(u32) -> Option<u8>) -> Result<Read, Stri
             item_id,
             rarity,
             time,
-            request_no: field(request_no).and_then(|r| r.parse().ok()),
-            batch_index: field(batch_index).and_then(|b| b.parse().ok()).unwrap_or(0),
+            request_no: opt_field(request_no).and_then(|r| r.parse().ok()),
+            batch_index: opt_field(batch_index).and_then(|b| b.parse().ok()).unwrap_or(0),
             sources: 0,
         });
     }
@@ -135,10 +158,7 @@ fn parse_time(text: &str) -> Option<i64> {
     if let Ok(t) = text.parse::<jiff::Timestamp>() {
         return Some(t.as_second());
     }
-    if let Ok(t) = jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", text) {
-        return t.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok().map(|t| t.timestamp().as_second());
-    }
-    text.parse().ok()
+    super::parse_datetime(text).or_else(|| text.parse().ok())
 }
 
 /// The rows of a CSV, each its fields: quoted fields may hold commas, doubled quotes and line
@@ -195,10 +215,10 @@ mod tests {
             pull(Some(1_700_000_000_000_000_067), 1006, 5, 1_700_000_000),
             pull(Some(1_700_000_000_000_001_067), 20000, 3, 1_700_000_060),
         ];
-        let text = write(&pulls, |item| {
+        let text = write(&pulls, &[], |item| {
             Some(if item == 1006 { "Silver Wolf".into() } else { "Arrows".into() })
         });
-        assert!(text.starts_with("id,uid,gacha_type,pool,gacha_id,item_id,name,rarity,time,request_no,batch_index\n"));
+        assert!(text.starts_with("id,uid,gacha_type,pool,gacha_id,item_id,name,rarity,time,request_no,batch_index,result\n"));
         assert!(text.contains(",Silver Wolf,5,2023-11-14T22:13:20Z,"));
         let read = read(&text, |_| None).unwrap();
         let expected: Vec<Pull> = pulls
@@ -211,18 +231,36 @@ mod tests {
             .collect();
         assert_eq!(read.pulls, expected);
         assert_eq!(read.without_id, 0);
+        assert!(read.rate_ups.is_empty());
+    }
+
+    #[test]
+    fn results_tell_what_banners_featured() {
+        let pulls = [
+            pull(Some(1), 1003, 5, 0),
+            pull(Some(2), 1006, 5, 1),
+            pull(Some(3), 1102, 5, 2),
+            pull(Some(4), 20000, 3, 3),
+        ];
+        let outcomes = [Outcome::Lost, Outcome::Guaranteed, Outcome::Won, Outcome::None];
+        let text = write(&pulls, &outcomes, |_| None);
+        assert!(text.contains(",lost\n") && text.contains(",guaranteed\n") && text.contains(",won\n"));
+        let read = read(&text, |_| None).unwrap();
+        let banner = &read.rate_ups[&2142];
+        assert_eq!(banner.items, [1006, 1102].into_iter().collect());
+        assert_eq!(banner.not, [1003].into_iter().collect());
     }
 
     #[test]
     fn names_with_commas_and_quotes_are_quoted() {
-        let text = write(&[pull(Some(1), 21000, 4, 0)], |_| Some("Before Dawn, \"the\" cone".into()));
+        let text = write(&[pull(Some(1), 21000, 4, 0)], &[], |_| Some("Before Dawn, \"the\" cone".into()));
         assert!(text.contains(",\"Before Dawn, \"\"the\"\" cone\",4,"));
         assert_eq!(read(&text, |_| None).unwrap().pulls.len(), 1);
     }
 
     #[test]
     fn live_pulls_are_written_without_an_id_and_skipped_on_reading() {
-        let text = write(&[pull(None, 1006, 5, 0), pull(Some(7), 1006, 5, 0)], |_| None);
+        let text = write(&[pull(None, 1006, 5, 0), pull(Some(7), 1006, 5, 0)], &[], |_| None);
         let read = read(&text, |_| None).unwrap();
         assert_eq!(read.pulls.len(), 1);
         assert_eq!(read.without_id, 1);

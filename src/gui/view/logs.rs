@@ -38,18 +38,8 @@ pub fn dialog(s: &Ui, cx: &Cx<Ui>, t: &Theme, layer: &mut Vec<El>) {
                 .key("log-level"),
         )
         .child(col().grow(1.0))
-        .child(pill("copy-logs", "Copy all", None, Pill::Secondary, true, t, |_, tx: &mut Tx| {
-            tx.copy(crate::logging::lines().join("\n"))
-        }))
-        .child(pill(
-            "save-logs",
-            "Save…",
-            None,
-            Pill::Secondary,
-            true,
-            t,
-            |s: &mut Ui, tx: &mut Tx| s.save_logs(tx),
-        ));
+        .child(pill("copy-logs", "Copy all", Pill::Secondary).build(t, |_, tx: &mut Tx| tx.copy(crate::logging::lines().join("\n"))))
+        .child(pill("save-logs", "Save…", Pill::Secondary).build(t, |s: &mut Ui, tx: &mut Tx| s.save_logs(tx)));
 
     let lines = s.log_tail.iter().enumerate().map(|(i, line)| log_line(i, line, t));
     let log = col()
@@ -90,21 +80,21 @@ pub fn dialog(s: &Ui, cx: &Cx<Ui>, t: &Theme, layer: &mut Vec<El>) {
 
 /// A line with its time faded and its level colored, wrapping as one paragraph
 fn log_line(i: usize, line: &str, t: &Theme) -> El {
-    let mut words = line.split_whitespace();
-    let (Some(time), Some(level)) = (words.next(), words.next()) else {
-        return text(line.to_string())
+    // One that isn't a time and a level, as it is
+    let plain = || {
+        text(line.to_string())
             .key(format!("line-{i}"))
             .font(theme::MONO)
             .color(t.muted)
-            .wrap_anywhere();
+            .wrap_anywhere()
+    };
+    let mut words = line.split_whitespace();
+    let (Some(time), Some(level)) = (words.next(), words.next()) else {
+        return plain();
     };
     let message = line[line.find(level).map_or(0, |at| at + level.len())..].trim_start();
     if !matches!(level, "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE") {
-        return text(line.to_string())
-            .key(format!("line-{i}"))
-            .font(theme::MONO)
-            .color(t.muted)
-            .wrap_anywhere();
+        return plain();
     }
     // 2026-11-07T21:12:40.120Z shows as 21:12:40
     let time = time.split('T').nth(1).map_or(time, |clock| clock.get(..8).unwrap_or(clock));

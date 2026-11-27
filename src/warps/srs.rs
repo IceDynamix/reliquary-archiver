@@ -96,7 +96,10 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
             continue;
         }
         let suffixes: HashSet<i64> = pulls.iter().filter_map(|p| p.id).map(|id| id.rem_euclid(100)).collect();
-        let uid_suffix = (suffixes.len() == 1).then(|| *suffixes.iter().next().unwrap() as u32);
+        let uid_suffix = match suffixes.into_iter().collect::<Vec<_>>()[..] {
+            [only] => u32::try_from(only).ok(),
+            _ => None,
+        };
         profiles.push(Profile {
             key: key.to_string(),
             name: names.get(key).cloned().unwrap_or_else(|| key.to_string()),
@@ -110,7 +113,9 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
 }
 
 fn to_pull(item: &Value, pool: Pool) -> Option<(Pull, i64)> {
-    let number = |name: &str| item.get(name).and_then(Value::as_i64);
+    fn number<T: TryFrom<i64>>(item: &Value, name: &str) -> Option<T> {
+        item.get(name)?.as_i64()?.try_into().ok()
+    }
     // Pulls the user typed in themselves have no id from the game
     if item.get("manual").and_then(Value::as_bool) == Some(true) {
         return None;
@@ -120,15 +125,15 @@ fn to_pull(item: &Value, pool: Pool) -> Option<(Pull, i64)> {
         id: Some(id),
         uid: 0,
         pool,
-        gacha_id: number("gachaId")? as u32,
-        item_id: number("itemId")? as u32,
-        rarity: number("rarity")? as u8,
-        time: number("timestamp")? / 1000,
+        gacha_id: number(item, "gachaId")?,
+        item_id: number(item, "itemId")?,
+        rarity: number(item, "rarity")?,
+        time: number::<i64>(item, "timestamp")? / 1000,
         request_no: None,
         batch_index: 0,
         sources: source::SRS,
     };
-    Some((pull, number("result").unwrap_or(0)))
+    Some((pull, number(item, "result").unwrap_or(0)))
 }
 
 #[cfg(test)]
@@ -165,6 +170,8 @@ mod tests {
 /// Checks the stats against what Star Rail Station worked out for the same pulls
 #[cfg(test)]
 mod agreement {
+    use reliquary_archiver::export::database::get_database;
+
     use super::*;
     use crate::warps::stats::{Outcome, pool_stats};
 
@@ -185,7 +192,7 @@ mod agreement {
             let Some(theirs) = store["types"].get(t.to_string()) else {
                 continue;
             };
-            let ours = pool_stats(pool, &refs, &profile.rate_ups);
+            let ours = pool_stats(pool, &refs, &profile.rate_ups, |item| get_database().warp_item_rarity(item));
             println!(
                 "{pool:?}: pity5 {} vs {}, pity4 {} vs {}, guarantee5 {:?} vs {}",
                 ours.pity5, theirs["pity5"], ours.pity4, theirs["pity4"], ours.guarantee5, theirs["guarantee5"]

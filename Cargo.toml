@@ -11,7 +11,6 @@ readme = "README.md"
 
 [dependencies]
 async-stream = "0.3.6"
-base64 = "0.22.1"
 clap = { version = "4.5.31", features = ["derive"] }
 color-eyre = "0.6.3"
 jiff = "1.0.3"
@@ -30,7 +29,6 @@ reliquary = { path = "../reliquary", features = [
     "proto-rqa",
     "proto-auth",
 ] }
-ctrlc = "3.4.5"
 tokio = { version = "1.44.2", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
@@ -40,8 +38,8 @@ tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 # unreleased 3.0: sets immediate mode on Windows (rust-pcap/pcap#381) and reports a vanished interface as its own error
 pcap = { optional = true, git = "https://github.com/rust-pcap/pcap", rev = "f3476f62e45740e84595754386612f4e354d152a", features = ["capture-stream"] }
-# A local Rune: the `multi-cutout` branch of ../rune, 7286a3c5 with several holes an element
-# (anomalyco/rune#1337). Back to the git rev once that lands upstream
+# A local Rune: the `multi-cutout` branch of ../rune, 1b8ec140 with a color picker in rune-kit
+# (anomalyco/rune#1433). Back to the git rev once that lands upstream
 rune = { optional = true, path = "../rune/crates/rune", default-features = false, features = [
     "accessibility",
     "dbus",

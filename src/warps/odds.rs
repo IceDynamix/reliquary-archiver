@@ -19,7 +19,8 @@ use super::Pool;
 pub struct Rates {
     /// The chance of a 5 star on a pull before soft pity
     pub base: f64,
-    /// Pulls from this one on (counting from 1) get `step` more each
+    /// The first pull (counting from 1) with a raised chance: it gets one `step` more than `base`,
+    /// each pull after it another
     pub soft_from: u32,
     pub step: f64,
     /// The pull that always gives one
@@ -35,11 +36,12 @@ impl Rates {
                 base: 0.008,
                 soft_from: 66,
                 step: 0.07,
-                hard: 80,
+                hard: pool.hard_pity(),
                 featured: Some(0.78125),
             },
             Pool::Character | Pool::CollabCharacter => Rates {
                 featured: Some(0.5625),
+                hard: pool.hard_pity(),
                 ..Self::STANDARD
             },
             Pool::Standard | Pool::Departure => Rates {
@@ -107,12 +109,11 @@ pub fn copies(rates: &Rates, pity: u32, guaranteed: bool, copies: usize) -> Vec<
     let mut out = Vec::with_capacity(copies);
     let mut total = vec![1.0];
     for i in 0..copies {
-        let next = if i == 0 {
-            next_featured(rates, pity, guaranteed)
+        total = if i == 0 {
+            convolve(&total, &next_featured(rates, pity, guaranteed))
         } else {
-            fresh.clone()
+            convolve(&total, &fresh)
         };
-        total = convolve(&total, &next);
         out.push(total.clone());
     }
     out

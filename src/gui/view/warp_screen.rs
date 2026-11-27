@@ -23,7 +23,12 @@ use rune::{
     row, text,
 };
 
-use super::parts::{self, Pill, kicker, lead_ticket_on, perforation, pill, ring_button, rule};
+use self::framing::{MainLayer, art_transform};
+use super::format::{grouped, local, percent};
+use super::parts::{
+    Pill, check_medallion, chip, kicker, lead_ticket_on, medallion, perforation, pill, ring_button, rule, status_dot, tab, track_link,
+};
+use super::warps::{SyncStatus, five_keys};
 use crate::gui::art::{Art, BannerArt, Layer, Ticket};
 use crate::gui::icons;
 use crate::gui::state::{Funds, PageScroll, Roster, Ui, WarpPage, snap_wheel, turn_page};
@@ -31,12 +36,13 @@ use crate::gui::theme::{self, Theme};
 use crate::warps::odds::{self, Rates};
 use crate::warps::service::{RunningBanner, Summary};
 use crate::warps::stats::{Highlight, Outcome, PoolStats};
-use crate::warps::{Pool, source};
+use crate::warps::{FOUR_STAR_PITY, Pool, item};
 
 /// Narrower than this, the screen stacks
 const NARROW: f32 = 760.0;
 /// At least this wide, the rail shows the warps in full
 const WIDE: f32 = 1180.0;
+mod framing;
 mod history;
 
 const PAD: f32 = 30.0;
@@ -66,23 +72,17 @@ const SELECTED_BELOW: f32 = 17.0;
 const HEADROOM: f32 = 46.0;
 /// Where the art's room starts from the top, under the header
 const ART_TOP: f32 = 64.0;
-/// The banner's motif behind the warp card, at this share of its size on the game's reference
-/// screen: smaller than there, as texture rather than picture
-const MOTIF_SCALE: f32 = 1.0;
-/// The share of the art's room a character takes, the same for every character so each carries
-/// the same weight however much art reaches out from them: their person's box, as detected, or
-/// without one the core of their opacity
-const FIGURE_AREA: f32 = 0.3;
-const CORE_AREA: f32 = 0.34;
-/// The share of the room their head takes, as the person's box takes `FIGURE_AREA` for the
-/// typical character
-const HEAD_AREA: f32 = 0.0104;
-/// How much the head decides a character's size against their person's box, which a sprawled
-/// pose widens. Only ever to draw them larger: a big head is a close crop, which the box already
-/// sizes well
-const HEAD_SHARE: f32 = 1.0;
-/// How far past the game's own scale a character with a small core may be drawn
-const MAX_ZOOM: f32 = 1.5;
+/// A narrow window's padding over its content, the header's height there as the art and the shade
+/// under it reckon it, and the gap under the header and under the rail
+const NARROW_TOP: f32 = 14.0;
+const NARROW_HEADER: f32 = 40.0;
+const NARROW_GAP: f32 = 18.0;
+
+/// How far down a narrow window the rail's tickets reach, as the art and the shade under the band
+/// reckon it: past the header, and the rail's ticket without the room it leaves around it
+fn narrow_rail_foot() -> f32 {
+    NARROW_TOP + NARROW_HEADER + NARROW_GAP + COMPACT_TICKET[1]
+}
 
 /// How the screen lays out for the window's width
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -154,6 +154,30 @@ fn rise(el: El, delay: f32) -> El {
     .enter_delay(delay)
 }
 
+/// A warp's short name, on its ticket and the main window's plate
+pub(super) fn label(pool: Pool) -> &'static str {
+    match pool {
+        Pool::Character => "Character",
+        Pool::LightCone => "Light cone",
+        Pool::Standard => "Standard",
+        Pool::CollabCharacter => "Collab",
+        Pool::CollabLightCone => "Collab cone",
+        Pool::Departure => "Departure",
+    }
+}
+
+/// A warp's banner's name, over its warp card
+fn banner_title(pool: Pool) -> &'static str {
+    match pool {
+        Pool::Character => "Character event warp",
+        Pool::LightCone => "Light cone event warp",
+        Pool::Standard => "Stellar warp",
+        Pool::CollabCharacter => "Collab warp",
+        Pool::CollabLightCone => "Collab light cone warp",
+        Pool::Departure => "Departure warp",
+    }
+}
+
 /// Each warp's own color, for when its art has none to give
 fn pool_color(pool: Pool) -> Color {
     match pool {
@@ -165,33 +189,28 @@ fn pool_color(pool: Pool) -> Color {
     }
 }
 
-fn label(pool: Pool) -> &'static str {
-    match pool {
-        Pool::Character => "Character",
-        Pool::LightCone => "Light cone",
-        Pool::Standard => "Standard",
-        Pool::CollabCharacter => "Collab",
-        Pool::CollabLightCone => "Collab cone",
-        Pool::Departure => "Departure",
-    }
-}
-
 fn outcome_color(outcome: Outcome, t: &Theme) -> Color {
     match outcome {
         Outcome::Won => t.good,
-        Outcome::Guaranteed => parts::progress(t),
+        Outcome::Guaranteed => t.gold,
         Outcome::Lost => t.bad,
         Outcome::Unknown | Outcome::None => t.text.alpha(0.45),
     }
 }
 
-fn outcome_words(outcome: Outcome) -> &'static str {
+/// How a 5 star's 50/50 went, when there's something to say
+fn outcome_words(outcome: Outcome) -> Option<&'static str> {
     match outcome {
-        Outcome::Won => "won the 50/50",
-        Outcome::Guaranteed => "guaranteed",
-        Outcome::Lost => "lost the 50/50",
-        Outcome::Unknown | Outcome::None => "",
+        Outcome::Won => Some("won the 50/50"),
+        Outcome::Guaranteed => Some("guaranteed"),
+        Outcome::Lost => Some("lost the 50/50"),
+        Outcome::Unknown | Outcome::None => None,
     }
+}
+
+/// [`outcome_words`] to follow a 5 star's pity: `, won the 50/50`, or nothing
+fn outcome_suffix(outcome: Outcome) -> String {
+    outcome_words(outcome).map_or(String::new(), |words| format!(", {words}"))
 }
 
 /// Everything the screen shows of one pool
@@ -220,7 +239,7 @@ struct Budget {
 
 impl Budget {
     fn of(funds: Funds, pool: Pool) -> Budget {
-        let special = pool != Pool::Standard;
+        let special = pool.pass() == item::SPECIAL_PASS;
         let passes = if special { funds.special_passes } else { funds.passes };
         Budget {
             warps: odds::warps_in_hand(funds.stellar_jade, passes),
@@ -233,7 +252,7 @@ impl Budget {
 
 /// The whole window, as the warp screen
 pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
-    let [width, height] = cx.layout_size("page").unwrap_or([460.0, 700.0]);
+    let [width, height] = super::window_size(cx);
     let fit = Fit::of(width);
 
     let Some(summary) = s.warps_summary() else {
@@ -392,8 +411,8 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
         col()
             .key("warp-content-narrow")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-            .pt(14.0)
-            .gap(18.0)
+            .pt(NARROW_TOP)
+            .gap(NARROW_GAP)
             .child(header(s, Some(pool), accent, t).px(16.0))
             .child(rail(s, summary, pool, fit, t))
             .child(pager(s, [banner, history, import_export], pager_height, shift))
@@ -414,30 +433,22 @@ fn page_spring() -> Spring {
 /// on past its end turns the page (see [`snap_wheel`])
 fn pager(s: &Ui, pages: [El; WarpPage::ALL.len()], height: f32, shift: f32) -> El {
     let page = |which: WarpPage, content: El| {
+        let key = match which {
+            WarpPage::Banner => "warp-page-banner",
+            WarpPage::History => "warp-page-history",
+            WarpPage::ImportExport => "warp-page-import-export",
+        };
         let scroll = s.warps.page_scroll[which as usize].clone();
-        let reported = scroll.clone();
-        col()
-            .key(match which {
-                WarpPage::Banner => "warp-page-banner",
-                WarpPage::History => "warp-page-history",
-                WarpPage::ImportExport => "warp-page-import-export",
-            })
-            .w_full()
+        scrolling(key, content, &scroll)
             .h(height)
             .pt(PAGE_HEADROOM)
-            .child(content)
-            .scroll(rune::ScrollSpec { stick_bottom: false })
-            .scroll_edge_fade(16.0)
-            .on_scroll_offset(move |at: rune::ScrollPos| {
-                reported.set([at.offset[1], at.max[1]]);
-            })
             .on_wheel(move |s: &mut Ui, wheel: rune::WheelEvent, tx: &mut Tx| {
                 // The page out of sight takes nothing, it shouldn't be under the pointer anyway
                 if s.warps.page != which {
                     return true;
                 }
                 let scroll = PageScroll::of(scroll.get());
-                snap_wheel(s, wheel.dy, wheel.notch, wheel.momentum, scroll, tx.clock())
+                snap_wheel(s, wheel.into(), scroll, tx.clock())
             })
     };
     // Reaches up over the gap above it, so what rises over the top of a page (the card's tab) shows
@@ -455,6 +466,20 @@ fn pager(s: &Ui, pages: [El; WarpPage::ALL.len()], height: f32, shift: f32) -> E
                 .offset_motion(page_spring())
                 .children(WarpPage::ALL.into_iter().zip(pages).map(|(which, content)| page(which, content))),
         )
+}
+
+/// `content` in a column that scrolls itself, with `scroll` kept up with where it's scrolled to
+fn scrolling(key: &str, content: El, scroll: &rune::Live<[f32; 2]>) -> El {
+    let reported = scroll.clone();
+    col()
+        .key(key)
+        .w_full()
+        .child(content)
+        .scroll(rune::ScrollSpec { stick_bottom: false })
+        .scroll_edge_fade(16.0)
+        .on_scroll_offset(move |at: rune::ScrollPos| {
+            reported.set([at.offset[1], at.max[1]]);
+        })
 }
 
 /// How tall the art's band is in a narrow window
@@ -498,89 +523,16 @@ fn backdrop(s: &Ui, view: &View, t: &Theme) -> El {
     )
 }
 
-/// The banner's art: its layers placed as the game places them, sliding in at their own speeds.
-/// Without them, the hero's portrait on the right
+/// The banner's art: its layers placed as the game places them (see [`art_transform`]), sliding in
+/// at their own speeds. Without them, the hero's portrait on the right
 fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> El {
-    let wide = fit != Fit::Narrow;
     let Some(item) = view.hero else { return el() };
     let mut stage = el().key("warp-stage").pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)).inert();
 
     if let Some(art) = view.art.as_ref().filter(|art| art.placed())
-        && let Some(main) = art.layer(Layer::Main)
-        && let Some(main_on_screen) = main.on_screen
+        && let Some(main) = art.layer(Layer::Main).and_then(MainLayer::of)
     {
-        // Side by side: the game's screen at the scale that covers the window, as in game, unless
-        // the character would then overflow the room right of the card; then smaller, so the whole
-        // of them fits. They stand in the middle of that room. Narrow: the character fitted into
-        // the band under the tickets
-        let scale = main_on_screen[2] / main.canvas[0];
-        let shown = [
-            main_on_screen[0] + main.rect[0] * scale,
-            main_on_screen[1] + main.rect[1] * scale,
-            main.rect[2] * scale,
-            main.rect[3] * scale,
-        ];
-        let (k, ox, oy) = if wide {
-            let room = fit.stage_from(width);
-            let (room_w, room_h) = ((width - room - PAD).max(1.0), (height - ART_TOP - PAD).max(1.0));
-            let cover = (width / REFERENCE[0]).max(height / REFERENCE[1]);
-            let center = [(room + width - PAD) / 2.0, ART_TOP + room_h / 2.0];
-            match main.weight {
-                // Placed on the character themselves: their person's box (or without one, the core
-                // of their opacity, the body without the props and effects reaching out from it)
-                // takes the same share of the room for everyone, drawn larger by their head's size when
-                // a sprawled pose widens the box, or fills it when it's
-                // much longer one way, and whatever reaches out past the room falls off it. They stand in the
-                // room's middle: the person's box centered, or the center of their opacity across and
-                // the core's middle up and down
-                Some(weight) => {
-                    let at = |x: f32, y: f32| {
-                        [
-                            main_on_screen[0] + x * scale,
-                            main_on_screen[1] + y * main_on_screen[3] / main.canvas[1],
-                        ]
-                    };
-                    let (figure, area) = match weight.person {
-                        Some(person) => (person, FIGURE_AREA),
-                        None => (weight.core, CORE_AREA),
-                    };
-                    let [x0, y0] = at(figure[0], figure[1]);
-                    let [x1, y1] = at(figure[0] + figure[2], figure[1] + figure[3]);
-                    let cx = match weight.person {
-                        Some(_) => (x0 + x1) / 2.0,
-                        None => at(weight.center[0], weight.center[1])[0],
-                    };
-                    let (figure_w, figure_h) = (x1 - x0, y1 - y0);
-                    let by_figure = (area * room_w * room_h / (figure_w * figure_h)).sqrt();
-                    let by_head = weight.person.and(weight.head).map(|head| {
-                        let (head_w, head_h) = (head[2] * scale, head[3] * main_on_screen[3] / main.canvas[1]);
-                        (HEAD_AREA * room_w * room_h / (head_w * head_h)).sqrt()
-                    });
-                    let k = by_head
-                        .map_or(by_figure, |by_head| by_figure.powf(1.0 - HEAD_SHARE) * by_head.powf(HEAD_SHARE))
-                        .max(by_figure)
-                        .min(room_w / figure_w)
-                        .min(room_h / figure_h)
-                        .min(cover * MAX_ZOOM);
-                    (k, center[0] - cx * k, center[1] - (y0 + y1) / 2.0 * k)
-                }
-                None => {
-                    let k = cover.min(room_w / shown[2]).min(room_h / shown[3]);
-                    (
-                        k,
-                        center[0] - (shown[0] + shown[2] / 2.0) * k,
-                        center[1] - (shown[1] + shown[3] / 2.0) * k,
-                    )
-                }
-            }
-        } else {
-            let band = narrow_band(height);
-            let top = 14.0 + 40.0 + 18.0 + COMPACT_TICKET[1] + 18.0;
-            let k = (band * 1.15 / shown[3]).min(width * 1.05 / shown[2]);
-            let ox = width / 2.0 - (shown[0] + shown[2] / 2.0) * k;
-            let oy = top - shown[1] * k;
-            (k, ox, oy)
-        };
+        let (k, ox, oy) = art_transform(&main, [width, height], fit);
         let order = [Layer::Back, Layer::Main, Layer::Front, Layer::Front2];
         for (i, layer) in order.into_iter().enumerate() {
             let Some(placed) = art.layer(layer) else { continue };
@@ -632,7 +584,7 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
                 .combined(Transition::opacity())
                 .springs(art_springs()),
         );
-    if wide {
+    if fit != Fit::Narrow {
         let room = fit.stage_from(width);
         let side = (height - ART_TOP - PAD).min(width - room - PAD).max(240.0);
         let x = (room + width - PAD) / 2.0 - side / 2.0;
@@ -640,8 +592,11 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
         stage.child(picture.pin(Some(x), Some(y), None, None).size(side, side))
     } else {
         let side = narrow_band(height) * 1.25;
-        let top = 14.0 + 40.0 + 18.0 + COMPACT_TICKET[1];
-        stage.child(picture.pin(Some((width - side) / 2.0), Some(top), None, None).size(side, side))
+        stage.child(
+            picture
+                .pin(Some((width - side) / 2.0), Some(narrow_rail_foot()), None, None)
+                .size(side, side),
+        )
     }
 }
 
@@ -672,10 +627,9 @@ fn scrims(width: f32, height: f32, fit: Fit, t: &Theme) -> El {
                     .gradient(ground.alpha(0.7), ground.alpha(0.0)),
             );
     } else {
-        let top = 14.0 + 40.0 + 18.0 + COMPACT_TICKET[1];
         layer = layer.child(
             el().pin(Some(0.0), Some(0.0), Some(0.0), None)
-                .h(top + 40.0)
+                .h(narrow_rail_foot() + 40.0)
                 .linear_gradient(std::f32::consts::PI, [
                     (0.0, ground.alpha(0.9)),
                     (0.75, ground.alpha(0.7)),
@@ -709,15 +663,9 @@ fn header(s: &Ui, selected: Option<Pool>, accent: Color, t: &Theme) -> El {
                 WarpPage::Banner => ("History", &icons::LIST),
                 WarpPage::History | WarpPage::ImportExport => ("Banner", &icons::WARP),
             };
-            pill(
-                "warp-history",
-                words,
-                Some(glyph),
-                Pill::Secondary,
-                true,
-                t,
-                |s: &mut Ui, _: &mut Tx| turn_page(s),
-            )
+            pill("warp-history", words, Pill::Secondary)
+                .glyph(glyph)
+                .build(t, |s: &mut Ui, _: &mut Tx| turn_page(s))
         }))
         .child(ring_button("close-warps", &icons::CLOSE, "Back", false, t, |s| s.close_warps()))
 }
@@ -732,190 +680,6 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
     let tickets = summary.pools.iter().map(|stats| {
         let pool = stats.pool;
         let chosen = pool == selected;
-        // The picked 5 star's banner when several run, so the ticket follows the pick
-        let ticket = Ticket::of(summary, pool, s.warps.featured.get(&pool).copied());
-        let featured = match ticket {
-            Some(Ticket::Banner(item)) => Some(item),
-            _ => None,
-        };
-        // Both of a ticket's pictures (preloaded when the warps come in, see `Ui::preload_warp_art`)
-        let picture = |selected: bool| ticket.and_then(|ticket| s.art.as_ref()?.get(Art::Ticket(ticket, selected)));
-        let (plain, framed) = (picture(false), picture(true));
-        let size = |image: &rune::Image| image.size().map(|[w, h]| [w as f32, h as f32]);
-        let plain_size = plain.as_ref().and_then(size).unwrap_or(SPRITE);
-        // The rail's height over the ticket's, and its width at that
-        let k = h / plain_size[1];
-        let ticket_w = plain_size[0] * k;
-        let sprite = if chosen { framed.clone() } else { plain.clone() };
-        let key = format!("ticket-{}", pool.gacha_type());
-        // Each ticket's pictures are keyed by whose ticket it is: a pick that changes the ticket
-        // swaps it for another, the old fading out and the new in, rather than morphing one into
-        // the other's size
-        let picture_key = match ticket {
-            Some(Ticket::Banner(item)) => format!("{key}-{item}"),
-            other => format!("{key}-{other:?}"),
-        };
-
-        let face = match sprite {
-            // The game's ticket. The selected one is drawn at the same scale, placed so its ticket
-            // lies exactly over the plain one's, its frame and the head above it spilling out
-            Some(image) => {
-                let picture = el().pixels_fit(image.pixels(), SurfaceFit::Fill);
-                let picture = if chosen {
-                    let [sw, sh] = size(&image).unwrap_or([SPRITE[0] + 14.0, SPRITE[1] + SELECTED_BELOW]);
-                    let above = sh - SELECTED_BELOW - plain_size[1];
-                    picture
-                        .key(format!("{picture_key}-selected"))
-                        .pin(Some(SELECTED_LEFT * k), Some(-above * k), None, None)
-                        .size(sw * k, sh * k)
-                        .transition(Transition::opacity().springs(SpringPair::new(Spring::smooth(0.35, 0.0), Spring::smooth(0.18, 0.0))))
-                } else {
-                    picture
-                        .key(format!("{picture_key}-plain"))
-                        .pin(Some(0.0), Some(0.0), None, None)
-                        .size(ticket_w, h)
-                        .opacity(0.8)
-                        .transition(Transition::opacity().springs(SpringPair::new(Spring::smooth(0.3, 0.0), Spring::smooth(0.18, 0.0))))
-                };
-                // Light catching it each time it's picked: the ticket drawn in white (`pixels_tint`, so
-                // only the ticket's own pixels light), seen through a window that sweeps across it
-                let face = el().size(ticket_w, h).child(picture);
-                // Only for the moment after the ticket's picked: a layout that rebuilds the rail
-                // later mounts the shine afresh, which would sweep again
-                let fresh = s
-                    .warps
-                    .picked
-                    .is_some_and(|(at, when)| at == pool && when.elapsed() < crate::gui::state::SHINE_FOR);
-                let glint = (chosen && fresh)
-                    .then(|| framed.clone())
-                    .flatten()
-                    .and_then(|image| size(&image).map(|at| (image, at)));
-                let shine = glint.map(|(white, [sw, sh])| {
-                    let above = sh - SELECTED_BELOW - plain_size[1];
-                    let (x, y, w, h) = (SELECTED_LEFT * k, -above * k, sw * k, sh * k);
-                    // Rune's shimmer, slanted: a frame turned by `SLANT`, centered on the ticket, holds
-                    // a window that slides across it once while the white inside the window slides
-                    // back as far. The window's straight edges come out slanted; the white, turned
-                    // back about its center (the ticket's, as the slides cancel), sits upright on the
-                    // ticket. It mounts afresh on each pick, so each pick sweeps; played out it rests
-                    // past the ticket, its window empty
-                    const SLANT: f32 = 0.35;
-                    const SWEEP: f64 = 0.5;
-                    let band = w * 0.52;
-                    // The frame reaches past the ticket so that turned it still covers it
-                    let reach = (w.max(h)) * 0.5;
-                    let (fw, fh) = (w + reach * 2.0, h + reach * 2.0);
-                    let travel = fw + band;
-                    // A slide's offsets are fractions of the element's own size: the window is a
-                    // band wide, the white inside it the whole ticket
-                    let slide = |to: f32| LoopSpec {
-                        delay: 0.06,
-                        ..LoopSpec::slide(SWEEP, [0.0, 0.0], [to, 0.0]).easing(Easing::LINEAR)
-                    };
-                    // Layout changes land at once inside it: the window and the white in it are placed
-                    // apart, and on their own springs they'd part for a few frames
-                    el().key(format!("{key}-shine"))
-                        .instant_changes()
-                        .pin(Some(x - reach), Some(y - reach), None, None)
-                        .size(fw, fh)
-                        .rotate(SLANT)
-                        .inert()
-                        .transition(Transition::none())
-                        .child(
-                            el().pin(Some(-band), Some(0.0), None, None)
-                                .size(band, fh)
-                                .clip_fade(band * 0.18, 0.0, band * 0.18, 0.0)
-                                .transition(Transition::none())
-                                .looping(slide(travel / band))
-                                .loop_times(1)
-                                .child(
-                                    el().pin(Some(reach + band), Some(reach), None, None)
-                                        .size(w, h)
-                                        .rotate(-SLANT)
-                                        .pixels_fit(white.pixels(), SurfaceFit::Fill)
-                                        .pixels_tint(Color::WHITE)
-                                        .opacity(0.7)
-                                        .transition(Transition::none())
-                                        .looping(slide(-travel / w))
-                                        .loop_times(1),
-                                ),
-                        )
-                });
-                // The shine's holder is always there and only the shine comes and goes: mounted
-                // with its holder, it entered with it and never swept
-                face.child(
-                    el().key(format!("{key}-shine-holder"))
-                        .pin(Some(0.0), Some(0.0), None, None)
-                        .size(ticket_w, h)
-                        .inert()
-                        .transition(Transition::none())
-                        .children(shine),
-                )
-            }
-            // One drawn like it: square cut, notched where the stub tears
-            None => {
-                let (fill, ink) = if chosen {
-                    (t.primary, t.on_primary)
-                } else {
-                    (parts::glass(t), t.text)
-                };
-                let stub = ticket_w * 0.16;
-                let art = featured
-                    .or_else(|| stats.fives.first().map(|f| f.item_id))
-                    .and_then(|item| s.art.as_ref()?.get(Art::Preview(item)));
-                let mut face = row()
-                    .size(ticket_w, h)
-                    .fill(fill)
-                    .cutout_circles([([stub, 0.0], 4.5, 5.0), ([stub, h], 4.5, 5.0)]);
-                if let Some(image) = art {
-                    face = face.child(
-                        el().pin(Some(stub), Some(0.0), Some(0.0), Some(0.0))
-                            .pixels_fit(image.pixels(), SurfaceFit::Fill)
-                            .opacity(if chosen { 1.0 } else { 0.6 })
-                            .child(
-                                el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                                    .linear_gradient(std::f32::consts::FRAC_PI_2, [(0.0, fill), (0.7, fill.alpha(0.0))]),
-                            ),
-                    );
-                }
-                face.child(
-                    text(label(pool))
-                        .font(theme::LABEL)
-                        .color(ink)
-                        .pl(stub + 10.0)
-                        .self_center()
-                        .truncate(),
-                )
-            }
-        };
-
-        // Left of the ticket, set against it
-        let figures = col()
-            .grow(1.0)
-            .min_w(0.0)
-            .pr(12.0)
-            .justify_center()
-            .items_end()
-            .child(
-                row()
-                    .gap(4.0)
-                    .items_end()
-                    .child(
-                        text(stats.pity5.to_string())
-                            .font(if full { STUB } else { TAB })
-                            .color(if chosen { t.text } else { t.muted })
-                            .shadow(0.0, 6.0, t.bg.alpha(0.9)),
-                    )
-                    .children(full.then(|| text(format!("/{}", pool.hard_pity())).font(theme::SMALL).color(t.faint).mb(2.0))),
-            )
-            .children(full.then(|| {
-                text(label(pool))
-                    .font(theme::SMALL)
-                    .color(if chosen { t.text } else { t.faint })
-                    .align(rune::Align::End)
-                    .truncate()
-            }));
-
         row()
             .key(format!("rail-{}", pool.gacha_type()))
             .role("tab")
@@ -925,8 +689,8 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
             .cursor(rune::Cursor::Pointer)
             .size(w, h)
             .on_press_tx(move |s: &mut Ui, tx: &mut Tx| crate::gui::state::pick_warp(s, pool, tx))
-            .child(figures)
-            .child(face)
+            .child(ticket_figures(stats, chosen, full, t))
+            .child(rail_ticket(s, summary, stats, chosen, h, t))
     });
     if fit == Fit::Narrow {
         row()
@@ -948,22 +712,232 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
     }
 }
 
+/// An image's size in pixels
+fn image_size(image: &rune::Image) -> Option<[f32; 2]> {
+    image.size().map(|[w, h]| [w as f32, h as f32])
+}
+
+/// A warp's ticket on the rail, `h` tall: the game's own where there's one, else one drawn like it
+fn rail_ticket(s: &Ui, summary: &Summary, stats: &PoolStats, chosen: bool, h: f32, t: &Theme) -> El {
+    let pool = stats.pool;
+    // The picked 5 star's banner when several run, so the ticket follows the pick
+    let ticket = Ticket::of(summary, pool, s.warps.featured.get(&pool).copied());
+    // Both of a ticket's pictures (preloaded when the warps come in, see `Ui::preload_warp_art`)
+    let picture = |selected: bool| ticket.and_then(|ticket| s.art.as_ref()?.get(Art::Ticket(ticket, selected)));
+    let (plain, framed) = (picture(false), picture(true));
+    let plain_size = plain.as_ref().and_then(image_size).unwrap_or(SPRITE);
+    // The rail's height over the ticket's, and its width at that
+    let k = h / plain_size[1];
+    let size = [plain_size[0] * k, h];
+    let key = format!("ticket-{}", pool.gacha_type());
+    let sprite = if chosen { framed.clone() } else { plain };
+    let Some(image) = sprite else {
+        let featured = match ticket {
+            Some(Ticket::Banner(item)) => Some(item),
+            _ => None,
+        };
+        return drawn_ticket(s, stats, featured, chosen, size, t);
+    };
+    // Each ticket's pictures are keyed by whose ticket it is: a pick that changes the ticket swaps
+    // it for another, the old fading out and the new in, rather than morphing one into the other's
+    // size
+    let picture_key = match ticket {
+        Some(Ticket::Banner(item)) => format!("{key}-{item}"),
+        other => format!("{key}-{other:?}"),
+    };
+    // Only for the moment after the ticket's picked: a layout that rebuilds the rail later mounts
+    // the shine afresh, which would sweep again
+    let fresh = s
+        .warps
+        .picked
+        .is_some_and(|(at, when)| at == pool && when.elapsed() < crate::gui::state::SHINE_FOR);
+    let shine = (chosen && fresh)
+        .then_some(framed)
+        .flatten()
+        .and_then(|image| image_size(&image).map(|at| (image, at)))
+        .map(|(white, own)| ticket_shine(&key, &white, own, plain_size, k));
+    ticket_face(&picture_key, &image, chosen, plain_size, k, size)
+        // The shine's holder is always there and only the shine comes and goes: mounted with its
+        // holder, it entered with it and never swept
+        .child(
+            el().key(format!("{key}-shine-holder"))
+                .pin(Some(0.0), Some(0.0), None, None)
+                .size(size[0], size[1])
+                .inert()
+                .transition(Transition::none())
+                .children(shine),
+        )
+}
+
+/// The selected ticket's picture fades in on these, the plain one's a little quicker
+fn selected_springs() -> SpringPair {
+    SpringPair::new(Spring::smooth(0.35, 0.0), Spring::smooth(0.18, 0.0))
+}
+fn plain_springs() -> SpringPair {
+    SpringPair::new(Spring::smooth(0.3, 0.0), Spring::smooth(0.18, 0.0))
+}
+
+/// Where the selected sprite of a ticket `plain` large is drawn over it, `k` points to its pixel,
+/// when it's `own` large: its ticket lies exactly over the plain one's, its frame and the head
+/// above it spilling out. `[x, y, w, h]`
+fn selected_rect(own: [f32; 2], plain: [f32; 2], k: f32) -> [f32; 4] {
+    let above = own[1] - SELECTED_BELOW - plain[1];
+    [SELECTED_LEFT * k, -above * k, own[0] * k, own[1] * k]
+}
+
+/// The game's ticket `image`, `size` on the rail: the plain one, or the selected one drawn at the
+/// same scale (`k` points to a pixel) over where the plain one, `plain` pixels large, would be
+fn ticket_face(key: &str, image: &rune::Image, chosen: bool, plain: [f32; 2], k: f32, size: [f32; 2]) -> El {
+    let picture = el().pixels_fit(image.pixels(), SurfaceFit::Fill);
+    let picture = if chosen {
+        let own = image_size(image).unwrap_or([SPRITE[0] + 14.0, SPRITE[1] + SELECTED_BELOW]);
+        let [x, y, w, h] = selected_rect(own, plain, k);
+        picture
+            .key(format!("{key}-selected"))
+            .pin(Some(x), Some(y), None, None)
+            .size(w, h)
+            .transition(Transition::opacity().springs(selected_springs()))
+    } else {
+        picture
+            .key(format!("{key}-plain"))
+            .pin(Some(0.0), Some(0.0), None, None)
+            .size(size[0], size[1])
+            .opacity(0.8)
+            .transition(Transition::opacity().springs(plain_springs()))
+    };
+    el().size(size[0], size[1]).child(picture)
+}
+
+/// Light catching the selected ticket each time it's picked: the ticket's picture `white`, `own`
+/// pixels large, drawn in white (`pixels_tint`, so only the ticket's own pixels light), seen
+/// through a window that sweeps across it.
+///
+/// It's Rune's shimmer, slanted: a frame turned by `SLANT`, centered on the ticket, holds a window
+/// that slides across it once while the white inside the window slides back as far. The window's
+/// straight edges come out slanted; the white, turned back about its center (the ticket's, as the
+/// slides cancel), sits upright on the ticket. It mounts afresh on each pick, so each pick sweeps;
+/// played out it rests past the ticket, its window empty
+fn ticket_shine(key: &str, white: &rune::Image, own: [f32; 2], plain: [f32; 2], k: f32) -> El {
+    const SLANT: f32 = 0.35;
+    const SWEEP: f64 = 0.5;
+    let [x, y, w, h] = selected_rect(own, plain, k);
+    let band = w * 0.52;
+    // The frame reaches past the ticket so that turned it still covers it
+    let reach = (w.max(h)) * 0.5;
+    let (fw, fh) = (w + reach * 2.0, h + reach * 2.0);
+    let travel = fw + band;
+    // A slide's offsets are fractions of the element's own size: the window is a band wide, the
+    // white inside it the whole ticket
+    let slide = |to: f32| LoopSpec {
+        delay: 0.06,
+        ..LoopSpec::slide(SWEEP, [0.0, 0.0], [to, 0.0]).easing(Easing::LINEAR)
+    };
+    // Layout changes land at once inside it: the window and the white in it are placed apart, and
+    // on their own springs they'd part for a few frames
+    el().key(format!("{key}-shine"))
+        .instant_changes()
+        .pin(Some(x - reach), Some(y - reach), None, None)
+        .size(fw, fh)
+        .rotate(SLANT)
+        .inert()
+        .transition(Transition::none())
+        .child(
+            el().pin(Some(-band), Some(0.0), None, None)
+                .size(band, fh)
+                .clip_fade(band * 0.18, 0.0, band * 0.18, 0.0)
+                .transition(Transition::none())
+                .looping(slide(travel / band))
+                .loop_times(1)
+                .child(
+                    el().pin(Some(reach + band), Some(reach), None, None)
+                        .size(w, h)
+                        .rotate(-SLANT)
+                        .pixels_fit(white.pixels(), SurfaceFit::Fill)
+                        .pixels_tint(Color::WHITE)
+                        .opacity(0.7)
+                        .transition(Transition::none())
+                        .looping(slide(-travel / w))
+                        .loop_times(1),
+                ),
+        )
+}
+
+/// A ticket drawn like the game's, `size` on the rail: square cut, notched where the stub tears,
+/// with the `featured` 5 star's art, or the last one pulled
+fn drawn_ticket(s: &Ui, stats: &PoolStats, featured: Option<u32>, chosen: bool, size: [f32; 2], t: &Theme) -> El {
+    let [w, h] = size;
+    let (fill, ink) = if chosen { (t.primary, t.on_primary) } else { (t.glass, t.text) };
+    let stub = w * 0.16;
+    let art = featured
+        .or_else(|| stats.fives.first().map(|f| f.item_id))
+        .and_then(|item| s.art.as_ref()?.get(Art::Preview(item)));
+    let mut face = row()
+        .size(w, h)
+        .fill(fill)
+        .cutout_circles([([stub, 0.0], 4.5, 5.0), ([stub, h], 4.5, 5.0)]);
+    if let Some(image) = art {
+        face = face.child(
+            el().pin(Some(stub), Some(0.0), Some(0.0), Some(0.0))
+                .pixels_fit(image.pixels(), SurfaceFit::Fill)
+                .opacity(if chosen { 1.0 } else { 0.6 })
+                .child(
+                    el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
+                        .linear_gradient(std::f32::consts::FRAC_PI_2, [(0.0, fill), (0.7, fill.alpha(0.0))]),
+                ),
+        );
+    }
+    face.child(
+        text(label(stats.pool))
+            .font(theme::LABEL)
+            .color(ink)
+            .pl(stub + 10.0)
+            .self_center()
+            .truncate(),
+    )
+}
+
+/// A ticket's pity, and its name when it's shown in `full`, left of it and set against it
+fn ticket_figures(stats: &PoolStats, chosen: bool, full: bool, t: &Theme) -> El {
+    let pool = stats.pool;
+    col()
+        .grow(1.0)
+        .min_w(0.0)
+        .pr(12.0)
+        .justify_center()
+        .items_end()
+        .child(
+            row()
+                .gap(4.0)
+                .items_end()
+                .child(
+                    text(stats.pity5.to_string())
+                        .font(if full { STUB } else { TAB })
+                        .color(if chosen { t.text } else { t.muted })
+                        .shadow(0.0, 6.0, t.bg.alpha(0.9)),
+                )
+                .children(full.then(|| text(format!("/{}", pool.hard_pity())).font(theme::SMALL).color(t.faint).mb(2.0))),
+        )
+        .children(full.then(|| {
+            text(label(pool))
+                .font(theme::SMALL)
+                .color(if chosen { t.text } else { t.faint })
+                .align(rune::Align::End)
+                .truncate()
+        }))
+}
+
 /// Warps in hand, broken down on hover
 fn budget_chip(s: &Ui, budget: Budget, t: &Theme) -> El {
-    let pass = if budget.special { 102 } else { 101 };
+    let pass = if budget.special { item::SPECIAL_PASS } else { item::PASS };
     let glyph = match s.art.as_ref().and_then(|art| art.get(Art::Item(pass))) {
         Some(image) => el().size(22.0, 22.0).pixels_fit(image.pixels(), SurfaceFit::Fit),
         None => el().size(6.0, 6.0),
     };
-    row()
+    chip(t)
         .key("warp-budget")
-        .h(34.0)
         .pl(8.0)
         .pr(14.0)
         .gap(6.0)
-        .center_y()
-        .radius(16.0)
-        .fill(t.text.alpha(0.08))
         .help(format!(
             "{} {} and {} Stellar Jade",
             grouped(budget.passes),
@@ -977,65 +951,28 @@ fn budget_chip(s: &Ui, budget: Budget, t: &Theme) -> El {
 
 /// A dot for where syncing stands; its words on hover, and a sync on press
 fn status_chip(s: &Ui, t: &Theme) -> El {
-    let (message, tint) = super::warps::status(s, t);
-    let dot = if s.warps.busy.is_some() {
-        rune_kit::Spinner::new().size(12.0).color(t.accent).build(&t.kit)
-    } else {
-        el().size(8.0, 8.0).radius(4.0).fill(if tint == t.faint { t.muted } else { tint })
-    };
-    row()
+    let status = SyncStatus::of(s);
+    chip(t)
         .key("warp-status")
         .role("button")
         .label("Sync")
-        .h(34.0)
         .px(14.0)
         .gap(8.0)
-        .center_y()
-        .radius(17.0)
-        .fill(t.text.alpha(0.08))
         .focusable(true)
         .cursor(rune::Cursor::Pointer)
         .hover(t.text.alpha(0.06))
-        .help(format!("{message}. Press to sync"))
+        .help(format!("{}. Press to sync", status.long()))
         .on_press(|s: &mut Ui| s.sync_warps())
-        .child(dot)
-        .child(
-            text(short_status(&message))
-                .font(theme::SMALL)
-                .color(t.muted)
-                .truncate()
-                .max_w(170.0),
-        )
-}
-
-/// The status in a couple of words, for the header
-fn short_status(message: &str) -> String {
-    if let Some(rest) = message.strip_prefix("Synced ") {
-        return format!("Synced {rest}");
-    }
-    if message.contains(" pulls pending") {
-        return message.split(" pulls").next().map_or("Waiting".into(), |n| format!("{n} waiting"));
-    }
-    if message.starts_with("Log in") {
-        return "Not logged in".into();
-    }
-    message.split(" · ").next().unwrap_or(message).to_string()
+        .child(status_dot(status.tone().ink(t), s.warps.busy.is_some(), 8.0, t))
+        .child(text(status.short()).font(theme::SMALL).color(t.muted).truncate().max_w(170.0))
 }
 
 /// The banner's ticket: what's featured and the pick between the running banners, the pity on its
 /// track, and past the tear what the warps in hand buy and how far towards copies
 fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], width: f32, cx: &Cx<Ui>, t: &Theme) -> El {
-    let title = match view.pool {
-        Pool::Character => "Character event warp",
-        Pool::LightCone => "Light cone event warp",
-        Pool::Standard => "Stellar warp",
-        Pool::CollabCharacter => "Collab warp",
-        Pool::CollabLightCone => "Collab light cone warp",
-        Pool::Departure => "Departure warp",
-    };
     let surface = view.featured.and_then(|(item, _)| card_surface(s, item, t));
     let card = lead_ticket_on("warp-card", &["warp-card-tear", "warp-card-tear-history"], surface, cx, t)
-        .child(parts::tab("warp-card-tab", title, view.accent, cx, t))
+        .child(tab("warp-card-tab", banner_title(view.pool), view.accent, t))
         .child(
             col()
                 .w_full()
@@ -1102,11 +1039,10 @@ fn card_surface(s: &Ui, item: u32, t: &Theme) -> Option<El> {
     if let Some(pattern) = &surface.pattern
         && let Some(image) = art.get(Art::Pattern(item))
     {
-        let tile = pattern.tile.map(|v| v * MOTIF_SCALE);
         layer = layer.child(
             el().key("warp-card-motif")
                 .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-                .pixels_tile(image.pixels(), tile)
+                .pixels_tile(image.pixels(), pattern.tile)
                 .pixels_tint(t.text.alpha(if t.dark { 0.025 } else { 0.045 })),
         );
     }
@@ -1138,8 +1074,8 @@ fn banner_line(s: &Ui, view: &View, running: &[&RunningBanner], t: &Theme) -> El
                 .center_y()
                 .radius(12.0)
                 .fill(Color::BLACK.alpha(if t.dark { 0.35 } else { 0.08 }))
-                .child(icon(&icons::CLOCK, 13.0).color(parts::progress(t)))
-                .child(text(left).font(COUNT).color(parts::progress(t))),
+                .child(icon(&icons::CLOCK, 13.0).color(t.gold))
+                .child(text(left).font(COUNT).color(t.gold)),
         );
     }
     line = line.child(top);
@@ -1177,18 +1113,13 @@ fn banner_line(s: &Ui, view: &View, running: &[&RunningBanner], t: &Theme) -> El
     line
 }
 
-/// A round marker on a track
-fn medallion(size: f32) -> El {
-    el().size(size, size).radius(size / 2.0).center()
-}
-
 /// The pity, big, with the 50/50, and the gold track to hard pity: a medallion at the pity,
 /// marks at soft and hard pity
 fn pity_block(view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
     let stats = view.stats;
     let rates = Rates::of(view.pool);
     let hard = rates.hard as f32;
-    let gold = parts::progress(t);
+    let gold = t.gold;
 
     let state = match (view.pool.has_rate_up(), stats.guarantee5) {
         (false, _) => None,
@@ -1289,7 +1220,7 @@ fn pity_block(view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
         .child(
             text(format!(
                 "{left}  ·  4-star within {}{four}",
-                10u32.saturating_sub(stats.pity4).max(1)
+                FOUR_STAR_PITY.saturating_sub(stats.pity4).max(1)
             ))
             .font(theme::SMALL)
             .color(t.faint)
@@ -1358,50 +1289,31 @@ fn figure(value: String, words: &str, t: &Theme) -> El {
 /// check, the next three with the chance the warps in hand reach them
 fn targets(view: &View, t: &Theme) -> Option<El> {
     let (item, _) = view.featured?;
+    const SIZE: f32 = 28.0;
     let rates = Rates::of(view.pool);
-    let light_cone = matches!(view.pool, Pool::LightCone | Pool::CollabLightCone);
     let owned = view.roster.map(|r| r.copies(item));
     let have = owned.unwrap_or(0);
-    let most: u32 = if light_cone { 5 } else { 7 };
-    let gold = parts::progress(t);
+    let most = view.pool.max_copies();
     let count = (most.saturating_sub(have)).min(3) as usize;
     let costs = odds::copies(&rates, view.stats.pity5, view.stats.guarantee5 == Some(true), count);
-    let level = |copies: u32| {
-        if light_cone {
-            format!("S{copies}")
-        } else {
-            format!("E{}", copies - 1)
-        }
-    };
+    let level = |copies: u32| view.pool.copy_level(copies);
 
     let mut track = row().key("copies").w_full().items_start();
     for copy in 1..=most {
         if copy > 1 {
-            let done = copy <= have;
-            track = track.child(
-                el().grow(1.0)
-                    .h(3.0)
-                    .radius(1.5)
-                    .mt(12.5)
-                    .mx(-4.0)
-                    // Under the medallions either side, which it reaches into
-                    .paint_order(-1)
-                    .fill(if done { gold } else { t.text.alpha(0.14) }),
-            );
+            track = track.child(track_link(copy <= have, SIZE, t).mx(-4.0));
         }
         let next = copy.checked_sub(have + 1).map(|i| i as usize).filter(|&i| i < costs.len());
         let mark = if copy <= have {
-            medallion(28.0)
-                .fill(gold)
-                .child(icon(&icons::CHECK, 14.0).color(rune::oklch(0.25, 0.04, 70.0)))
+            check_medallion(SIZE, t)
         } else {
             let ring = if next == Some(0) {
-                medallion(28.0)
+                medallion(SIZE)
                     .fill(t.panel)
                     .border(2.0, view.accent)
                     .shadow(0.0, 12.0, view.accent.alpha(0.45))
             } else {
-                medallion(28.0)
+                medallion(SIZE)
                     .fill(t.panel)
                     .border(2.0, t.text.alpha(if next.is_some() { 0.3 } else { 0.12 }))
             };
@@ -1456,21 +1368,16 @@ fn targets(view: &View, t: &Theme) -> Option<El> {
 
 /// The hero's name over its art, with what the account has of it
 fn name_tags(view: &View, item: u32, t: &Theme) -> El {
-    let light_cone = matches!(view.pool, Pool::LightCone | Pool::CollabLightCone);
     let kicker_words = if view.featured.is_some() {
         "Featured 5-star".to_string()
     } else {
         view.stats.fives.first().map_or("5-star".into(), |f| {
-            format!("Latest 5-star  ·  pity {}{}", f.pity, match outcome_words(f.outcome) {
-                "" => String::new(),
-                w => format!(", {w}"),
-            })
+            format!("Latest 5-star  ·  pity {}{}", f.pity, outcome_suffix(f.outcome))
         })
     };
-    let owned = view.roster.map(|r| r.copies(item)).map(|c| match (c, light_cone) {
-        (0, _) => "Not owned".to_string(),
-        (c, true) => format!("Owned  ·  S{c}"),
-        (c, false) => format!("Owned  ·  E{}", c - 1),
+    let owned = view.roster.map(|r| r.copies(item)).map(|c| match c {
+        0 => "Not owned".to_string(),
+        c => format!("Owned  ·  {}", view.pool.copy_level(c)),
     });
     // Plain strips of color for the name and the tags under it, so they read over the art
     let strip = |content: El, tint: Color| row().min_h(26.0).px(12.0).center_y().fill(tint).child(content);
@@ -1484,7 +1391,7 @@ fn name_tags(view: &View, item: u32, t: &Theme) -> El {
             .child(
                 row()
                     .gap(-3.0)
-                    .children((0..5).map(|_| icon(&icons::WARP_FILLED, 20.0).color(parts::progress(t)))),
+                    .children((0..5).map(|_| icon(&icons::WARP_FILLED, 20.0).color(t.gold))),
             )
             .child(
                 strip(
@@ -1498,7 +1405,7 @@ fn name_tags(view: &View, item: u32, t: &Theme) -> El {
                 .py(4.0),
             )
             .child(strip(text(kicker_words).font(theme::SMALL).color(Color::WHITE.alpha(0.92)), shade))
-            .children(owned.map(|o| strip(text(o).font(theme::SMALL).color(rune::oklch(0.25, 0.04, 70.0)), parts::progress(t)))),
+            .children(owned.map(|o| strip(text(o).font(theme::SMALL).color(t.on_gold), t.gold))),
         0.4,
     )
 }
@@ -1514,17 +1421,13 @@ fn history_strip(view: &View, width: f32, t: &Theme) -> El {
     let shown: Vec<&Highlight> = stats.fives.iter().take(fit).collect();
     let n = shown.len();
     let stagger = Stagger::new(0.012).from(StaggerFrom::Last);
-    let keys = super::warps::five_keys(shown.iter().copied());
+    let keys = five_keys(shown.iter().copied());
     let bars = shown.iter().zip(keys).rev().enumerate().map(|(i, (five, key))| {
-        let when = super::warps::local(five.time, "%Y-%m-%d");
-        let outcome = match outcome_words(five.outcome) {
-            "" => String::new(),
-            w => format!(", {w}"),
-        };
+        let when = local(five.time, "%Y-%m-%d");
+        let outcome = outcome_suffix(five.outcome);
         el().key(key)
             .w(bar_w)
             .h(4.0 + (tall - 4.0) * (five.pity as f32 / hard).min(1.0))
-            // .corners([bar_w / 2.0, bar_w / 2.0, 0.0, 0.0])
             .fill(outcome_color(five.outcome, t).alpha(if five.confirmed { 0.78 } else { 0.4 }))
             .help(format!(
                 "{}  ·  pity {}{outcome}  ·  {when}",
@@ -1569,7 +1472,7 @@ fn history_strip(view: &View, width: f32, t: &Theme) -> El {
         .pin(Some(0.0), None, Some(0.0), Some(4.0 + (tall - 4.0) * soft))
         .h(1.0)
         .inert()
-        .fill(parts::progress(t).alpha(0.22));
+        .fill(t.gold.alpha(0.22));
     let body = if n == 0 {
         row()
             .h(tall)
@@ -1600,29 +1503,25 @@ fn history_strip(view: &View, width: f32, t: &Theme) -> El {
 
 /// What was pulled while the archiver watched, this run
 fn session_row(s: &Ui, view: &View, t: &Theme) -> Option<El> {
-    let since = s.warps.session_start;
     let mut warps = 0usize;
-    let mut fives = Vec::new();
-    for stats in &view.summary.pools {
-        for (pull, pity, outcome) in &stats.recent {
-            if pull.sources & source::LIVE != 0 && pull.time >= since {
-                warps += 1;
-                if pull.rarity == 5 {
-                    fives.push((pull.item_id, *pity, *outcome));
-                }
+    let mut fives = String::new();
+    for recent in view.summary.session(s.warps.session_start) {
+        warps += 1;
+        if recent.pull.rarity == 5 {
+            fives.push_str(&format!("  ·  {} at {}", view.summary.name(recent.pull.item_id), recent.pity));
+            if let Some(words) = outcome_words(recent.outcome) {
+                fives.push_str(&format!(" ({words})"));
             }
         }
     }
     if warps == 0 {
         return None;
     }
-    let mut words = format!("This session  ·  {} warp{}", grouped(warps), if warps == 1 { "" } else { "s" });
-    for (item, pity, outcome) in &fives {
-        words.push_str(&format!("  ·  {} at {pity}", view.summary.name(*item)));
-        if !outcome_words(*outcome).is_empty() {
-            words.push_str(&format!(" ({})", outcome_words(*outcome)));
-        }
-    }
+    let words = format!(
+        "This session  ·  {} warp{}{fives}",
+        grouped(warps),
+        if warps == 1 { "" } else { "s" }
+    );
     let waiting = view.summary.unconfirmed;
     Some(rise(
         row()
@@ -1653,15 +1552,6 @@ pub(super) fn live_badge(tint: Color) -> El {
 
 // ---- words and numbers -------------------------------------------------------------------------
 
-fn percent(p: f64) -> String {
-    match p {
-        p if p >= 0.9995 => "100%".into(),
-        p if p > 0.995 => ">99%".into(),
-        p if p > 0.0 && p < 0.005 => "<1%".into(),
-        p => format!("{:.0}%", p * 100.0),
-    }
-}
-
 fn time_left(end: i64) -> String {
     let left = (end - jiff::Timestamp::now().as_second()).max(0);
     let (days, hours) = (left / 86400, left % 86400 / 3600);
@@ -1669,38 +1559,5 @@ fn time_left(end: i64) -> String {
         format!("{days}d {hours}h left")
     } else {
         format!("{hours}h {}m left", left % 3600 / 60)
-    }
-}
-
-fn grouped(n: impl TryInto<u64>) -> String {
-    let digits = n.try_into().unwrap_or(0).to_string();
-    let mut out = String::new();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
-            out.push(',');
-        }
-        out.push(c);
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn percentages_round_honestly() {
-        assert_eq!(percent(1.0), "100%");
-        assert_eq!(percent(0.9991), ">99%");
-        assert_eq!(percent(0.4449), "44%");
-        assert_eq!(percent(0.001), "<1%");
-        assert_eq!(percent(0.0), "0%");
-    }
-
-    #[test]
-    fn statuses_shorten() {
-        assert_eq!(short_status("Synced 2 min ago"), "Synced 2 min ago");
-        assert_eq!(short_status("4 pulls pending · next check 01:45"), "4 waiting");
-        assert_eq!(short_status("Log in to start tracking warps"), "Not logged in");
     }
 }

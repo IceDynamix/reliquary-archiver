@@ -7,9 +7,13 @@
 //!
 //! - [`state`]: what the window shows and how events change it, as plain data
 //! - [`services`]: the work that leaves the UI thread (files, the server, updates)
-//! - [`view`]: draws the state with Rune
+//! - [`view`]: draws the state with Rune, in the colors and type of [`theme`] with [`icons`]
 //! - [`worker`]: reads packets and reports what happened
 //! - [`settings`]: the settings and their file
+//! - [`background`]: the background image, read and scaled off the UI thread
+//! - [`art`]: character and light cone art for the warp screen, downloaded and kept
+//! - `run_on_start`: starting with Windows
+//! - [`controller`]: a second window that puts the app into any state, for trying the views
 //!
 //! Every screen can be rendered without a window or a capture: `--ui --snap out.png --scene ready`
 //! (see [`scenes`]).
@@ -25,12 +29,13 @@ use reliquary_archiver::export::Exporter;
 use rune::{App, AppHandle, AppSpec, Tray, TrayEvent, TrayIcon, TrayItem, TraySpec, Tx};
 use tokio::sync::watch;
 use tokio_stream::wrappers::WatchStream;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::accounts::MultiAccountManager;
 use crate::capture::Tap;
+use crate::warps::item;
 use crate::warps::service::{Command as WarpCommand, WarpService};
-use crate::websocket::{PortCommand, PortSource, start_websocket_server};
+use crate::websocket::{PortCommand, start_dynamic_websocket_server};
 
 mod art;
 mod background;
@@ -52,6 +57,11 @@ mod tests;
 use services::Services;
 use state::{Inventory, Panel, Ui};
 use worker::WorkerEvent;
+
+/// An sRGB-encoded channel, 0 to 1, in linear light
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+}
 
 const TITLE: &str = "Reliquary Archiver";
 
@@ -80,7 +90,7 @@ pub fn run(tap: Tap, options: Options) {
         poll: Some(|s: &mut Ui, _, tx| {
             let expired = s.expire(Instant::now());
             let art = s.art_ready();
-            let background = s.background_ready();
+            let background = s.background.ready(&s.settings.background_image);
             // Art and backgrounds arriving come in on their transitions. Rune lands a change no
             // input caused at once unless it's told otherwise
             if art || background {
@@ -89,24 +99,24 @@ pub fn run(tap: Tap, options: Options) {
             background || expired || art
         }),
         setup: Some(|s: &mut Ui, waker| {
-            s.images = Some(rune::ImageCache::new(waker.clone()));
-            // Snapshots draw a single frame, the art has to be there for it
-            s.art = Some(if rune::tooling::headless_run().is_some() {
+            // Snapshots draw a single frame, the art and the background have to be there for it
+            let headless = rune::tooling::headless_run().is_some();
+            s.background.images = Some(rune::ImageCache::new(waker.clone()));
+            s.art = Some(if headless {
                 art::ArtCache::blocking(waker.clone())
             } else {
                 art::ArtCache::new(waker.clone())
             });
-            s.background_loader = Some(rune::Latest::new(waker));
-            // Snapshots draw a single frame, the background has to be there for it
-            if rune::tooling::headless_run().is_some() {
-                s.load_background_now();
+            s.background.loader = Some(rune::Latest::new(waker));
+            if headless {
+                s.background.load_now(&s.settings.background_image);
             } else {
-                s.load_background();
+                s.background.load(&s.settings.background_image);
             }
         }),
         fonts: theme::FONTS,
         families: theme::FAMILIES,
-        ..AppSpec::new(TITLE, (460.0, 700.0), || Ui::new(settings::Settings::default()), view::view)
+        ..AppSpec::new(TITLE, (540.0, 800.0), || Ui::new(settings::Settings::default()), view::view)
     };
 
     let mut app = App::new(spec).args(options.ui_args.clone()).keep_running();
@@ -168,7 +178,15 @@ pub fn run(tap: Tap, options: Options) {
             handle.open();
         }
         ui.has_tray = tray.is_some();
-        let services = start(rt, handle, tap, settings, settings_file, &options, tray);
+        let services = Services::start(handle, services::Start {
+            rt,
+            tap,
+            settings_file,
+            ws_port: settings.ws_port,
+            tray,
+            needs_admin: options.needs_admin,
+            no_update: options.no_update,
+        });
         ui.updates_supported = services.can_update();
         ui.services = Some(services);
         ui.check_for_update();
@@ -183,8 +201,7 @@ pub fn run(tap: Tap, options: Options) {
     .on_quit(|s: &mut Ui, _| {
         remember_frame(s);
         if let Some(services) = &s.services {
-            services.save_settings(&s.settings);
-            services.settings_file.flush();
+            services.flush_settings(&s.settings);
         }
     })
     .on_window(|window| {
@@ -205,6 +222,12 @@ fn remember_frame(s: &mut Ui) {
     }
 }
 
+/// How much of a window's top edge has to show on its display for it to stay where it opened, in
+/// pixels: enough to drag it by
+const SHOWN_TOP: i32 = 120;
+/// How far above its display's bottom a window's top has to be for it to stay, in pixels
+const TOP_ABOVE_BOTTOM: i32 = 40;
+
 /// Brings a window opened where it was last time back onto a display, for when that display is
 /// gone or moved: centered on the display nearest to it if too little of its top edge, where it's
 /// dragged from, shows
@@ -214,51 +237,9 @@ fn keep_on_screen(window: &rune::WindowHandle, handle: &AppHandle<Ui>) {
     let (x, y) = placement.position;
     let width = placement.content_size.0 as i32;
     let shown = (x + width).min(dx + dw as i32) - x.max(dx);
-    let top_inside = y >= dy && y < dy + dh as i32 - 40;
-    if shown < 120 || !top_inside {
+    let top_inside = y >= dy && y < dy + dh as i32 - TOP_ABOVE_BOTTOM;
+    if shown < SHOWN_TOP || !top_inside {
         handle.update(|_, tx| tx.center_window());
-    }
-}
-
-/// Starts capturing, the WebSocket server and everything that feeds the window
-fn start(
-    rt: tokio::runtime::Handle,
-    app: AppHandle<Ui>,
-    tap: Tap,
-    settings: settings::Settings,
-    settings_file: settings::SettingsFile,
-    options: &Options,
-    tray: Option<Tray>,
-) -> Services {
-    let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
-    let (selected_tx, selected_rx) = watch::channel(None);
-    let warps = {
-        let app = app.clone();
-        WarpService::start(crate::warps::store::default_path(), move |update| {
-            app.update(move |s, tx| s.warp_update(update, tx))
-        })
-    };
-    let (port_tx, port_rx) = watch::channel(PortCommand::Open(settings.ws_port));
-
-    rt.spawn(settings_file.writer());
-    rt.spawn(forward_server(app.clone(), manager.clone(), port_rx, selected_rx));
-    if options.needs_admin {
-        warn!("not capturing, administrator rights are needed");
-    } else {
-        rt.spawn(forward_worker(app.clone(), manager.clone(), tap, warps.clone()));
-    }
-    rt.spawn(forward_logs(app.clone()));
-
-    Services {
-        rt,
-        app,
-        manager,
-        selected_tx,
-        port_tx,
-        settings_file,
-        no_update: options.no_update || std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1"),
-        _tray: tray,
-        warps,
     }
 }
 
@@ -283,12 +264,6 @@ async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManag
                 app.update(move |s, tx| s.capture_failed(message, tx));
             }
             WorkerEvent::Session(SessionEvent::Warp(event)) => warps.send(WarpCommand::Event(event)),
-            WorkerEvent::Session(
-                SessionEvent::PacketsDecoded(0)
-                | SessionEvent::DecodeError
-                | SessionEvent::AccountSeen { .. }
-                | SessionEvent::LoginFinished,
-            ) => {}
             WorkerEvent::Session(event) => app.update_if(move |s, _| s.session_event(&event)),
             WorkerEvent::AccountLoggedIn { uid } => {
                 app.update(move |s, _| s.account_logged_in(uid));
@@ -301,10 +276,10 @@ async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManag
 
 /// Counts what the account holds, once all of it arrived
 async fn refresh_inventory(app: &AppHandle<Ui>, manager: &Mutex<MultiAccountManager>, uid: u32) {
-    let Some(exporter) = manager.lock().await.get_account_exporter(uid) else {
+    let manager = manager.lock().await;
+    let Some(exporter) = manager.account_exporter(uid) else {
         return;
     };
-    let exporter = exporter.lock().await;
     if !exporter.is_initialized() {
         return;
     }
@@ -316,9 +291,9 @@ async fn refresh_inventory(app: &AppHandle<Ui>, manager: &Mutex<MultiAccountMana
         materials: exporter.materials().len(),
         funds: state::Funds {
             stellar_jade: exporter.gacha_funds().stellar_jade,
-            passes: material(101),
-            special_passes: material(102),
-            undying_starlight: material(252),
+            passes: material(item::PASS),
+            special_passes: material(item::SPECIAL_PASS),
+            undying_starlight: material(item::UNDYING_STARLIGHT),
         },
     };
     let mut roster = state::Roster::default();
@@ -339,13 +314,7 @@ async fn forward_server(
     port_rx: watch::Receiver<PortCommand>,
     selected_rx: watch::Receiver<Option<u32>>,
 ) {
-    let (ports, clients) = match start_websocket_server(PortSource::Dynamic(WatchStream::new(port_rx)), manager, selected_rx).await {
-        Ok(streams) => streams,
-        Err(e) => {
-            app.update(move |s, _| s.sync_failed(e));
-            return;
-        }
-    };
+    let (ports, clients) = start_dynamic_websocket_server(WatchStream::new(port_rx), manager, selected_rx);
 
     let client_app = app.clone();
     tokio::spawn(async move {

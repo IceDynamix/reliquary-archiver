@@ -11,6 +11,7 @@ use super::theme::{self, Theme};
 use super::{background, icons};
 
 mod delivery;
+mod format;
 mod logs;
 pub mod parts;
 mod settings;
@@ -27,6 +28,13 @@ const DISCORD_URL: &str = "https://discord.gg/EbZXfRDQpu";
 const GUTTER: f32 = 18.0;
 /// The plates don't grow wider than this, in a wide window they sit where the user anchored them
 const CARD_WIDTH: f32 = 480.0;
+/// The window's size before it's been laid out
+const DEFAULT_WINDOW: [f32; 2] = [540.0, 800.0];
+
+/// The window's size, in points
+fn window_size(cx: &Cx<Ui>) -> [f32; 2] {
+    cx.layout_size("page").unwrap_or(DEFAULT_WINDOW)
+}
 
 pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
     let dark = match s.settings.theme {
@@ -34,7 +42,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
         ThemeMode::Dark => true,
         ThemeMode::Light => false,
     };
-    let t = Theme::new(dark, s.settings.accent, s.background_image().is_some());
+    let t = Theme::new(dark, s.settings.accent, s.background.image().is_some());
     let mut layer = Vec::new();
 
     let cards = parts::plate_stack("cards", cx, &t)
@@ -80,7 +88,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
     page = match background(s, cx, &t) {
         Some(background) => page.child(background),
         None => {
-            let [w, h] = cx.layout_size("page").unwrap_or([460.0, 700.0]);
+            let [w, h] = window_size(cx);
             page.child(sky::sky(w, h, &t))
         }
     };
@@ -102,7 +110,7 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
 
 /// The background as the settings place it in a window `window` points large, on a display of
 /// `scale` pixels to the point
-pub(super) fn wallpaper_for<'a>(s: &Ui, image: &'a rune::Image, window: [f32; 2], scale: f32) -> Option<wallpaper::Wallpaper<'a>> {
+fn wallpaper_for<'a>(s: &Ui, image: &'a rune::Image, window: [f32; 2], scale: f32) -> wallpaper::Wallpaper<'a> {
     // The image's own size is one image pixel per device pixel; a vector image without one fills
     let own = image.size().map_or(window, |[w, h]| [w as f32 / scale, h as f32 / scale]);
     let settings = &s.settings;
@@ -111,50 +119,41 @@ pub(super) fn wallpaper_for<'a>(s: &Ui, image: &'a rune::Image, window: [f32; 2]
     let rect = place(settings.image_fit, settings.background_zoom);
     let snap = |v: f32| (v * scale).round() / scale;
     let rect = [snap(rect[0]), snap(rect[1]), snap(rect[2]), snap(rect[3])];
-    Some(wallpaper::Wallpaper {
+    wallpaper::Wallpaper {
         pixels: image.pixels(),
         rect,
         // The blur behind covers the window however the image is zoomed
         cover: place(ImageFit::Cover, 1.0),
         window,
         fill: settings.background_fill,
-        edges: s.background_edges,
+        edges: s.background.edges,
         color: s.background_color(rune::Color::BLACK).color(),
         scale: 1.0,
         reach: 1.0,
-    })
+    }
 }
 
 /// The user's image behind everything, where they placed it and with what they picked around it,
 /// faded to the opacity they picked
 fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
-    let image = s.background_image()?;
-    let window = cx.layout_size("page").unwrap_or([460.0, 700.0]);
-    let scale = cx.env().scale;
-    let wallpaper = wallpaper_for(s, image, window, scale)?;
+    let image = s.background.image()?;
+    let wallpaper = wallpaper_for(s, image, window_size(cx), cx.env().scale);
     let layer = el()
         .pin(Some(0.0), Some(0.0), None, None)
         .opacity(s.settings.background_opacity)
         .child(wallpaper.build());
 
     // The header and footer sit right on the image, fading its edges into the window keeps them readable
-    let edge = |top: bool| {
-        let (from, to) = (t.bg.alpha(0.9), t.bg.alpha(0.0));
-        let (fill_top, fill_bottom) = if top { (from, to) } else { (to, from) };
-        let pinned = if top {
-            el().pin(Some(0.0), Some(0.0), Some(0.0), None)
-        } else {
-            el().pin(Some(0.0), None, Some(0.0), Some(0.0))
-        };
-        pinned.h(96.0).gradient(fill_top, fill_bottom)
-    };
+    let (shade, clear) = (t.bg.alpha(0.9), t.bg.alpha(0.0));
+    let top = el().pin(Some(0.0), Some(0.0), Some(0.0), None).h(96.0).gradient(shade, clear);
+    let bottom = el().pin(Some(0.0), None, Some(0.0), Some(0.0)).h(96.0).gradient(clear, shade);
     Some(
         el().key("background")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
             .inert()
             .child(layer)
-            .child(edge(true))
-            .child(edge(false)),
+            .child(top)
+            .child(bottom),
     )
 }
 
@@ -197,12 +196,10 @@ fn header(s: &Ui, t: &Theme) -> El {
 fn update_banner(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
     let (title, actions) = match &s.update {
         Update::Available { version } if !s.update_dismissed => (format!("Version {version} is available"), vec![
-            pill("update-later", "Later", None, Pill::Quiet, true, t, |s, _| {
-                s.update_dismissed = true
-            }),
-            pill("update-now", "Update", Some(&icons::ARROW_UP), Pill::Primary, true, t, |s, _| {
-                s.install_update()
-            }),
+            pill("update-later", "Later", Pill::Quiet).build(t, |s, _| s.update_dismissed = true),
+            pill("update-now", "Update", Pill::Primary)
+                .glyph(&icons::ARROW_UP)
+                .build(t, |s, _| s.install_update()),
         ]),
         Update::Installing => ("Installing… the app will restart".to_string(), vec![
             rune_kit::Spinner::new().size(16.0).color(t.accent).build(&t.kit),
@@ -213,7 +210,7 @@ fn update_banner(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> Option<El> {
     Some(
         plate("update-banner", cx, t)
             .w_full()
-            .child(parts::tab("update-tab", "Update", t.accent, cx, t))
+            .child(parts::tab("update-tab", "Update", t.accent, t))
             .child(
                 row()
                     .w_full()
@@ -285,15 +282,7 @@ fn notice_band(notice: &Notice, cx: &Cx<Ui>, t: &Theme) -> El {
         .child(icon(glyph, 18.0).color(tint))
         .child(text_col);
     if let Some(file) = notice.file.clone() {
-        band = band.child(pill(
-            "reveal-file",
-            "Show in folder",
-            None,
-            Pill::Secondary,
-            true,
-            t,
-            move |_, _| super::services::reveal(&file),
-        ));
+        band = band.child(pill("reveal-file", "Show in folder", Pill::Secondary).build(t, move |_, _| super::services::reveal(&file)));
     }
     band = band.child(ring_button("dismiss-notice", &icons::CLOSE, "Dismiss", false, t, |s| {
         s.notice = None

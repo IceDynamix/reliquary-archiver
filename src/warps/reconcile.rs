@@ -6,7 +6,10 @@
 //! told apart by order: both sides are in the order they were made, so they are matched in order,
 //! and by how close their times are, so a request the capture missed doesn't shift the rest.
 
-use super::Pull;
+use std::collections::HashMap;
+use std::ops::RangeInclusive;
+
+use super::{ID_STEP, Pull};
 
 /// How far apart the capture's clock and the server's may be
 pub const TOLERANCE_SECS: i64 = 15 * 60;
@@ -32,7 +35,7 @@ pub fn group_requests(pulls: &[Pull]) -> Vec<Vec<usize>> {
             let last = &pulls[*group.last().unwrap()];
             group.len() < MAX_REQUEST
                 && last.gacha_id == pull.gacha_id
-                && pull.id.unwrap() - last.id.unwrap() == 100
+                && pull.id.unwrap() - last.id.unwrap() == ID_STEP
                 && (pull.time - last.time).abs() <= 1
         });
         if joins {
@@ -42,6 +45,107 @@ pub fn group_requests(pulls: &[Pull]) -> Vec<Vec<usize>> {
         }
     }
     groups
+}
+
+/// A live pull still waiting for its id, as the store keeps it
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LiveRow {
+    pub rowid: i64,
+    pub gacha_id: u32,
+    pub item_id: u32,
+    /// Unix seconds
+    pub time: i64,
+    pub request_no: Option<u32>,
+}
+
+impl LiveRow {
+    pub fn key(&self) -> LiveKey {
+        LiveKey::new(self.gacha_id, self.time, self.request_no)
+    }
+}
+
+/// What tells live requests apart: the request counter, or without one, the banner and second.
+/// Two requests can't share a second, the warp animation alone takes longer
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LiveKey {
+    Counter(u32),
+    Seen { gacha_id: u32, time: i64 },
+}
+
+impl LiveKey {
+    pub fn new(gacha_id: u32, time: i64, request_no: Option<u32>) -> Self {
+        match request_no {
+            Some(n) => LiveKey::Counter(n),
+            None => LiveKey::Seen { gacha_id, time },
+        }
+    }
+}
+
+/// Gathers live pulls into the requests that made them, as indices into the pulls' order, each
+/// request where its first pull comes
+pub fn group_live(keys: impl IntoIterator<Item = LiveKey>) -> Vec<Vec<usize>> {
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut at: HashMap<LiveKey, usize> = HashMap::new();
+    for (i, key) in keys.into_iter().enumerate() {
+        match at.get(&key) {
+            Some(&group) => groups[group].push(i),
+            None => {
+                at.insert(key, groups.len());
+                groups.push(vec![i]);
+            }
+        }
+    }
+    groups
+}
+
+/// Which `history` pulls the `live` ones are, as (live, history) indices. `live` is in the order
+/// the requests were made, by request counter
+pub fn confirm(live: &[LiveRow], history: &[Pull]) -> Vec<(usize, usize)> {
+    let Some(reach) = reach(live) else {
+        return Vec::new();
+    };
+    let live_groups = group_live(live.iter().map(LiveRow::key));
+    let live_requests: Vec<Request> = live_groups
+        .iter()
+        .map(|group| {
+            let first = &live[group[0]];
+            Request::new(first.gacha_id, group.iter().map(|&i| live[i].item_id).collect(), first.time)
+        })
+        .collect();
+
+    // Matching weighs every live request against every history one, so the history is cut to
+    // what can be any of them
+    let history_groups: Vec<Vec<usize>> = group_requests(history)
+        .into_iter()
+        .filter(|group| reach.contains(&history[group[0]].time))
+        .collect();
+    let history_requests: Vec<Request> = history_groups
+        .iter()
+        .map(|group| {
+            let first = &history[group[0]];
+            Request::new(first.gacha_id, group.iter().map(|&i| history[i].item_id).collect(), first.time)
+        })
+        .collect();
+
+    let mut pairs = Vec::new();
+    for (l, h) in match_requests(&live_requests, &history_requests) {
+        let mut rows = live_groups[l].clone();
+        // The history's order within the request is the real one, the items are the same
+        for &i in &history_groups[h] {
+            if let Some(at) = rows.iter().position(|&row| live[row].item_id == history[i].item_id) {
+                pairs.push((rows.remove(at), i));
+            }
+        }
+    }
+    pairs
+}
+
+/// When history requests that can match the live pulls were made: a match is within
+/// [`TOLERANCE_SECS`] of the clock skew, which is itself at most that. `None` without live pulls
+fn reach(live: &[LiveRow]) -> Option<RangeInclusive<i64>> {
+    let oldest = live.iter().map(|row| row.time).min()?;
+    let newest = live.iter().map(|row| row.time).max()?;
+    Some(oldest - 2 * TOLERANCE_SECS..=newest + 2 * TOLERANCE_SECS)
 }
 
 /// A request to match: what it pulled, and when
@@ -198,6 +302,44 @@ mod tests {
         // The capture's clock is 5 minutes behind
         let live = [Request::new(2142, vec![20011], 700), Request::new(1001, vec![20000], 830)];
         assert_eq!(match_requests(&live, &history), [(0, 0), (1, 2)]);
+    }
+
+    #[test]
+    fn live_requests_without_a_counter_are_told_apart_by_banner_and_second() {
+        let keys = [
+            LiveKey::new(2142, 1000, Some(7)),
+            LiveKey::new(1001, 1000, None),
+            LiveKey::new(2142, 1000, None),
+            LiveKey::new(2142, 1001, Some(7)),
+            LiveKey::new(1001, 1000, None),
+        ];
+        assert_eq!(group_live(keys), [vec![0, 3], vec![1, 4], vec![2]]);
+    }
+
+    #[test]
+    fn history_out_of_reach_of_the_live_pulls_is_left_out() {
+        let row = |rowid, item_id, time| LiveRow {
+            rowid,
+            gacha_id: 1001,
+            item_id,
+            time,
+            request_no: None,
+        };
+        let live = [row(1, 20000, 100_000), row(2, 20001, 100_030)];
+        assert_eq!(reach(&live), Some(100_000 - 2 * TOLERANCE_SECS..=100_030 + 2 * TOLERANCE_SECS));
+        assert_eq!(reach(&[]), None);
+
+        // A long history before them, then the two
+        let mut history: Vec<Pull> = (0..5000).map(|k| pull(100086 + k * ID_STEP * 3, 1001, k)).collect();
+        history.push(Pull {
+            item_id: 20000,
+            ..pull(900_000_086, 1001, 100_002)
+        });
+        history.push(Pull {
+            item_id: 20001,
+            ..pull(900_000_386, 1001, 100_031)
+        });
+        assert_eq!(confirm(&live, &history), [(0, 5000), (1, 5001)]);
     }
 
     #[test]

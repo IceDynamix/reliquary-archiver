@@ -23,6 +23,8 @@ const HIMEKO: u32 = 1003; // 5* character
 const ARROWS: u32 = 20000; // 3* light cone
 const TWO_STAR_HEAD: u32 = 31011; // relic of set 101
 const CHARACTER_BANNER: u32 = 2001;
+/// An item character banners list in `item_detail_list`, which can't be pulled
+const BANNER_DISPLAY_ITEM: u32 = 11;
 
 fn relic(unique_id: u32, main_affix_id: u32) -> ProtoRelic {
     ProtoRelic {
@@ -74,13 +76,14 @@ fn pull(item_ids: &[u32]) -> DoGachaScRsp {
     }
 }
 
+/// An exporter that knows a banner, its lists filled in the way the game does
 fn exporter_with_banner(rate_up: u32) -> OptimizerExporter {
     let mut exporter = OptimizerExporter::new();
     exporter.handle_gacha_info(GetGachaInfoScRsp {
         gacha_info_list: vec![GachaInfo {
             gacha_id: CHARACTER_BANNER,
             prize_item_list: vec![rate_up],
-            item_detail_list: vec![rate_up],
+            item_detail_list: vec![BANNER_DISPLAY_ITEM],
             ..Default::default()
         }],
         ..Default::default()
@@ -244,6 +247,43 @@ fn gacha_result_with_unknown_item_is_dropped() {
 fn gacha_on_unknown_banner_is_dropped() {
     let mut exporter = OptimizerExporter::new();
     assert!(exporter.handle_gacha(pull(&[ARROWS])).is_none());
+}
+
+#[test]
+fn light_cone_banner_is_recognized_by_its_items() {
+    let mut exporter = OptimizerExporter::new();
+    exporter.handle_gacha_info(GetGachaInfoScRsp {
+        gacha_info_list: vec![GachaInfo {
+            gacha_id: CHARACTER_BANNER,
+            prize_item_list: vec![ARROWS],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert!(matches!(exporter.banners[&CHARACTER_BANNER].banner_type, BannerType::LightCone));
+}
+
+#[test]
+fn relic_recon_list_replaces_what_was_known() {
+    use reliquary::network::command::proto::GetRelicBoxDataScRsp::GetRelicBoxDataScRsp;
+    use reliquary::network::command::proto::OpenRelicBoxScRsp::OpenRelicBoxScRsp;
+
+    let mut exporter = OptimizerExporter::new();
+    let box_data = |ids: &[u32]| GetRelicBoxDataScRsp {
+        relic_id_list: ids.to_vec(),
+        ..Default::default()
+    };
+
+    exporter.handle_relic_box_data(box_data(&[1, 2]));
+    exporter.handle_relic_box_open(OpenRelicBoxScRsp {
+        relic_id: 3,
+        ..Default::default()
+    });
+    assert_eq!(exporter.recon_relics, vec![1, 2, 3]);
+
+    let events = exporter.handle_relic_box_data(box_data(&[1, 2, 3]));
+    assert_eq!(events.len(), 3);
+    assert_eq!(exporter.recon_relics, vec![1, 2, 3]);
 }
 
 #[test]

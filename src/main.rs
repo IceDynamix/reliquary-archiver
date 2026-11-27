@@ -1,5 +1,4 @@
 #![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
-extern crate core;
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -19,12 +18,13 @@ mod gui;
 #[cfg(windows)]
 mod update;
 
-#[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+#[cfg(pktmon_only)]
 mod elevation;
 
 mod accounts;
 mod capture;
 mod cli;
+mod dirs;
 mod logging;
 mod merge;
 mod session;
@@ -64,7 +64,7 @@ struct Args {
     #[arg(short = 'p', long, default_value_t = 23313)]
     websocket_port: u16,
 
-    /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
+    /// How verbose the output should be, can be set up to 2 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
@@ -126,28 +126,12 @@ async fn main() {
         error!("Backtrace: {:#?}", backtrace);
     }));
 
-    // Attach to parent console on Windows GUI builds
-    // This is needed for --help output and headless mode to be visible
-    // AttachConsole fails if no parent console exists (e.g. double-clicked from Explorer)
-    #[cfg(all(windows, feature = "gui"))]
-    let has_console =
-        unsafe { windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS).is_ok() };
+    let args = parse_args();
 
-    let args = Args::parse();
-
-    // Detach from parent terminal if requested
-    #[cfg(all(windows, feature = "gui"))]
-    if args.detach {
-        unsafe { windows::Win32::System::Console::FreeConsole().ok() };
+    if let Err(e) = logging::tracing_init(args.verbose, args.log_path.as_deref()) {
+        error!("Could not create the log file: {}", e);
+        return;
     }
-
-    // Allocate a console for headless mode if AttachConsole didn't work
-    #[cfg(all(windows, feature = "gui"))]
-    if args.headless && !has_console && !args.detach {
-        unsafe { windows::Win32::System::Console::AllocConsole().ok() };
-    }
-
-    logging::tracing_init(args.verbose, args.log_path.as_deref());
 
     debug!(?args);
 
@@ -160,6 +144,39 @@ async fn main() {
         info!("press enter to close");
         std::io::stdin().read_line(&mut String::new()).unwrap();
     }
+}
+
+/// Parses the arguments, with a console to show them in.
+///
+/// Windows GUI builds don't get a console of their own. They attach to the parent's so that --help
+/// and headless mode are visible, let go of it for --detach, and open one for headless mode when
+/// there is no parent console (e.g. when double-clicked from Explorer).
+fn parse_args() -> Args {
+    #[cfg(all(windows, feature = "gui"))]
+    {
+        use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole, FreeConsole};
+
+        let has_console = unsafe { AttachConsole(ATTACH_PARENT_PROCESS).is_ok() };
+        let args = Args::parse();
+        if args.detach {
+            let _ = unsafe { FreeConsole() };
+        } else if args.headless && !has_console {
+            let _ = unsafe { AllocConsole() };
+        }
+        args
+    }
+
+    #[cfg(not(all(windows, feature = "gui")))]
+    Args::parse()
+}
+
+/// Whether capturing needs administrator rights the program doesn't have
+fn needs_admin() -> bool {
+    #[cfg(pktmon_only)]
+    return !elevation::is_admin();
+
+    #[cfg(not(pktmon_only))]
+    false
 }
 
 async fn run(args: Args) {
@@ -179,14 +196,9 @@ async fn run(args: Args) {
         error!("Failed to update: {}", e);
     }
 
-    #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-    let needs_admin = !elevation::is_admin();
-    #[cfg(not(all(not(feature = "pcap"), feature = "pktmon")))]
-    let needs_admin = false;
-
     // The GUI explains why and offers to restart itself, the CLI asks right away
-    #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-    if needs_admin && !gui_mode {
+    if !gui_mode && needs_admin() {
+        #[cfg(pktmon_only)]
         elevation::prompt_and_escalate();
         return;
     }
@@ -211,7 +223,7 @@ async fn run(args: Args) {
         };
 
         gui::run(tap, gui::Options {
-            needs_admin,
+            needs_admin: needs_admin(),
             no_update: args.no_update,
             ui_args: args.ui.clone().unwrap_or_default(),
             test_controller: args.test_controller,
@@ -226,9 +238,6 @@ async fn run(args: Args) {
         }
         return;
     }
-
-    #[cfg(not(feature = "gui"))]
-    let _ = (gui_mode, needs_admin);
 
     cli::run(args, source_spec).await;
 }

@@ -1,10 +1,11 @@
 //! Where capturing stands: the steps as a node track, what to do next while waiting, what's in
 //! the way when something is, and what the account holds once it's in.
 
-use rune::{Color, Cx, El, Icon, col, el, icon, row, text};
+use rune::{Cx, El, Icon, col, el, icon, row, text};
 use rune_kit::SegmentedControl;
 
-use super::parts::{Node, Pill, kicker, lead_plate, node_track, pill, rule, tab};
+use super::format::{grouped, sentence};
+use super::parts::{Node, Pill, dot_sep, kicker, lead_plate, node_track, pill, rule, tab};
 use crate::gui::icons;
 use crate::gui::state::{Inventory, Stage, Ui, Update};
 use crate::gui::theme::{self, Theme};
@@ -23,17 +24,13 @@ struct Headline {
 }
 
 pub fn view(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
-    let body = match s.stage() {
-        Stage::Ready { uid, inventory } => ready(s, t, uid, inventory),
-        stage => pending(s, t, stage),
-    };
-    let label = match s.stage() {
-        Stage::Ready { .. } => "Archive",
-        _ => "Capture",
+    let (label, body) = match s.stage() {
+        Stage::Ready { uid, inventory } => ("Archive", ready(s, t, uid, inventory)),
+        stage => ("Capture", pending(s, t, stage)),
     };
     lead_plate("status", cx, t)
         .w_full()
-        .child(tab("status-tab", label, t.accent, cx, t))
+        .child(tab("status-tab", label, t.accent, t))
         .child(
             col()
                 .w_full()
@@ -121,22 +118,12 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
             detail: String::new(),
             problem: Some(&icons::SHIELD),
             actions: vec![
-                pill(
-                    "restart-as-admin",
-                    "Restart as administrator",
-                    None,
-                    Pill::Primary,
-                    true,
-                    t,
-                    |s, tx| {
-                        if let Some(services) = &s.services {
-                            services.restart_as_admin(tx);
-                        }
-                    },
-                ),
-                pill("get-pcap-version", "No-admin version", None, Pill::Quiet, true, t, |_, _| {
-                    super::open_url(super::RELEASES_URL)
+                pill("restart-as-admin", "Restart as administrator", Pill::Primary).build(t, |s, tx| {
+                    if let Some(services) = &s.services {
+                        services.restart_as_admin(tx);
+                    }
                 }),
+                pill("get-pcap-version", "No-admin version", Pill::Quiet).build(t, |_, _| super::open_url(super::RELEASES_URL)),
             ],
         });
     }
@@ -145,13 +132,11 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
         let detail = if npcap {
             format!("Npcap is missing or broken. Install or reinstall it. Retrying… ({})", error.message)
         } else {
-            format!("{}. Trying again…", capitalize(&error.message))
+            format!("{}. Trying again…", sentence(&error.message))
         };
         let mut actions = Vec::new();
         if npcap {
-            actions.push(pill("download-npcap", "Download Npcap", None, Pill::Primary, true, t, |_, _| {
-                super::open_url(NPCAP_URL)
-            }));
+            actions.push(pill("download-npcap", "Download Npcap", Pill::Primary).build(t, |_, _| super::open_url(NPCAP_URL)));
         }
         return Some(Headline {
             kicker: "Can't capture",
@@ -165,19 +150,13 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
         let mut actions = Vec::new();
         if s.updates_supported {
             let checking = matches!(s.update, Update::Checking | Update::Installing);
-            actions.push(pill(
-                "check-for-updates",
-                "Check for updates",
-                None,
-                Pill::Primary,
-                !checking,
-                t,
-                |s, _| s.check_for_update(),
-            ));
+            actions.push(
+                pill("check-for-updates", "Check for updates", Pill::Primary)
+                    .enabled(!checking)
+                    .build(t, |s, _| s.check_for_update()),
+            );
         }
-        actions.push(pill("ask-on-discord", "Ask on Discord", None, Pill::Quiet, true, t, |_, _| {
-            super::open_url(super::DISCORD_URL)
-        }));
+        actions.push(pill("ask-on-discord", "Ask on Discord", Pill::Quiet).build(t, |_, _| super::open_url(super::DISCORD_URL)));
         return Some(Headline {
             kicker: "Can't read the game",
             title: "This game version isn't supported yet".into(),
@@ -200,16 +179,17 @@ fn problem(s: &Ui, t: &Theme) -> Option<Headline> {
 
 fn ready(s: &Ui, t: &Theme, uid: u32, inventory: Inventory) -> El {
     // An interrupted capture still has the data from before, but the user has to relog to catch up
-    let (kicker_text, kicker_tint, title, note, note_color): (_, Color, _, _, Color) = if s.capture.stalled {
-        (
-            "Capture interrupted",
-            t.warn,
-            "Missing recent changes",
-            "Relog to catch up on recent changes.",
-            t.text,
-        )
+    let stalled = s.capture.stalled;
+    let (kicker_text, kicker_tint) = if stalled {
+        ("Capture interrupted", t.warn)
     } else {
-        ("Recorded", t.good, "Archive ready", "Updates live as you play.", t.faint)
+        ("Recorded", t.good)
+    };
+    let title = if stalled { "Missing recent changes" } else { "Archive ready" };
+    let (note, note_color) = if stalled {
+        ("Relog to catch up on recent changes.", t.text)
+    } else {
+        ("Updates live as you play.", t.faint)
     };
 
     let count = |key: &'static str, count: usize, label: &'static str| {
@@ -219,7 +199,7 @@ fn ready(s: &Ui, t: &Theme, uid: u32, inventory: Inventory) -> El {
             .min_w(0.0)
             .gap(2.0)
             .items_center()
-            .child(text(group_digits(count)).key("count").font(theme::NUMBER).color(t.accent))
+            .child(text(grouped(count)).key("count").font(theme::NUMBER).color(t.accent))
             .child(kicker(label, t.muted))
     };
     let divider = || el().w(1.0).h(40.0).fill(t.line).self_center();
@@ -236,7 +216,7 @@ fn ready(s: &Ui, t: &Theme, uid: u32, inventory: Inventory) -> El {
                         .gap(8.0)
                         .center_y()
                         .child(kicker(kicker_text, kicker_tint))
-                        .child(el().size(3.0, 3.0).radius(1.5).fill(t.faint))
+                        .child(dot_sep(t))
                         .child(kicker(&format!("UID {uid}"), t.muted).key("uid")),
                 )
                 .child(text(title).key("headline").font(theme::HEADLINE).color(t.text)),
@@ -276,37 +256,4 @@ fn account_picker(s: &Ui, t: &Theme) -> Option<El> {
                 .key("accounts"),
         ),
     )
-}
-
-fn capitalize(s: &str) -> String {
-    let mut chars = s.chars();
-    chars
-        .next()
-        .map_or_else(String::new, |first| first.to_uppercase().chain(chars).collect())
-}
-
-/// 12345 as "12,345"
-fn group_digits(n: usize) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(',');
-        }
-        out.push(digit);
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn digits_are_grouped_in_threes() {
-        assert_eq!(group_digits(0), "0");
-        assert_eq!(group_digits(999), "999");
-        assert_eq!(group_digits(1000), "1,000");
-        assert_eq!(group_digits(1234567), "1,234,567");
-    }
 }

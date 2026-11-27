@@ -169,11 +169,8 @@ impl Anchor {
     }
 }
 
-/// User-configurable application settings.
-///
-/// These settings are persisted to disk as JSON in the user's app data folder.
-/// Settings are saved automatically whenever they change, see [`SettingsFile`].
-/// Fields that older versions wrote and that are gone now are ignored when loading.
+/// What the user can change. Fields that older versions wrote and that are gone now are ignored
+/// when loading
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct Settings {
@@ -239,6 +236,23 @@ impl Default for Settings {
     }
 }
 
+impl Settings {
+    /// Takes how `other` looks: its theme, accent, where the cards sit and its background
+    pub fn keep_appearance_of(&mut self, other: &Settings) {
+        self.theme = other.theme;
+        self.accent = other.accent;
+        self.card_anchor = other.card_anchor;
+        self.background_image = other.background_image.clone();
+        self.image_fit = other.image_fit;
+        self.background_zoom = other.background_zoom;
+        self.background_opacity = other.background_opacity;
+        self.background_anchor = other.background_anchor;
+        self.background_target = other.background_target;
+        self.background_fill = other.background_fill;
+        self.background_color = other.background_color.clone();
+    }
+}
+
 /// Where the window sits on the desktop, in physical pixels
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct WindowFrame {
@@ -280,19 +294,6 @@ impl WindowFrame {
     }
 }
 
-/// The app's own folder, which the settings file and the scaled backgrounds go in: in the local
-/// app data folder on Windows, in the user's config folder elsewhere
-pub fn data_dir() -> Option<PathBuf> {
-    let base = if cfg!(windows) {
-        std::env::var_os("LOCALAPPDATA").map(PathBuf::from)
-    } else {
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-    };
-    base.filter(|path| path.is_absolute()).map(|path| path.join("reliquary-archiver"))
-}
-
 /// The settings file, and what it holds.
 ///
 /// A single writer task, [`SettingsFile::writer`], writes the settings whenever they change. Changes
@@ -302,8 +303,6 @@ pub struct SettingsFile {
     path: Option<PathBuf>,
     /// The settings that were last handed to the writer
     to_save: watch::Sender<Settings>,
-    /// Never read, so the writer's clone of it sees every change made since the file was loaded
-    changes: watch::Receiver<Settings>,
     /// What the file holds. Locked while writing, so only one write happens at a time
     written: Arc<Mutex<Settings>>,
 }
@@ -312,13 +311,8 @@ impl SettingsFile {
     /// `saved` is what the file at `path` holds
     fn new(path: Option<PathBuf>, saved: Settings) -> Self {
         let written = Arc::new(Mutex::new(saved.clone()));
-        let (to_save, changes) = watch::channel(saved);
-        Self {
-            path,
-            to_save,
-            changes,
-            written,
-        }
+        let (to_save, _) = watch::channel(saved);
+        Self { path, to_save, written }
     }
 
     /// Saves the settings if they changed since they were last saved
@@ -333,10 +327,11 @@ impl SettingsFile {
         });
     }
 
-    /// Writes the settings whenever they change, for as long as the app runs
+    /// Writes the settings whenever they change from now on, for as long as the app runs. A change
+    /// saved before this is called waits for the next one, so call it before anything can save
     pub fn writer(&self) -> impl Future<Output = ()> + Send + 'static {
         let path = self.path.clone();
-        let mut changes = self.changes.clone();
+        let mut changes = self.to_save.subscribe();
         let written = self.written.clone();
 
         async move {
@@ -355,9 +350,7 @@ impl SettingsFile {
             }
         }
     }
-}
 
-impl SettingsFile {
     /// Writes what the writer task hasn't gotten to yet, for when the app is about to exit
     pub fn flush(&self) {
         if let Some(path) = &self.path {
@@ -387,19 +380,9 @@ fn flush(path: &Path, written: &Mutex<Settings>, latest: impl FnOnce() -> Settin
     }
 }
 
-/// Writes the settings to the file at `path`.
-///
-/// They are written to a temporary file first, which then replaces the settings file, so the
-/// settings file is never left half written if the application crashes or is killed meanwhile.
 fn write(path: &Path, settings: &Settings) -> io::Result<()> {
-    // The process id keeps two running instances from writing to the same temporary file
-    let temp_path = path.with_extension(format!("json.{}.tmp", std::process::id()));
-
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&temp_path, serde_json::to_string_pretty(settings)?)?;
-    std::fs::rename(&temp_path, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp_path);
-    })
+    let json = serde_json::to_string_pretty(settings)?;
+    crate::dirs::write_atomic(path, |temp| std::fs::write(temp, json))
 }
 
 /// Loads settings synchronously from disk before the GUI initializes, so the update check and
@@ -411,7 +394,7 @@ pub fn load() -> (Settings, SettingsFile) {
     // For when saving could destroy settings the file still holds
     let unsaved_defaults = || (Settings::default(), SettingsFile::new(None, Settings::default()));
 
-    let Some(dir) = data_dir() else {
+    let Some(dir) = crate::dirs::config_dir() else {
         tracing::warn!("Could not determine where to keep settings, using default settings that won't be saved");
         return unsaved_defaults();
     };
@@ -459,13 +442,12 @@ pub fn load() -> (Settings, SettingsFile) {
     };
     let file = SettingsFile::new(Some(path.clone()), settings.clone());
 
-    // Reconcile run_on_start setting with registry state.
-    // e.g. user moves the exe after enabling/disabling run on start — in case
-    // of mismatch, update settings in memory. They differ from the file now, so
-    // the first update saves the correction.
+    // The registry has the last word (the exe may have moved since). A correction differs from
+    // the file, so the first update saves it
     #[cfg(windows)]
-    if let Ok(false) = super::run_on_start::registry_matches_settings(settings.run_on_start) {
-        settings.run_on_start = !settings.run_on_start;
+    match super::run_on_start::reconcile_registry() {
+        Ok(registered) => settings.run_on_start = registered,
+        Err(e) => tracing::warn!(%e, "couldn't check the startup entry"),
     }
 
     tracing::info!("Loaded settings from {}", path.display());
@@ -483,6 +465,22 @@ mod tests {
             scale: 2.0,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn settings_from_before_the_rewrite_keep_their_background_and_tray_choice() {
+        let old = r#"{"background_image":"C:\\bg.png","image_fit":"Contain","background_opacity":0.3,"text_shadow_enabled":true,
+            "always_update":false,"minimize_to_tray_on_close":true,"minimize_to_tray_on_minimize":true,"run_on_start":false,
+            "start_minimized":false,"ws_port":4000}"#;
+        let settings: Settings = serde_json::from_str(old).unwrap();
+        assert_eq!(settings.background_image, "C:\\bg.png");
+        assert_eq!(settings.image_fit, ImageFit::Contain);
+        assert_eq!(settings.background_opacity, 0.3);
+        assert!(settings.close_to_tray);
+        assert_eq!(settings.ws_port, 4000);
+        // Older files have no theme or accent, they get the defaults
+        assert_eq!(settings.theme, ThemeMode::System);
+        assert_eq!(settings.accent, Accent::Gold);
     }
 
     #[test]
