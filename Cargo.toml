@@ -24,8 +24,7 @@ ureq = "2.12.1"
 rusqlite = { optional = true, version = "0.43", features = ["bundled"] }
 # Star Rail Station backups are lz-string compressed
 lz-str = { optional = true, version = "0.2.1" }
-# Path while DoGachaScRsp.next_gacha_random waits for a reliquary release
-reliquary = { path = "../reliquary", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v25.0.1", features = [
     "proto-rqa",
     "proto-auth",
 ] }
@@ -63,8 +62,7 @@ windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
 ureq = { version = "2.12.1", features = ["json"] }
-# Path while DoGachaScRsp.next_gacha_random waits for a reliquary release
-reliquary = { path = "../reliquary", features = [
+reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v25.0.1", features = [
     "proto-rqa",
     "proto-auth",
 ] }
