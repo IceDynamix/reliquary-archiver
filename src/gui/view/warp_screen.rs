@@ -1336,7 +1336,7 @@ fn odds_row(view: &View, t: &Theme) -> El {
     }
     let caption = match view.budget {
         Some(budget) => format!("With your {} warps", grouped(budget.warps)),
-        None => "Average warps needed. Log in to use your own.".to_string(),
+        None => "Average warps needed.".to_string(),
     };
     col()
         .key("odds")
