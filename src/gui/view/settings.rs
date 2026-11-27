@@ -351,8 +351,6 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             |s, delta| s.set_background_zoom(s.settings.background_zoom + delta * 0.1),
             t,
         ))
-        .children(placement(s, cx, t))
-        .children(fill_picker(s, t))
         .child(slider_row(
             "opacity",
             "Opacity",
@@ -362,6 +360,8 @@ fn background(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             |s, delta| s.set_background_opacity(s.settings.background_opacity + delta * 0.05),
             t,
         ))
+        .children(placement(s, cx, t))
+        .children(fill_picker(s, t))
 }
 
 /// A setting's name, its [`slider`], and its value
