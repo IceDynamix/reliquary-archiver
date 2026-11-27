@@ -712,7 +712,7 @@ fn fill_picker(s: &Ui, room: f32, t: &Theme) -> Option<El> {
             window: [tile_w, tile_h],
             fill,
             edges: s.background.edges,
-            color: s.background_color(t.bg).color(),
+            color: s.background_color(t.bg).to_color(),
             // Blurs as strong as in a window a few times the tile's size, and the blurred
             // mirror's bands close enough to show in the room around the image, so the fills
             // read apart
@@ -878,14 +878,14 @@ fn updates(s: &Ui, t: &Theme) -> El {
         )
 }
 
-/// The color around the image: picked on the picker (`rune_kit::ColorPicker`, our Rune patch:
-/// anomalyco/rune#1433), typed as a code, or one of the image's own edge colors, black, white or
-/// the window's own
+/// The color around the image: picked on the picker, typed as a code, or one of the image's own
+/// edge colors, black, white or the window's own
 fn color_picker(s: &Ui, room: f32, t: &Theme) -> El {
     let mut swatches = vec![t.bg, Color::BLACK, Color::WHITE];
     if let Some(edges) = s.background.edges {
-        swatches.extend(edges.map(|c| c.alpha(1.0)));
+        swatches.extend(edges);
     }
+    let swatches = swatches.into_iter().map(rune_kit::Hsv::from_color);
     let mut picker = rune_kit::ColorPicker::new(s.background_color(t.bg))
         .label("Color around the image")
         .size(room, 132.0)

@@ -1105,7 +1105,7 @@ impl Ui {
             .hsv
             .or_else(|| self.settings.background_color.as_deref().and_then(rune_kit::Hsv::from_hex))
             .or_else(|| self.background.darkest_edge())
-            .unwrap_or_else(|| rune_kit::Hsv::of(fallback))
+            .unwrap_or_else(|| rune_kit::Hsv::from_color(fallback))
     }
 
     /// Picks the color around `at` (0 to 1 across and down) of the background image for
@@ -1115,7 +1115,7 @@ impl Ui {
             return;
         };
         self.set_background_color(hsv);
-        self.background.hex.replace_text(hsv.hex());
+        rune_kit::ColorPicker::sync_hex(&mut self.background.hex, hsv);
     }
 
     /// Picks the color [`BackgroundFill::Color`] fills with
@@ -1634,7 +1634,7 @@ mod tests {
         // The color around the image falls back to the window's, not the removed image's edges
         assert_eq!(
             ui.background_color(rune::Color::BLACK).hex(),
-            rune_kit::Hsv::of(rune::Color::BLACK).hex()
+            rune_kit::Hsv::from_color(rune::Color::BLACK).hex()
         );
     }
 

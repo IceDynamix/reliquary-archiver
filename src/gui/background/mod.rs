@@ -274,7 +274,7 @@ impl Background {
         self.edges?
             .into_iter()
             .min_by(|a, b| a.luminance().total_cmp(&b.luminance()))
-            .map(rune_kit::Hsv::of)
+            .map(rune_kit::Hsv::from_color)
     }
 
     /// The color around `at` (0 to 1 across and down) of the image, as the eyedropper picks it

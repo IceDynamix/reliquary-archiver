@@ -38,9 +38,8 @@ tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 # unreleased 3.0: sets immediate mode on Windows (rust-pcap/pcap#381) and reports a vanished interface as its own error
 pcap = { optional = true, git = "https://github.com/rust-pcap/pcap", rev = "f3476f62e45740e84595754386612f4e354d152a", features = ["capture-stream"] }
-# A local Rune: the `multi-cutout` branch of ../rune, 1b8ec140 with a color picker in rune-kit
-# (anomalyco/rune#1433). Back to the git rev once that lands upstream
-rune = { optional = true, path = "../rune/crates/rune", default-features = false, features = [
+# Rune at a `dev` revision. Every Rune line (here and in `[patch.crates-io]`) takes the same rev
+rune = { optional = true, git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51", default-features = false, features = [
     "accessibility",
     "dbus",
     "embedded-fonts",
@@ -48,7 +47,7 @@ rune = { optional = true, path = "../rune/crates/rune", default-features = false
     # SVG backgrounds, which the background picker offers
     "svg",
 ] }
-rune-kit = { optional = true, path = "../rune/crates/rune-kit" }
+rune-kit = { optional = true, git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
 png = { optional = true, version = "0.18" }
 # Decodes custom backgrounds (Rune decodes with it too); QOI keeps their scaled copies
 image = { optional = true, version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "qoi"] }
@@ -189,11 +188,11 @@ pktmon = [
 # that depends on Rune patches them too, from the same Rune (Rune's README, "Depending on Rune").
 # winit and sctk-adwaita go together
 [patch.crates-io]
-wgpu-hal = { path = "../rune/vendor/wgpu-hal" }
-naga = { path = "../rune/vendor/naga" }
-winit = { path = "../rune/vendor/winit" }
-sctk-adwaita = { path = "../rune/vendor/sctk-adwaita" }
-parley_engine = { path = "../rune/vendor/parley_engine" }
-accesskit_windows = { path = "../rune/vendor/accesskit_windows" }
-accesskit_atspi_common = { path = "../rune/vendor/accesskit_atspi_common" }
-accesskit_macos = { path = "../rune/vendor/accesskit_macos" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+naga = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
