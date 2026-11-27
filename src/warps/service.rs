@@ -287,6 +287,16 @@ impl Worker {
     }
 
     fn handle(&mut self, command: Command) {
+        // The app shows these as busy from the moment it sends them, so however they end (an
+        // expired key, no key in the cache, a link without one) it has to hear they're done
+        let ends_busy = matches!(command, Command::Sync(_) | Command::FindCachedKey | Command::UseLink(_));
+        self.handle_command(command);
+        if ends_busy {
+            self.busy(None);
+        }
+    }
+
+    fn handle_command(&mut self, command: Command) {
         match command {
             Command::Event(WarpEvent::Pulled(request)) => {
                 let db = get_database();
@@ -965,6 +975,24 @@ mod tests {
         assert_eq!(synced.request_counter, Some(1581));
         let character = synced.pool(Pool::Character).unwrap();
         assert!(character.pity5 < 90, "the gap left by the missing pulls is filled");
+    }
+
+    #[test]
+    fn a_sync_that_cant_start_still_ends_busy() {
+        let busy = Arc::new(Mutex::new(Vec::new()));
+        let heard = busy.clone();
+        let mut worker = Worker::new(
+            Store::open_in_memory().unwrap(),
+            Box::new(move |update| {
+                if let Update::Busy(what) = update {
+                    heard.lock().unwrap().push(what);
+                }
+            }),
+        );
+        // No authkey, as after one expired: the sync stops before it asks the history
+        worker.handle(Command::Sync(801234567));
+        worker.handle(Command::UseLink("https://example.com/no-key-here".into()));
+        assert_eq!(*busy.lock().unwrap(), vec![None, None]);
     }
 
     #[test]
