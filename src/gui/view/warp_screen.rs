@@ -23,7 +23,7 @@ use rune::{
     row, text,
 };
 
-use super::parts::{self, Pill, kicker, perforation, pill, ring_button, rule, tab, ticket_on};
+use super::parts::{self, Pill, faded_tab, kicker, lead_ticket_on, perforation, pill, ring_button, rule};
 use crate::gui::art::{Art, BannerArt, Layer, Ticket};
 use crate::gui::icons;
 use crate::gui::state::{Funds, PageScroll, Roster, Ui, WarpPage, snap_wheel, turn_page};
@@ -1034,8 +1034,8 @@ fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], width: f32, cx: 
         Pool::Departure => "Departure warp",
     };
     let surface = view.featured.and_then(|(item, _)| card_surface(s, item, t));
-    let card = ticket_on("warp-card", &["warp-card-tear", "warp-card-tear-history"], surface, cx, t)
-        .child(tab("warp-card-tab", title, view.accent, cx, t))
+    let card = lead_ticket_on("warp-card", &["warp-card-tear", "warp-card-tear-history"], surface, cx, t)
+        .child(faded_tab("warp-card-tab", title, view.accent, cx, t))
         .child(
             col()
                 .w_full()
@@ -1472,16 +1472,8 @@ fn name_tags(view: &View, item: u32, t: &Theme) -> El {
         (c, true) => format!("Owned  ·  S{c}"),
         (c, false) => format!("Owned  ·  E{}", c - 1),
     });
-    // Tags that fade out to the left, towards the art they sit on
-    let strip = |content: El, tint: Color| {
-        row()
-            .h(26.0)
-            .pl(28.0)
-            .pr(12.0)
-            .center_y()
-            .linear_gradient(std::f32::consts::FRAC_PI_2, [(0.0, tint.alpha(0.0)), (0.3, tint), (1.0, tint)])
-            .child(content)
-    };
+    // Plain strips of color for the name and the tags under it, so they read over the art
+    let strip = |content: El, tint: Color| row().min_h(26.0).px(12.0).center_y().fill(tint).child(content);
     let shade = Color::BLACK.alpha(0.55);
     rise(
         col()
@@ -1489,14 +1481,21 @@ fn name_tags(view: &View, item: u32, t: &Theme) -> El {
             .gap(6.0)
             .items_end()
             .max_w(440.0)
-            .child(text("★★★★★").font(theme::LABEL).color(parts::progress(t)))
             .child(
-                text(view.summary.name(item))
-                    .font(NAME)
-                    .color(Color::WHITE)
-                    .wrap()
-                    .align(rune::Align::End)
-                    .shadow(0.0, 10.0, Color::BLACK.alpha(0.6)),
+                row()
+                    .gap(2.0)
+                    .children((0..5).map(|_| icon(&icons::WARP_FILLED, 14.0).color(parts::progress(t)))),
+            )
+            .child(
+                strip(
+                    text(view.summary.name(item))
+                        .font(NAME)
+                        .color(Color::WHITE)
+                        .wrap()
+                        .align(rune::Align::End),
+                    shade,
+                )
+                .py(4.0),
             )
             .child(strip(text(kicker_words).font(theme::SMALL).color(Color::WHITE.alpha(0.92)), shade))
             .children(owned.map(|o| strip(text(o).font(theme::SMALL).color(rune::oklch(0.25, 0.04, 70.0)), parts::progress(t)))),
@@ -1631,19 +1630,7 @@ fn session_row(s: &Ui, view: &View, t: &Theme) -> Option<El> {
             .w_full()
             .gap(10.0)
             .center_y()
-            .child(
-                row()
-                    .h(22.0)
-                    .pl(10.0)
-                    .pr(22.0)
-                    .center_y()
-                    .linear_gradient(std::f32::consts::FRAC_PI_2, [
-                        (0.0, view.accent),
-                        (0.65, view.accent),
-                        (1.0, view.accent.alpha(0.0)),
-                    ])
-                    .child(text("Live").font(COUNT).color(t.on_accent)),
-            )
+            .child(live_badge(view.accent))
             .child(text(words).font(theme::SMALL).color(t.text).truncate().grow(1.0).min_w(0.0))
             .children((waiting > 0).then(|| {
                 text(format!("{waiting} waiting for the game's history"))
@@ -1652,6 +1639,16 @@ fn session_row(s: &Ui, view: &View, t: &Theme) -> Option<El> {
             })),
         0.35,
     ))
+}
+
+/// A small outlined LIVE mark, for warps seen as they happened
+pub(super) fn live_badge(tint: Color) -> El {
+    el().px(5.0)
+        .h(16.0)
+        .center()
+        .radius(3.0)
+        .border(1.0, tint)
+        .child(text("LIVE").font(theme::KICKER).color(tint))
 }
 
 // ---- words and numbers -------------------------------------------------------------------------

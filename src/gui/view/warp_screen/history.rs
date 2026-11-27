@@ -312,15 +312,7 @@ fn latest_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El
                     .min_w(0.0),
             );
         if pull.id.is_none() {
-            line = line.child(
-                el().px(5.0)
-                    .h(16.0)
-                    .center()
-                    .radius(3.0)
-                    .border(1.0, t.warn)
-                    .help("Not yet in the game's history")
-                    .child(text("LIVE").font(theme::KICKER).color(t.warn)),
-            );
+            line = line.child(super::live_badge(t.warn).help("Not yet in the game's history"));
         }
         let pity = if pull.rarity == 5 { pity.to_string() } else { String::new() };
         line.child(text(pity).font(COUNT).color(tint).w(30.0).align(rune::Align::End))

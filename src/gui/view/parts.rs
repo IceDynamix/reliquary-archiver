@@ -11,9 +11,12 @@ use rune::{Color, Cx, El, Icon, LineCap, Path, Shape, Tx, col, el, icon, row, te
 use crate::gui::state::Ui;
 use crate::gui::theme::{self, Theme};
 
-/// A plate's corners: sharp at the top left and bottom right, generous at the other two, as the
-/// game rounds its big panels
+/// The corners of the card that leads its screen: sharp at the top left and bottom right,
+/// generous at the other two, as the game rounds its big panels. Kept to one card a screen so it
+/// stays special
 pub const CORNERS: [f32; 4] = [0.0, 26.0, 0.0, 26.0];
+/// Every other card's corners: evenly rounded
+pub const PLAIN: [f32; 4] = [14.0; 4];
 /// How far a plate's tag sits in from its left edge
 const TAG_INSET: f32 = 18.0;
 /// How far the accent line runs outside a plate
@@ -43,9 +46,14 @@ pub fn plate(key: &str, cx: &Cx<Ui>, t: &Theme) -> El {
     ticket(key, &[], cx, t)
 }
 
+/// A [`plate`] with the leading card's [`CORNERS`], for the one card that heads its screen
+pub fn lead_plate(key: &str, cx: &Cx<Ui>, t: &Theme) -> El {
+    cut_ticket(key, &[], None, CORNERS, cx, t)
+}
+
 /// The column the plates stack in, with a line running outside it: down the left of every plate
-/// from a sparkle by the first, round the last one's big corner, and dots off its far corner. It
-/// ties the plates together as one set
+/// from a sparkle by the first, round the last one's corner, and dots off its far corner. It ties
+/// the plates together as one set. The last plate has [`PLAIN`] corners
 pub fn plate_stack(key: &str, cx: &Cx<Ui>, t: &Theme) -> El {
     let stack = col().key(key);
     match cx.layout_size(key) {
@@ -66,6 +74,15 @@ pub fn ticket(key: &str, tears: &[&str], cx: &Cx<Ui>, t: &Theme) -> El {
 /// A ticket with `surface` over its glass and under what it holds, cut to its corners and
 /// notches: a banner's colors and motif behind the warp card
 pub fn ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t: &Theme) -> El {
+    cut_ticket(key, tears, surface, PLAIN, cx, t)
+}
+
+/// A [`ticket_on`] with the leading card's [`CORNERS`], for the one card that heads its screen
+pub fn lead_ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t: &Theme) -> El {
+    cut_ticket(key, tears, surface, CORNERS, cx, t)
+}
+
+fn cut_ticket(key: &str, tears: &[&str], surface: Option<El>, corners: [f32; 4], cx: &Cx<Ui>, t: &Theme) -> El {
     let rect = cx.layout(key);
     let mut holes = Vec::new();
     if let Some([x, y, w, h]) = rect {
@@ -82,13 +99,13 @@ pub fn ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t:
     }
     let mut tint = el()
         .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-        .corners(CORNERS)
+        .corners(corners)
         .fill(glass(t))
         .linear_gradient(std::f32::consts::PI, [(0.0, sheen(t)), (0.35, sheen(t).alpha(0.0))])
         .border(1.0, Color::WHITE.alpha(if t.dark { 0.05 } else { 0.35 }));
     let surface = surface.map(|surface| {
         el().pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
-            .clip_corners(CORNERS)
+            .clip_corners(corners)
             .child(surface.w_full().h_full())
             .cutout_circles(holes.iter().map(|&hole| (hole, NOTCH - 0.5, NOTCH)))
             .inert()
@@ -97,17 +114,17 @@ pub fn ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t:
 
     col()
         .key(key)
-        .corners(CORNERS)
+        .corners(corners)
         .shadow(10.0, 30.0, Color::BLACK.alpha(if t.dark { 0.35 } else { 0.12 }))
         .child(tint.inert())
         .children(surface)
 }
 
-/// A line offset outside a stack of plates, down its left side and round the last one's big
-/// bottom corner, with a sparkle where it starts and a few dots off the far corner
+/// A line offset outside a stack of plates, down its left side and round the last one's bottom
+/// corner, with a sparkle where it starts and a few dots off the far corner
 fn accent_lines(w: f32, h: f32, t: &Theme) -> Shape {
     let ink = t.text.alpha(if t.dark { 0.26 } else { 0.3 });
-    let r = CORNERS[3] + OFFSET;
+    let r = PLAIN[3] + OFFSET;
     let top = 28.0_f32.min(h / 3.0);
     let path = Path::new()
         .move_to([-OFFSET, top])
@@ -135,20 +152,31 @@ fn accent_lines(w: f32, h: f32, t: &Theme) -> Shape {
     shape
 }
 
-/// A tag on a plate's top edge: a sharp strip of color that fades out to the right, as the game
-/// tags its cards. Put it first in the plate
+/// A tag on a plate's top edge: a sharp strip of color, as the game tags its cards. Put it first
+/// in the plate
 pub fn tab(key: &str, label: &str, tint: Color, cx: &Cx<Ui>, t: &Theme) -> El {
     let _ = cx;
+    tab_strip(key, label, t).pr(12.0).fill(tint)
+}
+
+/// A [`tab`] that fades out to the right, for the one plate that leads its screen. Kept rare so it
+/// stays special
+pub fn faded_tab(key: &str, label: &str, tint: Color, cx: &Cx<Ui>, t: &Theme) -> El {
+    let _ = cx;
+    tab_strip(key, label, t)
+        .pr(36.0)
+        .linear_gradient(std::f32::consts::FRAC_PI_2, [(0.0, tint), (0.7, tint), (1.0, tint.alpha(0.0))])
+}
+
+fn tab_strip(key: &str, label: &str, t: &Theme) -> El {
     row()
         .key(key)
         .h(24.0)
         .pl(12.0)
-        .pr(36.0)
         .center_y()
         .mt(-12.0)
         .ml(TAG_INSET)
         .self_start()
-        .linear_gradient(std::f32::consts::FRAC_PI_2, [(0.0, tint), (0.7, tint), (1.0, tint.alpha(0.0))])
         .child(text(sentence(label)).font(TAB).color(t.on_accent))
 }
 
@@ -156,14 +184,9 @@ const TAB: rune::TextStyle = rune::TextStyle::new(13.0, 650.0).lh(16.0).tracking
 /// A label over a group, quieter than a title
 const LABEL: rune::TextStyle = rune::TextStyle::new(13.0, 600.0).lh(17.0).tracking(0.2);
 
-/// `CAPTURE` or `capture` as `Capture`
+/// `capture` as `Capture`. The rest is left as it is, so `UID` stays in capitals
 fn sentence(label: &str) -> String {
-    let lower = if label.chars().any(|c| c.is_lowercase()) {
-        label.to_string()
-    } else {
-        label.to_lowercase()
-    };
-    let mut chars = lower.chars();
+    let mut chars = label.chars();
     chars
         .next()
         .map_or(String::new(), |first| first.to_uppercase().chain(chars).collect())

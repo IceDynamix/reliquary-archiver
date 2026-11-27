@@ -134,6 +134,13 @@ pub static WARP: Icon = Icon {
     body: r#"<g fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><path d="M12 3.5c.7 4.6 3.9 7.8 8.5 8.5-4.6.7-7.8 3.9-8.5 8.5-.7-4.6-3.9-7.8-8.5-8.5 4.6-.7 7.8-3.9 8.5-8.5z"/></g>"#,
 };
 
+/// A 5 star's rarity mark: the warp glint, filled
+pub static WARP_FILLED: Icon = Icon {
+    name: "ra-warp-filled",
+    view: 24.0,
+    body: r#"<path fill="currentColor" d="M12 3.5c.7 4.6 3.9 7.8 8.5 8.5-4.6.7-7.8 3.9-8.5 8.5-.7-4.6-3.9-7.8-8.5-8.5 4.6-.7 7.8-3.9 8.5-8.5z"/>"#,
+};
+
 /// A list of every pull
 pub static LIST: Icon = Icon {
     name: "ra-list",

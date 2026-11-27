@@ -4,7 +4,7 @@
 use rune::{Color, Cx, El, Icon, col, el, icon, row, text};
 use rune_kit::SegmentedControl;
 
-use super::parts::{Node, Pill, kicker, node_track, pill, plate, rule, tab};
+use super::parts::{Node, Pill, kicker, lead_plate, node_track, pill, rule, tab};
 use crate::gui::icons;
 use crate::gui::state::{Inventory, Stage, Ui, Update};
 use crate::gui::theme::{self, Theme};
@@ -31,7 +31,7 @@ pub fn view(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
         Stage::Ready { .. } => "Archive",
         _ => "Capture",
     };
-    plate("status", cx, t)
+    lead_plate("status", cx, t)
         .w_full()
         .child(tab("status-tab", label, t.accent, cx, t))
         .child(
