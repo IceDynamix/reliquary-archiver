@@ -29,7 +29,7 @@ const COLUMN_MIN_H: f32 = 360.0;
 const PAGE_FOOT: f32 = 28.0;
 /// Between the heading and the cards
 const HEADING_GAP: f32 = 22.0;
-/// The sources page's card is no wider, its rows read badly stretched
+/// The import and export page's card is no wider, its rows read badly stretched
 const SOURCES_MAX_W: f32 = 760.0;
 /// A 5 star's medallion, and the room each takes in the grid
 const MEDALLION: f32 = 54.0;
@@ -74,24 +74,30 @@ pub(super) fn page(s: &Ui, view: &View, width: f32, room: f32, cx: &Cx<Ui>, t: &
 /// The page under the history: where it comes from, the game's history page and Star Rail Station
 /// backups, with what may be missing, and the pick of a backup's profile when one waits. It's the
 /// account's, the same whichever warp is picked
-pub(super) fn sources_page(s: &Ui, view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
+pub(super) fn import_export_page(s: &Ui, view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
     let heading = row()
         .gap(10.0)
         .w_full()
         .center_y()
         .child(kicker("Warp history", view.accent))
         .child(el().size(3.0, 3.0).radius(1.5).fill(t.faint))
-        .child(kicker("Sources", t.muted))
+        .child(kicker("Import / Export", t.muted))
         .child(el().grow(1.0))
-        .child(page_link("sources-to-history", "History", Some(&icons::LIST), WarpPage::History, t));
+        .child(page_link(
+            "import-export-to-history",
+            "History",
+            Some(&icons::LIST),
+            WarpPage::History,
+            t,
+        ));
     col()
-        .key("history-sources-page")
+        .key("history-import-export-page")
         .w_full()
         .max_w(SOURCES_MAX_W)
         .pb(PAGE_FOOT)
         .gap(HEADING_GAP)
         .child(rise(heading, 0.0))
-        .child(rise(sources_card(s, view.summary, cx, t), 0.08))
+        .child(rise(import_export_card(s, view.summary, cx, t), 0.08))
 }
 
 /// For an account with no warps kept yet: how the history fills in, and where from
@@ -114,16 +120,17 @@ pub(super) fn empty(s: &Ui, summary: &Summary, cx: &Cx<Ui>, t: &Theme) -> El {
                     .wrap(),
                 ),
         )
-        .child(sources_card(s, summary, cx, t))
+        .child(import_export_card(s, summary, cx, t))
 }
 
-/// Where the history comes from, with the pick of a backup's profile when one waits
-fn sources_card(s: &Ui, summary: &Summary, cx: &Cx<Ui>, t: &Theme) -> El {
-    let mut card = card("history-sources-card", "Sources", t.secondary, cx, t);
+/// The import and export card, with the pick of a backup's profile when one waits
+fn import_export_card(s: &Ui, summary: &Summary, cx: &Cx<Ui>, t: &Theme) -> El {
+    // No tab: the page's heading already names it. The top pads out to match the bottom
+    let mut card = ticket_on("history-import-export-card", &[], None, cx, t).w_full().pt(8.0);
     if let Some(pick) = &s.warps.choose {
         card = card.child(profile_picker(pick, t).px(22.0).pt(12.0));
     }
-    card.child(sources(s, summary, t).px(22.0).pt(12.0).pb(20.0))
+    card.child(import_export(s, summary, t).px(22.0).pt(12.0).pb(20.0))
 }
 
 /// A card on the page: a ticket with its name on a tab
@@ -164,22 +171,15 @@ fn heading(view: &View, t: &Theme) -> El {
                 .child(el().size(3.0, 3.0).radius(1.5).fill(t.faint))
                 .child(kicker("History", t.muted))
                 .child(el().grow(1.0))
-                .child(sources_link(view.summary, t)),
+                .child(import_export_link(t)),
         )
         .child(row().w_full().gap(30.0).flex_wrap().children(figures))
 }
 
-/// A button down to the sources page from the history's heading. How syncing stands is in the
-/// header already, so it only warns, with its icon, when requests are missing from the history
-fn sources_link(summary: &Summary, t: &Theme) -> El {
-    match summary.missing_requests().filter(|&n| n > 0) {
-        Some(n) => page_link("history-to-sources", "Sources", Some(&icons::ALERT), WarpPage::Sources, t).help(format!(
-            "{} {} missing",
-            grouped(n),
-            if n == 1 { "request" } else { "requests" }
-        )),
-        None => page_link("history-to-sources", "Sources", None, WarpPage::Sources, t).help("Where the history comes from"),
-    }
+/// A button down to the import and export page from the history's heading. How complete the history is
+/// shows on that page, so the button stays quiet
+fn import_export_link(t: &Theme) -> El {
+    page_link("history-to-import-export", "Import / Export", None, WarpPage::ImportExport, t).help("Import a backup, or export the history")
 }
 
 /// A quiet button in a page's heading to the page `to`, no taller than the heading's line
@@ -355,8 +355,8 @@ fn own_scroll(key: &str, content: El, scroll: &rune::Live<[f32; 2]>) -> El {
         .on_wheel(move |s: &mut Ui, wheel: rune::WheelEvent, _: &mut Tx| leave_wheel(s, wheel.dy, PageScroll::of(scroll.get())))
 }
 
-/// Where the history comes from: the game's history page, and Star Rail Station backups
-fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
+/// Syncing the game's history, Star Rail Station backups, and CSV in and out
+fn import_export(s: &Ui, summary: &Summary, t: &Theme) -> El {
     let now = jiff::Timestamp::now().as_second();
     let busy = s.warps.busy.is_some();
     let usable = summary.key.as_ref().is_some_and(|key| key.usable(now));
@@ -448,7 +448,7 @@ fn sources(s: &Ui, summary: &Summary, t: &Theme) -> El {
     };
 
     let mut section = col()
-        .key("history-sources")
+        .key("history-import-export")
         .w_full()
         .gap(10.0)
         .child(option_row("history-sync", &icons::SYNC, "Game history", detail, Some(sync), t))

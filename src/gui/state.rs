@@ -138,18 +138,18 @@ pub struct Warps {
 }
 
 /// The warp screen's views of a warp, one over the other: what its banner is and what the warps in
-/// hand buy, below it the whole history, and below that where the history comes from
+/// hand buy, below it the whole history, and below that importing and exporting it
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WarpPage {
     #[default]
     Banner,
     History,
-    Sources,
+    ImportExport,
 }
 
 impl WarpPage {
     /// Top to bottom
-    pub const ALL: [WarpPage; 3] = [WarpPage::Banner, WarpPage::History, WarpPage::Sources];
+    pub const ALL: [WarpPage; 3] = [WarpPage::Banner, WarpPage::History, WarpPage::ImportExport];
 
     /// The page under this one
     pub fn next(self) -> Option<WarpPage> {
@@ -252,7 +252,7 @@ pub fn snap_wheel(s: &mut Ui, dy: f32, notch: bool, momentum: bool, scroll: Page
 pub fn turn_page(s: &mut Ui) {
     s.warps.page = match s.warps.page {
         WarpPage::Banner => WarpPage::History,
-        WarpPage::History | WarpPage::Sources => WarpPage::Banner,
+        WarpPage::History | WarpPage::ImportExport => WarpPage::Banner,
     };
 }
 
@@ -766,9 +766,9 @@ impl Ui {
             WarpUpdate::Notice { title, detail, error } => self.notify(title, detail, error, None, tx),
             WarpUpdate::ChooseProfile { path, uid, profiles } => {
                 self.warps.choose = Some(ProfilePick { path, uid, profiles });
-                // The pick is on the warp screen's sources page, under where backups are imported
+                // The pick is on the warp screen's import and export page, under where backups are imported
                 self.screen = Screen::Warps;
-                self.warps.page = WarpPage::Sources;
+                self.warps.page = WarpPage::ImportExport;
             }
         }
     }
@@ -1502,17 +1502,17 @@ mod tests {
     }
 
     #[test]
-    fn the_sources_are_under_the_history_and_nothing_under_them() {
+    fn import_export_is_under_the_history_and_nothing_under_it() {
         let mut s = ui();
         s.warps.page = WarpPage::History;
         assert!(snap_wheel(&mut s, -100.0, true, false, BOTH, 1.0));
-        assert_eq!(s.warps.page, WarpPage::Sources);
+        assert_eq!(s.warps.page, WarpPage::ImportExport);
         assert!(!snap_wheel(&mut s, -100.0, true, false, BOTH, 2.0), "the last page scrolls nowhere");
-        assert_eq!(s.warps.page, WarpPage::Sources);
+        assert_eq!(s.warps.page, WarpPage::ImportExport);
         assert!(snap_wheel(&mut s, 100.0, true, false, BOTH, 3.0));
         assert_eq!(s.warps.page, WarpPage::History);
         // The header's button goes back to the banner from either
-        s.warps.page = WarpPage::Sources;
+        s.warps.page = WarpPage::ImportExport;
         turn_page(&mut s);
         assert_eq!(s.warps.page, WarpPage::Banner);
     }

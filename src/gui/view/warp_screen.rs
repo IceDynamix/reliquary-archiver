@@ -294,7 +294,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
         art,
     };
 
-    // The history page sits under the banner's, and the sources under it: turning to them moves
+    // The history page sits under the banner's, and import and export under it: turning to them moves
     // the banner, its art and its name up and out, and the page turned to up into its place. The
     // rail stays
     let turned = s.warps.page != WarpPage::Banner;
@@ -347,7 +347,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
                 [
                     banner,
                     history::page(s, &view, pages_width, pager_height - PAGE_HEADROOM, cx, t),
-                    history::sources_page(s, &view, cx, t),
+                    history::import_export_page(s, &view, cx, t),
                 ],
                 pager_height,
                 shift,
@@ -388,7 +388,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
         let history = history::page(s, &view, width - 32.0, pager_height - PAGE_HEADROOM, cx, t)
             .px(16.0)
             .pt(4.0);
-        let sources = history::sources_page(s, &view, cx, t).px(16.0).pt(4.0);
+        let import_export = history::import_export_page(s, &view, cx, t).px(16.0).pt(4.0);
         col()
             .key("warp-content-narrow")
             .pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0))
@@ -396,7 +396,7 @@ pub fn screen(s: &Ui, cx: &Cx<Ui>, t: &Theme) -> El {
             .gap(18.0)
             .child(header(s, Some(pool), accent, t).px(16.0))
             .child(rail(s, summary, pool, fit, t))
-            .child(pager(s, [banner, history, sources], pager_height, shift))
+            .child(pager(s, [banner, history, import_export], pager_height, shift))
     };
     page.child(content)
 }
@@ -409,7 +409,7 @@ fn page_spring() -> Spring {
     Spring::smooth(0.5, 0.0)
 }
 
-/// The banner's page over the history's over the sources', each [`WarpPage`] in `pages`, showing
+/// The banner's page over the history's over import and export's, each [`WarpPage`] in `pages`, showing
 /// the one turned to. Each scrolls itself when it's taller than the room, and a scroll that runs
 /// on past its end turns the page (see [`snap_wheel`])
 fn pager(s: &Ui, pages: [El; WarpPage::ALL.len()], height: f32, shift: f32) -> El {
@@ -420,7 +420,7 @@ fn pager(s: &Ui, pages: [El; WarpPage::ALL.len()], height: f32, shift: f32) -> E
             .key(match which {
                 WarpPage::Banner => "warp-page-banner",
                 WarpPage::History => "warp-page-history",
-                WarpPage::Sources => "warp-page-sources",
+                WarpPage::ImportExport => "warp-page-import-export",
             })
             .w_full()
             .h(height)
@@ -707,7 +707,7 @@ fn header(s: &Ui, selected: Option<Pool>, accent: Color, t: &Theme) -> El {
         .children(selected.map(|_| {
             let (words, glyph) = match s.warps.page {
                 WarpPage::Banner => ("History", &icons::LIST),
-                WarpPage::History | WarpPage::Sources => ("Banner", &icons::WARP),
+                WarpPage::History | WarpPage::ImportExport => ("Banner", &icons::WARP),
             };
             pill(
                 "warp-history",
