@@ -1483,8 +1483,8 @@ fn name_tags(view: &View, item: u32, t: &Theme) -> El {
             .max_w(440.0)
             .child(
                 row()
-                    .gap(2.0)
-                    .children((0..5).map(|_| icon(&icons::WARP_FILLED, 14.0).color(parts::progress(t)))),
+                    .gap(-3.0)
+                    .children((0..5).map(|_| icon(&icons::WARP_FILLED, 20.0).color(parts::progress(t)))),
             )
             .child(
                 strip(
