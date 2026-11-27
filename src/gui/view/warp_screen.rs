@@ -23,7 +23,7 @@ use rune::{
     row, text,
 };
 
-use super::parts::{self, Pill, faded_tab, kicker, lead_ticket_on, perforation, pill, ring_button, rule};
+use super::parts::{self, Pill, kicker, lead_ticket_on, perforation, pill, ring_button, rule};
 use crate::gui::art::{Art, BannerArt, Layer, Ticket};
 use crate::gui::icons;
 use crate::gui::state::{Funds, PageScroll, Roster, Ui, WarpPage, snap_wheel, turn_page};
@@ -1035,7 +1035,7 @@ fn banner_card(s: &Ui, view: &View, running: &[&RunningBanner], width: f32, cx: 
     };
     let surface = view.featured.and_then(|(item, _)| card_surface(s, item, t));
     let card = lead_ticket_on("warp-card", &["warp-card-tear", "warp-card-tear-history"], surface, cx, t)
-        .child(faded_tab("warp-card-tab", title, view.accent, cx, t))
+        .child(parts::tab("warp-card-tab", title, view.accent, cx, t))
         .child(
             col()
                 .w_full()

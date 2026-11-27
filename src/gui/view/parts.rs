@@ -156,27 +156,16 @@ fn accent_lines(w: f32, h: f32, t: &Theme) -> Shape {
 /// in the plate
 pub fn tab(key: &str, label: &str, tint: Color, cx: &Cx<Ui>, t: &Theme) -> El {
     let _ = cx;
-    tab_strip(key, label, t).pr(12.0).fill(tint)
-}
-
-/// A [`tab`] that fades out to the right, for the one plate that leads its screen. Kept rare so it
-/// stays special
-pub fn faded_tab(key: &str, label: &str, tint: Color, cx: &Cx<Ui>, t: &Theme) -> El {
-    let _ = cx;
-    tab_strip(key, label, t)
-        .pr(36.0)
-        .linear_gradient(std::f32::consts::FRAC_PI_2, [(0.0, tint), (0.7, tint), (1.0, tint.alpha(0.0))])
-}
-
-fn tab_strip(key: &str, label: &str, t: &Theme) -> El {
     row()
         .key(key)
         .h(24.0)
         .pl(12.0)
+        .pr(12.0)
         .center_y()
         .mt(-12.0)
         .ml(TAG_INSET)
         .self_start()
+        .fill(tint)
         .child(text(sentence(label)).font(TAB).color(t.on_accent))
 }
 
