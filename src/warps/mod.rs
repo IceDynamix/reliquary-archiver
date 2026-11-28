@@ -22,7 +22,15 @@
 
 // Keeping warps is the window's: the headless capture only reports them
 #[cfg(feature = "gui")]
+pub mod api;
+#[cfg(feature = "gui")]
+pub mod authkey;
+#[cfg(feature = "gui")]
+pub mod reconcile;
+#[cfg(feature = "gui")]
 pub mod stats;
+#[cfg(feature = "gui")]
+pub mod store;
 
 use jiff::Timestamp;
 

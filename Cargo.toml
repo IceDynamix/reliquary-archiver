@@ -20,6 +20,10 @@ serde_json = "1.0.139"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = "2.12.1"
+# The warp history database
+rusqlite = { optional = true, version = "0.43", features = ["bundled"] }
+# Star Rail Station backups are lz-string compressed
+lz-str = { optional = true, version = "0.2.1" }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v25.0.1", features = [
     "proto-rqa",
     "proto-auth",
@@ -123,6 +127,8 @@ gui = [
     "dep:png",
     "dep:image",
     "dep:sha2",
+    "dep:rusqlite",
+    "dep:lz-str",
     "dep:rfd",
     "windows/Win32_Foundation",
     "windows/Win32_System_Console",
