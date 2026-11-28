@@ -448,60 +448,89 @@ mod tests {
         assert_eq!(count(&events, SessionEvent::ConnectionEstablished), 1);
     }
 
-    /// Replays the captures in `RQA_CAPTURES` (4.7standard.pcapng, 4.7recordauthkey.pcapng) and
-    /// checks the warp events they make
-    #[tokio::test]
-    async fn recorded_warps_and_authkeys_come_out_of_a_capture() {
-        use futures::StreamExt;
-
-        let Ok(dir) = std::env::var("RQA_CAPTURES") else {
-            return;
-        };
-        let replay = |name: &str| crate::capture::Replay::for_path(std::path::Path::new(&dir).join(name)).unwrap();
-        async fn warps(replay: crate::capture::Replay) -> Vec<WarpEvent> {
-            let mut session = session();
-            let mut packets = replay.open().unwrap();
-            let mut found = Vec::new();
-            while let Some(packet) = packets.next().await {
-                for event in session.handle_packet(packet.unwrap()).await {
-                    if let SessionEvent::Warp(event) = event {
-                        found.push(event);
-                    }
-                }
-            }
-            found
+    /// A command carrying `proto`, as the sniffer hands it on
+    fn command(command_id: u16, proto: &impl protobuf::Message) -> GameCommand {
+        let proto_data = proto.write_to_bytes().unwrap();
+        GameCommand {
+            command_id,
+            header_len: 0,
+            data_len: proto_data.len() as u32,
+            proto_header: Vec::new(),
+            proto_data,
         }
+    }
 
-        let pulls: Vec<LiveRequest> = warps(replay("4.7standard.pcapng"))
-            .await
-            .into_iter()
-            .filter_map(|event| match event {
-                WarpEvent::Pulled(request) => Some(request),
-                _ => None,
+    #[test]
+    fn a_warp_is_reported_with_its_request_counter() {
+        use reliquary::network::command::proto::GachaItem::GachaItem;
+        use reliquary::network::command::proto::Item::Item;
+
+        let item = |item_id: u32| GachaItem {
+            gacha_item: Some(Item {
+                item_id,
+                ..Default::default()
             })
-            .collect();
-        let summary: Vec<(u32, Option<u32>, Vec<u32>)> = pulls.iter().map(|p| (p.gacha_id, p.request_no, p.items.clone())).collect();
-        assert_eq!(summary, [
-            (2142, Some(1576), vec![20011]),
-            (1001, Some(1577), vec![20000]),
-            (1001, Some(1578), vec![20015]),
-            (1001, Some(1579), vec![20002]),
-            (1001, Some(1580), vec![20010]),
-            (1001, Some(1581), vec![1106]),
-        ]);
-        assert!(pulls.iter().all(|p| p.uid == 602857786));
-
-        let events = warps(replay("4.7recordauthkey.pcapng")).await;
-        let keys: Vec<&WarpEvent> = events.iter().filter(|e| matches!(e, WarpEvent::Authkey { .. })).collect();
-        // The survey authkey the game asks for at login is left out
-        assert_eq!(keys.len(), 1);
-        assert!(matches!(keys[0], WarpEvent::Authkey { uid: 602857786, authkey } if authkey.len() > 100));
-        let banners = events.iter().find_map(|e| match e {
-            WarpEvent::Banners { banners } => Some(banners),
-            _ => None,
+            .into(),
+            ..Default::default()
+        };
+        let pull = command(command_id::DoGachaScRsp, &DoGachaScRspProto {
+            gacha_id: 2142,
+            next_gacha_random: 1577,
+            gacha_item_list: vec![item(20011), item(1106)],
+            ..Default::default()
         });
-        let banners = banners.expect("the warp screen's banners");
-        assert!(banners.iter().any(|b| b.gacha_id == 2142));
+
+        let event = session().warp_event(Some(602857786), &pull);
+        let Some(WarpEvent::Pulled(request)) = event else {
+            panic!("expected a pull, got {event:?}");
+        };
+        assert_eq!((request.uid, request.gacha_id, request.request_no), (602857786, 2142, Some(1576)));
+        assert_eq!(request.items, [20011, 1106]);
+
+        // A pull before the account is known can't be kept
+        assert!(session().warp_event(None, &pull).is_none());
+    }
+
+    #[test]
+    fn only_the_warp_history_authkey_is_reported() {
+        let authkey = |auth_appid: &str| {
+            command(command_id::GetAuthkeyScRsp, &GetAuthkeyScRspProto {
+                auth_appid: auth_appid.into(),
+                authkey: "key".into(),
+                ..Default::default()
+            })
+        };
+        let session = session();
+
+        assert!(matches!(
+            session.warp_event(Some(7), &authkey(WARP_HISTORY_APP)),
+            Some(WarpEvent::Authkey { uid: 7, authkey }) if authkey == "key"
+        ));
+        // The game asks for one for its surveys at login too
+        assert!(session.warp_event(Some(7), &authkey("webview_survey")).is_none());
+    }
+
+    #[test]
+    fn banners_are_reported_with_their_rate_ups() {
+        use reliquary::network::command::proto::GachaInfo::GachaInfo;
+
+        let info = command(command_id::GetGachaInfoScRsp, &GetGachaInfoScRspProto {
+            gacha_info_list: vec![GachaInfo {
+                gacha_id: 2142,
+                begin_time: 1794349800,
+                end_time: 1797969600,
+                prize_item_list: vec![1511, 1009, 1110, 1207],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        let Some(WarpEvent::Banners { banners }) = session().warp_event(None, &info) else {
+            panic!("expected the banners");
+        };
+        assert_eq!(banners.len(), 1);
+        assert_eq!(banners[0].gacha_id, 2142);
+        assert_eq!(banners[0].rate_up, [1009, 1110, 1207, 1511]);
     }
 
     #[tokio::test]
