@@ -20,7 +20,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use image::DynamicImage;
 use rune::{Color, Image, ImageCache};
@@ -33,6 +33,8 @@ const WARP_ART_ENV: &str = "RQA_WARP_ART";
 /// Downloads at once. They mostly wait on the network, and the art's edge cache answers quickly,
 /// so several run side by side; decoding what they bring is limited apart (`DECODING`)
 const DOWNLOADS: usize = 12;
+/// How long art that couldn't be had, or the manifest, is left before it's asked for again
+const RETRY_MISSING: Duration = Duration::from_secs(5 * 60);
 /// Portraits taller than this are scaled down to it. Their source is 2048, which a high density
 /// screen shows nearly at full size, so it's kept
 const PORTRAIT_HEIGHT: u32 = 2048;
@@ -443,8 +445,8 @@ enum Slot {
     Loading,
     /// Handed to Rune, which may still be preparing it to draw ([`Image::is_ready`])
     Ready(Image),
-    /// Couldn't be had this run, it isn't asked for again until the app restarts
-    Missing,
+    /// Couldn't be had, it's asked for again after [`RETRY_MISSING`]
+    Missing(Instant),
 }
 
 /// Decoded art
@@ -464,6 +466,8 @@ struct Done {
 struct Source {
     /// The file's version, as the manifest has it ([`Manifest::version`])
     version: String,
+    /// What the file's SHA-256 should be, when the manifest says
+    sha256: Option<String>,
     /// The art's base, a folder or a URL
     base: String,
     file: String,
@@ -533,7 +537,8 @@ enum ManifestState {
     NotAsked,
     Loading,
     Ready(Arc<Manifest>),
-    Missing,
+    /// Couldn't be had, it's asked for again after [`RETRY_MISSING`]
+    Missing(Instant),
 }
 
 /// Art for the window. Asked for and handed to Rune on the UI thread; only `done` is shared with
@@ -632,7 +637,9 @@ impl ArtCache {
         let mut state = self.manifest.borrow_mut();
         match &*state {
             ManifestState::Ready(m) => return Some(m.clone()),
-            ManifestState::Loading | ManifestState::Missing => return None,
+            ManifestState::Missing(at) if at.elapsed() < RETRY_MISSING => return None,
+            ManifestState::Loading => return None,
+            ManifestState::Missing(_) => {}
             ManifestState::NotAsked => {}
         }
         match &self.jobs {
@@ -643,7 +650,9 @@ impl ArtCache {
             }
             None => {
                 let manifest = fetch_manifest(&agent()).map(Arc::new);
-                *state = manifest.clone().map_or(ManifestState::Missing, ManifestState::Ready);
+                *state = manifest
+                    .clone()
+                    .map_or(ManifestState::Missing(Instant::now()), ManifestState::Ready);
                 manifest
             }
         }
@@ -656,7 +665,8 @@ impl ArtCache {
             let slots = self.slots.borrow();
             match slots.get(&art) {
                 Some(Slot::Ready(image)) => return (image.is_ready() && image.error().is_none()).then(|| image.clone()),
-                Some(Slot::Loading | Slot::Missing) => return None,
+                Some(Slot::Missing(at)) if at.elapsed() >= RETRY_MISSING => {}
+                Some(Slot::Loading | Slot::Missing(_)) => return None,
                 None => {}
             }
         }
@@ -677,7 +687,7 @@ impl ArtCache {
                 if let Some(tint) = tint {
                     self.tints.borrow_mut().insert(art, accent_of_rgb(tint));
                 }
-                slots.insert(art, image.clone().map_or(Slot::Missing, Slot::Ready));
+                slots.insert(art, image.clone().map_or(Slot::Missing(Instant::now()), Slot::Ready));
                 image
             }
         }
@@ -689,7 +699,7 @@ impl ArtCache {
         match self.slots.borrow().get(&art) {
             Some(Slot::Loading) => true,
             Some(Slot::Ready(image)) => !image.is_ready(),
-            Some(Slot::Missing) | None => false,
+            Some(Slot::Missing(_)) | None => false,
         }
     }
 
@@ -713,7 +723,7 @@ impl ArtCache {
         let mut slots = self.slots.borrow_mut();
         let mut warmed = self.warmed.borrow_mut();
         slots.retain(|art, slot| {
-            let kept = keep(art) || matches!(slot, Slot::Missing);
+            let kept = keep(art) || matches!(slot, Slot::Missing(_));
             if !kept {
                 // Its download is in the cache folder, or on its way there
                 warmed.insert(*art);
@@ -736,6 +746,7 @@ impl ArtCache {
         let file = art.file(&manifest)?;
         Some(Source {
             version: manifest.version(file).to_string(),
+            sha256: manifest.hashes.get(file).cloned(),
             base: warp_art_base(),
             file: file.to_string(),
         })
@@ -763,7 +774,8 @@ impl ArtCache {
         for finished in done {
             match finished {
                 Finished::Manifest(manifest) => {
-                    *self.manifest.borrow_mut() = manifest.map_or(ManifestState::Missing, |m| ManifestState::Ready(Arc::new(m)));
+                    *self.manifest.borrow_mut() =
+                        manifest.map_or(ManifestState::Missing(Instant::now()), |m| ManifestState::Ready(Arc::new(m)));
                 }
                 Finished::Art(Done { art, fetched, tint }) => {
                     if let Some(tint) = tint {
@@ -781,7 +793,7 @@ impl ArtCache {
                             }
                             Slot::Ready(image)
                         }
-                        None => Slot::Missing,
+                        None => Slot::Missing(Instant::now()),
                     };
                     slots.insert(art, slot);
                 }
@@ -881,10 +893,8 @@ fn prune(dir: &std::path::Path, manifest: &Manifest) {
     for entry in entries.flatten() {
         let name = entry.file_name();
         let Some(name) = name.to_str() else { continue };
-        if name.starts_with("warp-") && name.ends_with(".qoi") && !wanted.contains(name) {
-            if std::fs::remove_file(entry.path()).is_ok() {
-                removed += 1;
-            }
+        if name.starts_with("warp-") && name.ends_with(".qoi") && !wanted.contains(name) && std::fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
         }
     }
     if removed > 0 {
@@ -904,7 +914,12 @@ enum Want {
 /// The art from the cache folder, or downloaded into it, and for a banner's backdrop its color.
 /// For [`Want::Kept`], only into the cache folder, and nothing comes back
 fn fetch(agent: &ureq::Agent, art: Art, source: &Source, want: Want) -> (Option<Fetched>, Option<[f32; 3]>) {
-    let Source { version, base, file } = source;
+    let Source {
+        version,
+        sha256,
+        base,
+        file,
+    } = source;
     let (version, file) = (version.as_str(), file.as_str());
     let cached = cache_dir().map(|dir| dir.join(art.cache_name(file, version)));
     let backdrop = matches!(art, Art::Layer(_, Layer::Backdrop));
@@ -926,6 +941,13 @@ fn fetch(agent: &ureq::Agent, art: Art, source: &Source, want: Want) -> (Option<
     let Some(bytes) = read_warp_art(agent, base, file, version) else {
         return (None, None);
     };
+    // A cut-off download, or a bad copy at the edge, would otherwise be kept as this version for good
+    if let Some(expected) = sha256
+        && !expected.eq_ignore_ascii_case(&sha256_hex(&bytes))
+    {
+        tracing::warn!(file, "downloaded art doesn't match its hash, leaving it");
+        return (None, None);
+    }
     // Downloads run side by side freely; from here on it's held until the decoded copy is kept
     let _slot = DECODING.take();
     let Some(image) = decode(&bytes) else {
@@ -1035,12 +1057,18 @@ fn decode(bytes: &[u8]) -> Option<DynamicImage> {
     stream.write_to_buffer(&mut samples);
     let rgba = match channels {
         4 => samples,
-        3 => samples.chunks_exact(3).flat_map(|p| [p[0], p[1], p[2], 255]).collect(),
-        2 => samples.chunks_exact(2).flat_map(|p| [p[0], p[0], p[0], p[1]]).collect(),
+        3 => samples.as_chunks::<3>().0.iter().flat_map(|&[r, g, b]| [r, g, b, 255]).collect(),
+        2 => samples.as_chunks::<2>().0.iter().flat_map(|&[v, a]| [v, v, v, a]).collect(),
         1 => samples.iter().flat_map(|&v| [v, v, v, 255]).collect(),
         _ => return None,
     };
     image::RgbaImage::from_raw(width, height, rgba).map(DynamicImage::ImageRgba8)
+}
+
+/// The SHA-256 of `bytes`, in lowercase hex as the manifest gives it
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn keep(path: &std::path::Path, bytes: &[u8]) {
@@ -1161,6 +1189,14 @@ mod tests {
         let mut kept = vec!["other.qoi".to_string(), layer, named];
         kept.sort();
         assert_eq!(left, kept);
+    }
+
+    #[test]
+    fn hashes_read_as_the_manifest_writes_them() {
+        assert_eq!(
+            sha256_hex(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]

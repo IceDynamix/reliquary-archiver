@@ -52,6 +52,8 @@ png = { optional = true, version = "0.18" }
 image = { optional = true, version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "qoi"] }
 # Decodes the warp art, which hsr-warp-art keeps as JPEG XL
 jxl-oxide = { optional = true, version = "0.12", default-features = false }
+# Checks downloaded warp art against the SHA-256 its manifest gives
+sha2 = { optional = true, version = "0.11" }
 
 [target.'cfg(windows)'.dependencies]
 self_update = { version = "0.44.0", features = ['ureq', 'rustls'], default-features = false }
@@ -160,6 +162,7 @@ gui = [
     "dep:png",
     "dep:image",
     "dep:jxl-oxide",
+    "dep:sha2",
     "dep:rfd",
     "dep:rusqlite",
     "dep:lz-str",

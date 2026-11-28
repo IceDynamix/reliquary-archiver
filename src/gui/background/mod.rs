@@ -6,7 +6,6 @@
 //! to what a window can show, and kept in the app's data folder at that size. Later launches read
 //! the small copy and skip the large decode altogether.
 
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -59,8 +58,8 @@ impl Sample {
         for yy in (y - 1).max(0)..=(y + 1).min(h - 1) {
             for xx in (x - 1).max(0)..=(x + 1).min(w - 1) {
                 let i = ((yy * w + xx) * 4) as usize;
-                for c in 0..3 {
-                    sum[c] += u32::from(self.rgba[i + c]);
+                for (c, total) in sum.iter_mut().enumerate() {
+                    *total += u32::from(self.rgba[i + c]);
                 }
                 n += 1;
             }
@@ -462,14 +461,21 @@ pub fn place(fit: ImageFit, zoom: f32, image: [f32; 2], window: [f32; 2], anchor
 /// Where the scaled copy of the image at `path` is kept. It names the file's path, size and
 /// modification time, so an edited or replaced image is read again
 fn cache_path(path: &Path) -> Option<PathBuf> {
+    use sha2::Digest;
     let meta = std::fs::metadata(path).ok()?;
-    let mut hasher = DefaultHasher::new();
-    path.hash(&mut hasher);
-    meta.len().hash(&mut hasher);
-    meta.modified().ok()?.hash(&mut hasher);
-    COVER.hash(&mut hasher);
-    let folder = crate::dirs::config_dir()?.join(FOLDER);
-    Some(folder.join(format!("{:016x}.qoi", hasher.finish())))
+    let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?;
+    let key = format!(
+        "{}\n{}\n{}\n{}x{}",
+        path.to_string_lossy(),
+        meta.len(),
+        modified.as_nanos(),
+        COVER.0,
+        COVER.1
+    );
+    let hash = sha2::Sha256::digest(key.as_bytes());
+    let name: String = hash[..8].iter().map(|b| format!("{b:02x}")).collect();
+    let folder = crate::dirs::cache_dir()?.join(FOLDER);
+    Some(folder.join(format!("{name}.qoi")))
 }
 
 /// Keeps the scaled copy, in place of any copy of an earlier background
