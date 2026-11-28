@@ -1,0 +1,550 @@
+//! The warp screen's second page, under the banner: one warp's whole history. Its numbers across
+//! the top, every 5 star as a medallion with the pity it came at, ringed by its 50/50, and the
+//! latest pulls. And its third, under that: where the history comes from (the game's history page,
+//! Star Rail Station backups), with what may be missing from it.
+//!
+//! They're pages rather than sheets over the screen: the rail stays beside them, so picking
+//! another warp shows that warp's history, and scrolling back up past their top returns to the
+//! page over them.
+
+use rune::{Color, Cx, El, Icon, SurfaceFit, Tx, col, el, row, text};
+use rune_kit::TextInput;
+
+use super::{COUNT, GAP, View, figure, label, outcome_color, outcome_suffix, rise, scrolling};
+use crate::gui::art::Art;
+use crate::gui::icons;
+use crate::gui::state::{PageScroll, Ui, WarpPage, leave_wheel};
+use crate::gui::theme::{self, Theme};
+use crate::gui::view::format::{ago, clock, grouped, local, percent, utc};
+use crate::gui::view::parts::{Pill, dot_sep, kicker, option_row, pill, rule, submit_on_enter, tab, ticket_on};
+use crate::gui::view::warps::five_keys;
+use crate::warps::service::Summary;
+use crate::warps::stats::{Highlight, Outcome};
+
+/// From this wide the page has two columns: the 5 stars, and beside them the latest pulls, both as
+/// tall as the page's room and scrolling themselves
+const TWO_COLUMNS: f32 = 820.0;
+/// The least the columns are tall, in a short window
+const COLUMN_MIN_H: f32 = 360.0;
+/// Room under the page's last card
+const PAGE_FOOT: f32 = 28.0;
+/// Between the heading and the cards
+const HEADING_GAP: f32 = 22.0;
+/// The import and export page's card is no wider, its rows read badly stretched
+const SOURCES_MAX_W: f32 = 760.0;
+/// A 5 star's medallion, and the room each takes in the grid
+const MEDALLION: f32 = 54.0;
+const CELL: f32 = 74.0;
+/// How many of the latest pulls are listed
+const LATEST: usize = 40;
+/// And how many when the list scrolls itself
+const LATEST_SCROLLED: usize = 150;
+
+/// The page, `width` wide, in a view `room` tall. The warp screen scrolls it
+pub(super) fn page(s: &Ui, view: &View, width: f32, room: f32, cx: &Cx<Ui>, t: &Theme) -> El {
+    let two_columns = width >= TWO_COLUMNS;
+    let side = (width * 0.36).clamp(320.0, 400.0);
+
+    let body = if two_columns {
+        // The cards fill what the view has under the heading, and each scrolls itself, so the
+        // page ends with them and scrolling one leaves the other where it is
+        let heading = cx.layout_size("history-heading").map_or(100.0, |[_, h]| h);
+        let tall = (room - heading - HEADING_GAP - PAGE_FOOT).max(COLUMN_MIN_H);
+        row()
+            .w_full()
+            .h(tall)
+            .gap(GAP)
+            .child(fives_card(s, view, true, cx, t).grow(1.0).min_w(0.0))
+            .child(latest_card(s, view, true, cx, t).w(side))
+    } else {
+        col()
+            .w_full()
+            .gap(GAP)
+            .child(fives_card(s, view, false, cx, t))
+            .child(latest_card(s, view, false, cx, t))
+    };
+    col()
+        .key(format!("history-{}", view.pool.gacha_type()))
+        .w_full()
+        .pb(PAGE_FOOT)
+        .gap(HEADING_GAP)
+        .child(rise(heading(view, t), 0.0))
+        .child(rise(body, 0.08))
+}
+
+/// The page under the history: where it comes from, the game's history page and Star Rail Station
+/// backups, with what may be missing, and the pick of a backup's profile when one waits. It's the
+/// account's, the same whichever warp is picked
+pub(super) fn import_export_page(s: &Ui, view: &View, cx: &Cx<Ui>, t: &Theme) -> El {
+    let heading = row()
+        .gap(10.0)
+        .w_full()
+        .center_y()
+        .child(kicker("Warp history", view.accent))
+        .child(dot_sep(t))
+        .child(kicker("Import / Export", t.muted))
+        .child(el().grow(1.0))
+        .child(page_link(
+            "import-export-to-history",
+            "History",
+            Some(&icons::LIST),
+            WarpPage::History,
+            t,
+        ));
+    col()
+        .key("history-import-export-page")
+        .w_full()
+        .max_w(SOURCES_MAX_W)
+        .pb(PAGE_FOOT)
+        .gap(HEADING_GAP)
+        .child(rise(heading, 0.0))
+        .child(rise(import_export_card(s, view.summary, cx, t), 0.08))
+}
+
+/// For an account with no warps kept yet: how the history fills in, and where from
+pub(super) fn empty(s: &Ui, summary: &Summary, cx: &Cx<Ui>, t: &Theme) -> El {
+    col()
+        .key("history-empty")
+        .w_full()
+        .gap(GAP)
+        .child(
+            col()
+                .w_full()
+                .gap(8.0)
+                .child(text("No warps yet").font(theme::HEADLINE).color(t.text))
+                .child(
+                    text(
+                        "New warps are saved automatically. For the last 6 months, open Warp → View Details in the game. For older ones, import a Star Rail Station backup.",
+                    )
+                    .font(theme::BODY)
+                    .color(t.muted)
+                    .wrap(),
+                ),
+        )
+        .child(import_export_card(s, summary, cx, t))
+}
+
+/// The import and export card, with the pick of a backup's profile when one waits
+fn import_export_card(s: &Ui, summary: &Summary, cx: &Cx<Ui>, t: &Theme) -> El {
+    // No tab: the page's heading already names it. The top pads out to match the bottom
+    let mut card = ticket_on("history-import-export-card", &[], None, cx, t).w_full().pt(8.0);
+    if let Some(pick) = &s.warps.choose {
+        card = card.child(profile_picker(pick, t).px(22.0).pt(12.0));
+    }
+    card.child(import_export(s, summary, t).px(22.0).pt(12.0).pb(20.0))
+}
+
+/// A card on the page: a ticket with its name on a tab
+fn card(key: &str, title: &str, tint: Color, cx: &Cx<Ui>, t: &Theme) -> El {
+    ticket_on(key, &[], None, cx, t)
+        .w_full()
+        .child(tab(&format!("{key}-tab"), title, tint, t))
+}
+
+/// The warp's name, and its numbers in a row
+fn heading(view: &View, t: &Theme) -> El {
+    let stats = view.stats;
+    let mut figures = vec![
+        figure(grouped(stats.total), "warps", t),
+        figure(grouped(stats.count5), "5-stars", t),
+        figure(grouped(stats.count4), "4-stars", t),
+    ];
+    if let Some(avg) = stats.avg_pity5 {
+        figures.push(figure(format!("{avg:.1}"), "average 5-star pity", t));
+    }
+    if stats.played5 > 0 {
+        figures.push(figure(
+            percent(stats.won5 as f64 / stats.played5 as f64),
+            &format!("won {} of {} 50/50s", stats.won5, stats.played5),
+            t,
+        ));
+    }
+    col()
+        .key("history-heading")
+        .w_full()
+        .gap(14.0)
+        .child(
+            row()
+                .w_full()
+                .gap(10.0)
+                .center_y()
+                .child(kicker(&format!("{} warp", label(view.pool)), view.accent))
+                .child(dot_sep(t))
+                .child(kicker("History", t.muted))
+                .child(el().grow(1.0))
+                .child(import_export_link(t)),
+        )
+        .child(row().w_full().gap(30.0).flex_wrap().children(figures))
+}
+
+/// A button down to the import and export page from the history's heading. How complete the history is
+/// shows on that page, so the button stays quiet
+fn import_export_link(t: &Theme) -> El {
+    page_link("history-to-import-export", "Import / Export", None, WarpPage::ImportExport, t).help("Import a backup, or export the history")
+}
+
+/// A quiet button in a page's heading to the page `to`, no taller than the heading's line
+fn page_link(key: &str, label: &str, glyph: Option<&'static Icon>, to: WarpPage, t: &Theme) -> El {
+    let mut link = pill(key, label, Pill::Quiet);
+    if let Some(glyph) = glyph {
+        link = link.glyph(glyph);
+    }
+    link.build(t, move |s: &mut Ui, _| s.warps.page = to).h(28.0).my(-6.0)
+}
+
+/// Every 5 star, newest first, as a medallion: the character or light cone, ringed by how its
+/// 50/50 went, with the pity it came at under it. When it `scrolls` the card fills the column it's
+/// in and the medallions scroll within it, the legend staying under them
+fn fives_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El {
+    let stats = view.stats;
+    let card = card("history-fives-card", "5-stars", view.accent, cx, t);
+    if stats.fives.is_empty() {
+        let none = text("No 5-stars here yet.").font(theme::BODY).color(t.muted);
+        return card.child(col().w_full().px(22.0).pt(16.0).pb(20.0).child(none));
+    }
+    let keys = five_keys(&stats.fives);
+    let medallions = stats.fives.iter().zip(keys).map(|(five, key)| medallion(s, view, five, key, t));
+    let grid = row().key("history-fives").w_full().flex_wrap().children(medallions);
+    let legend = view.pool.has_rate_up().then(|| legend(t).px(22.0).pb(20.0));
+    if !scrolls {
+        let grid = col()
+            .w_full()
+            .px(22.0)
+            .pt(16.0)
+            .pb(if legend.is_some() { 16.0 } else { 20.0 })
+            .child(grid);
+        return card.child(grid).children(legend);
+    }
+    let grid = col().w_full().px(22.0).pt(16.0).pb(4.0).child(grid);
+    let grid = own_scroll("history-fives-scroll", grid, &s.warps.fives_scroll).grow(1.0).min_h(0.0);
+    card.min_h(0.0).child(grid).children(legend.map(|legend| legend.pt(12.0)))
+}
+
+fn medallion(s: &Ui, view: &View, five: &Highlight, key: String, t: &Theme) -> El {
+    let name = view.summary.name(five.item_id);
+    let ring = outcome_color(five.outcome, t);
+    let when = local(five.time, "%Y-%m-%d");
+    let outcome = outcome_suffix(five.outcome);
+    let live = if five.confirmed {
+        ""
+    } else {
+        "  ·  seen live, not in the game's history yet"
+    };
+
+    let inner = MEDALLION - 6.0;
+    let mut face = el()
+        .size(inner, inner)
+        .radius(inner / 2.0)
+        .clip_rounded(inner / 2.0)
+        .fill(t.text.alpha(0.08));
+    if let Some(image) = s.art.as_ref().and_then(|art| art.get(Art::Icon(five.item_id))) {
+        face = face.pixels_fit(image.pixels(), SurfaceFit::Fill);
+    }
+    let pity = row()
+        .gap(4.0)
+        .center_y()
+        .child(text(five.pity.to_string()).font(COUNT).color(ring))
+        .children((!five.confirmed).then(|| text("LIVE").font(theme::KICKER).color(t.warn)));
+    col()
+        .key(key)
+        .w(CELL)
+        .pb(14.0)
+        .gap(5.0)
+        .items_center()
+        .help(format!("{name}  ·  pity {}{outcome}  ·  {when}{live}", five.pity))
+        .child(
+            el().size(MEDALLION, MEDALLION)
+                .radius(MEDALLION / 2.0)
+                .center()
+                .border(2.0, ring.alpha(if five.confirmed { 0.9 } else { 0.45 }))
+                .child(face),
+        )
+        .child(pity)
+        .child(text(name).font(theme::SMALL).color(t.muted).truncate().max_w(CELL - 4.0))
+}
+
+fn legend(t: &Theme) -> El {
+    let entry = |label: &'static str, outcome: Outcome| {
+        row()
+            .gap(6.0)
+            .center_y()
+            .child(el().size(8.0, 8.0).radius(4.0).border(1.5, outcome_color(outcome, t)))
+            .child(text(label).font(theme::SMALL).color(t.faint))
+    };
+    row()
+        .gap(16.0)
+        .flex_wrap()
+        .child(entry("Won the 50/50", Outcome::Won))
+        .child(entry("Guaranteed", Outcome::Guaranteed))
+        .child(entry("Lost the 50/50", Outcome::Lost))
+}
+
+/// The latest pulls, newest first, with the pity the 5 stars came at. When it `scrolls` the card
+/// fills the column it's in and the list scrolls within it, before the page turns
+fn latest_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El {
+    let now = jiff::Timestamp::now();
+    let stats = view.stats;
+    let shown = if scrolls { LATEST_SCROLLED } else { LATEST };
+    let rows = stats
+        .recent
+        .iter()
+        .take(shown)
+        .enumerate()
+        .map(|(i, crate::warps::stats::RecentPull { pull, pity, outcome })| {
+            let tint = match pull.rarity {
+                5 => outcome_color(*outcome, t),
+                4 => rune::oklch(0.68, 0.13, 300.0),
+                _ => t.line,
+            };
+            let name_color = match pull.rarity {
+                5 => t.text,
+                4 => t.text.alpha(0.88),
+                _ => t.muted,
+            };
+            let mut line = row()
+                .key(format!("latest-{i}"))
+                .w_full()
+                .h(28.0)
+                .gap(10.0)
+                .center_y()
+                .child(el().w(3.0).h(16.0).radius(1.5).fill(tint))
+                .child(
+                    text(view.summary.name(pull.item_id))
+                        .font(if pull.rarity == 5 { theme::LABEL } else { theme::SMALL })
+                        .color(name_color)
+                        .truncate()
+                        .grow(1.0)
+                        .min_w(0.0),
+                );
+            if pull.id.is_none() {
+                line = line.child(super::live_badge(t.warn).help("Not yet in the game's history"));
+            }
+            let pity = if pull.rarity == 5 { pity.to_string() } else { String::new() };
+            line.child(text(pity).font(COUNT).color(tint).w(30.0).align(rune::Align::End))
+                .child(
+                    text(ago(now, pull.time))
+                        .font(theme::SMALL)
+                        .color(t.faint)
+                        .w(84.0)
+                        .align(rune::Align::End),
+                )
+        });
+    let body = if stats.recent.is_empty() {
+        col().child(text("No pulls yet.").font(theme::BODY).color(t.muted))
+    } else {
+        col().key("latest-rows").w_full().children(rows)
+    };
+    let body = body.px(22.0).pt(12.0).pb(16.0);
+    let card = card("history-latest-card", "Latest pulls", t.secondary, cx, t);
+    if !scrolls {
+        return card.child(body);
+    }
+    let list = own_scroll("latest-scroll", body, &s.warps.latest_scroll).grow(1.0).min_h(0.0);
+    card.min_h(0.0).child(list)
+}
+
+/// `content` in a column of the history that [`scrolling`] scrolls itself. A wheel over it scrolls
+/// it until its end before the page turns
+fn own_scroll(key: &str, content: El, scroll: &rune::Live<[f32; 2]>) -> El {
+    let scroll_ = scroll.clone();
+    scrolling(key, content, scroll)
+        .on_wheel(move |s: &mut Ui, wheel: rune::WheelEvent, _: &mut Tx| leave_wheel(s, wheel.dy, PageScroll::of(scroll_.get())))
+}
+
+/// Syncing the game's history, Star Rail Station backups, and CSV in and out
+fn import_export(s: &Ui, summary: &Summary, t: &Theme) -> El {
+    let now = jiff::Timestamp::now().as_second();
+    let busy = s.warps.busy.is_some();
+    let usable = summary.key.as_ref().is_some_and(|key| key.usable(now));
+
+    let key_detail = match &summary.key {
+        Some(key) if key.usable(now) => format!(
+            "Authkey from {}, {} · valid ~24h",
+            origin_label(key.origin),
+            ago(crate::warps::from_second(now), crate::warps::from_second(key.obtained_at))
+        ),
+        Some(_) => "The authkey has expired. Open Warp → View Details in the game for a new one.".to_string(),
+        None => "Open Warp → View Details in the game to sync.".to_string(),
+    };
+    let mut detail = col().gap(3.0).child(text(key_detail).font(theme::SMALL).color(t.muted).wrap());
+    if let Some(at) = summary.last_sync {
+        let at = ago(crate::warps::from_second(now), crate::warps::from_second(at));
+        detail = detail.child(text(format!("Last synced {at}")).font(theme::SMALL).color(t.faint));
+    }
+    if let Some(error) = &summary.last_error {
+        detail = detail.child(text(error.clone()).font(theme::SMALL).color(t.bad).wrap());
+    }
+    let sync = pill("sync-warps", "Sync", if usable { Pill::Primary } else { Pill::Secondary })
+        .glyph(&icons::SYNC)
+        .enabled(usable && !busy)
+        .build(t, |s: &mut Ui, _| s.sync_warps());
+
+    let link_field = TextInput::new(&s.warps.link_edit)
+        .label("Warp history link")
+        .placeholder("Paste a warp history link")
+        .on_edit(|s: &mut Ui| &mut s.warps.link_edit)
+        .on_key(submit_on_enter(Ui::use_history_link))
+        .build(&t.kit)
+        .key("history-link")
+        .grow(1.0)
+        .min_w(0.0);
+    let key_actions = row()
+        .w_full()
+        .gap(8.0)
+        .center_y()
+        .child(link_field)
+        .child(
+            pill("use-link", "Use", Pill::Secondary)
+                .enabled(!busy && !s.warps.link_edit.text.trim().is_empty())
+                .build(t, |s: &mut Ui, _| s.use_history_link()),
+        )
+        .child(
+            pill("find-cached-key", "From game cache", Pill::Secondary)
+                .glyph(&icons::KEY)
+                .enabled(!busy)
+                .build(t, |s: &mut Ui, _| s.find_cached_key()),
+        );
+
+    let mut completeness = vec![format!(
+        "{} pulls in {} requests",
+        grouped(summary.total),
+        grouped(summary.requests)
+    )];
+    if summary.unconfirmed > 0 {
+        let when = summary.next_look.map_or(String::new(), |at| format!(" (next check {})", clock(at)));
+        completeness.push(format!("{} pending{when}", summary.unconfirmed));
+    }
+    let gap_note = match summary.missing_requests() {
+        Some(0) => Some(("Complete".to_string(), t.good)),
+        Some(missing) => Some((
+            format!(
+                "{missing} of {} requests missing. Import a Star Rail Station backup to fill in older pulls.",
+                grouped(summary.request_counter.unwrap_or_default() as usize + 1)
+            ),
+            t.warn,
+        )),
+        None => None,
+    };
+
+    let mut section = col()
+        .key("history-import-export")
+        .w_full()
+        .gap(10.0)
+        .child(option_row("history-sync", &icons::SYNC, "Game history", detail, sync, t).py(4.0))
+        .child(key_actions)
+        .child(spaced_rule(t))
+        .child(
+            option_row(
+                "import-srs",
+                &icons::IMPORT,
+                "Star Rail Station",
+                text("Import a .dat backup for older pulls")
+                    .font(theme::SMALL)
+                    .color(t.muted)
+                    .wrap(),
+                pill("import-srs-file", "Import…", Pill::Secondary)
+                    .enabled(!busy)
+                    .build(t, |s: &mut Ui, tx: &mut Tx| s.import_srs(tx)),
+                t,
+            )
+            .py(4.0),
+        )
+        .child(spaced_rule(t))
+        .child(
+            option_row(
+                "warps-csv",
+                &icons::DOWNLOAD,
+                "CSV",
+                text("Export or re-import your history").font(theme::SMALL).color(t.muted).wrap(),
+                row()
+                    .gap(8.0)
+                    .child(
+                        pill("import-csv-file", "Import…", Pill::Secondary)
+                            .enabled(!busy)
+                            .build(t, |s: &mut Ui, tx: &mut Tx| s.import_warps_csv(tx)),
+                    )
+                    .child(
+                        pill("export-csv-file", "Export…", Pill::Secondary)
+                            .enabled(!busy)
+                            .build(t, |s: &mut Ui, tx: &mut Tx| s.export_warps_csv(tx)),
+                    ),
+                t,
+            )
+            .py(4.0),
+        )
+        .child(spaced_rule(t))
+        .child(text(completeness.join("  ·  ")).font(theme::SMALL).color(t.muted).wrap());
+    if let Some((note, color)) = gap_note {
+        section = section.child(text(note).key("gap-note").font(theme::SMALL).color(color).wrap());
+    }
+    section
+}
+
+/// A [`rule`] between the sources, a little nearer the one under it
+fn spaced_rule(t: &Theme) -> El {
+    el().w_full().pt(6.0).child(rule(t))
+}
+
+/// Asks which profile of a backup is the account
+fn profile_picker(pick: &crate::gui::state::ProfilePick, t: &Theme) -> El {
+    let rows = pick.profiles.iter().map(|profile| {
+        let latest = profile
+            .latest
+            .map_or(String::new(), |at| format!(" · latest {}", utc(at, "%Y-%m-%d")));
+        let fits = if profile.fits { "" } else { " · another account's" };
+        let key = profile.key.clone();
+        row()
+            .key(format!("profile-{}", profile.key))
+            .w_full()
+            .gap(10.0)
+            .center_y()
+            .child(
+                col()
+                    .grow(1.0)
+                    .min_w(0.0)
+                    .gap(2.0)
+                    .child(text(profile.name.clone()).font(theme::LABEL).color(t.text).truncate())
+                    .child(
+                        text(format!("{} pulls{latest}{fits}", grouped(profile.pulls)))
+                            .font(theme::SMALL)
+                            .color(if profile.fits { t.muted } else { t.bad }),
+                    ),
+            )
+            .child(
+                pill(&format!("pick-{}", profile.key), "Import", Pill::Secondary)
+                    .enabled(profile.fits)
+                    .build(t, move |s: &mut Ui, _| s.choose_profile(Some(key.clone()))),
+            )
+    });
+    col().key("profile-picker").w_full().child(
+        col()
+            .w_full()
+            .padding(14.0)
+            .gap(10.0)
+            .fill(t.well)
+            .border(1.0, t.accent_line)
+            .child(kicker("Which profile is this account?", t.accent))
+            .child(
+                text(format!("Several profiles could match UID {}. Duplicates are skipped.", pick.uid))
+                    .font(theme::SMALL)
+                    .color(t.muted)
+                    .wrap(),
+            )
+            .children(rows)
+            .child(
+                row()
+                    .w_full()
+                    .child(el().grow(1.0))
+                    .child(pill("cancel-pick", "Cancel", Pill::Quiet).build(t, |s: &mut Ui, _| s.choose_profile(None))),
+            ),
+    )
+}
+
+fn origin_label(origin: crate::warps::store::KeyOrigin) -> &'static str {
+    use crate::warps::store::KeyOrigin;
+    match origin {
+        KeyOrigin::Capture => "the game",
+        KeyOrigin::Cache => "the game's cache",
+        KeyOrigin::Link => "a pasted link",
+    }
+}

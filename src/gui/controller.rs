@@ -126,6 +126,7 @@ pub fn apply(act: Act, s: &mut Ui, tx: &mut Tx) {
                     light_cones: inventory.light_cones + 1,
                     characters: inventory.characters + 1,
                     materials: inventory.materials + 1,
+                    funds: inventory.funds,
                 };
                 s.inventory_changed(uid, grown);
             }

@@ -238,6 +238,8 @@ impl Theme {
     }
 }
 
+/// Small capitals over a title, and labels on tabs and nodes
+pub const KICKER: TextStyle = TextStyle::new(11.5, 600.0).lh(14.0).tracking(1.4);
 pub const HEADLINE: TextStyle = TextStyle::new(25.0, 600.0).lh(30.0).tracking(0.2);
 pub const TITLE: TextStyle = TextStyle::new(16.0, 600.0).lh(20.0).tracking(0.3);
 pub const BODY: TextStyle = TextStyle::new(14.5, 400.0).lh(20.0).tracking(0.15);
