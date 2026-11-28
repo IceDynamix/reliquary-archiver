@@ -1,12 +1,10 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
-use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
 use futures::{FutureExt, Stream, StreamExt, stream};
-use reliquary_archiver::export::fribbels::OptimizerEvent;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{error, info, instrument, warn};
 
@@ -18,25 +16,18 @@ use crate::session::{CaptureSession, SessionEvent};
 pub enum WorkerEvent {
     /// A packet arrived from the network
     PacketReceived,
+    /// The capture couldn't be opened or broke down. It keeps retrying, a packet arriving means it works again
+    CaptureFailed(String),
     /// What the capture session made of a packet
     Session(SessionEvent),
     /// An account logged in, for the first time or again on a new connection
-    AccountLoggedIn {
-        uid: u32,
-    },
-    ExportEvent {
-        uid: u32,
-        event: OptimizerEvent,
-    },
+    AccountLoggedIn { uid: u32 },
+    /// An account's data changed
+    AccountChanged { uid: u32 },
 }
 
-/// Creates a new [`Stream`] that produces the items sent from a [`Future`]
-/// to the [`mpsc::Sender`] provided to the closure.
-///
-/// This is a more ergonomic [`stream::unfold`], which allows you to go
-/// from the "world of futures" to the "world of streams" by simply looping
-/// and publishing to an async channel from inside a [`Future`].
-pub fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> impl Stream<Item = T> {
+/// A [`Stream`] of what `f` sends to the [`mpsc::Sender`] it's given, while it runs
+fn stream_channel<T>(size: usize, f: impl AsyncFnOnce(mpsc::Sender<T>)) -> impl Stream<Item = T> {
     let (sender, receiver) = mpsc::channel(size);
 
     let runner = stream::once(f(sender)).filter_map(|_| async { None });
@@ -58,10 +49,7 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>, tap: Tap) -> im
             }
         });
 
-        // Subscribe to manager's unified event channel
         let mut manager_rx = manager.lock().await.subscribe();
-
-        // Forward events from manager's unified event channel
         loop {
             let event = match manager_rx.recv().await {
                 Ok(event) => event,
@@ -74,14 +62,18 @@ pub fn archiver_worker(manager: Arc<Mutex<MultiAccountManager>>, tap: Tap) -> im
 
             let event = match event {
                 AccountEvent::Discovered { uid } | AccountEvent::Reconnected { uid } => WorkerEvent::AccountLoggedIn { uid },
-                AccountEvent::ExporterEvent { uid, event } => WorkerEvent::ExportEvent { uid, event },
+                AccountEvent::ExporterEvent { uid, .. } => WorkerEvent::AccountChanged { uid },
             };
 
-            output.send(event).await.ok();
+            // The window is gone
+            if output.send(event).await.is_err() {
+                break;
+            }
         }
     })
 }
 
+/// Captures from `tap` until the window stops listening on `output`
 #[instrument(skip_all)]
 async fn tap_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc::Sender<WorkerEvent>, tap: Tap) {
     // The GUI keeps capturing for as long as it runs, a single bad packet shouldn't cost it a network interface
@@ -97,14 +89,20 @@ async fn tap_capture(manager: Arc<Mutex<MultiAccountManager>>, mut output: mpsc:
             Ok(packet) => packet,
             Err(e) => {
                 warn!(%e);
+                if output.send(WorkerEvent::CaptureFailed(e.to_string())).await.is_err() {
+                    return;
+                }
                 continue;
             }
         };
 
-        output.send(WorkerEvent::PacketReceived).await.ok();
-
+        if output.send(WorkerEvent::PacketReceived).await.is_err() {
+            return;
+        }
         for event in session.handle_packet(packet).await {
-            output.send(WorkerEvent::Session(event)).await.ok();
+            if output.send(WorkerEvent::Session(event)).await.is_err() {
+                return;
+            }
         }
     }
 }

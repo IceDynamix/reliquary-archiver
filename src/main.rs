@@ -13,7 +13,7 @@ use crate::capture::SourceSpec;
 mod websocket;
 
 #[cfg(feature = "gui")]
-mod rgui;
+mod gui;
 
 #[cfg(windows)]
 mod update;
@@ -24,6 +24,7 @@ mod elevation;
 mod accounts;
 mod capture;
 mod cli;
+mod dirs;
 mod logging;
 mod merge;
 mod session;
@@ -95,13 +96,21 @@ struct Args {
     #[cfg(all(windows, feature = "gui"))]
     #[arg(long, short = 'd')]
     detach: bool,
+
+    /// Everything after this goes to the GUI's own tooling, e.g. `--ui --snap out.png --scene ready`
+    /// renders a screen to an image without opening a window or capturing anything
+    #[cfg(feature = "gui")]
+    #[arg(long, hide = true, num_args = 0.., allow_hyphen_values = true)]
+    ui: Option<Vec<String>>,
+
+    /// Open the GUI with a second window that puts it into any state, capturing nothing
+    #[cfg(feature = "gui")]
+    #[arg(long, hide = true)]
+    test_controller: bool,
 }
 
 #[cfg(not(any(feature = "pktmon", feature = "pcap")))]
 compile_error!("Either \"pktmon\" (windows exclusive) or \"pcap\" must be enabled");
-
-#[cfg(all(not(windows), feature = "gui"))]
-compile_error!("GUI is only available on windows");
 
 #[cfg(all(not(windows), feature = "pktmon"))]
 compile_error!("The \"pktmon\" capture backend is only available on windows");
@@ -187,7 +196,8 @@ async fn run(args: Args) {
         error!("Failed to update: {}", e);
     }
 
-    if needs_admin() {
+    // The GUI explains why and offers to restart itself, the CLI asks right away
+    if !gui_mode && needs_admin() {
         #[cfg(pktmon_only)]
         elevation::prompt_and_escalate();
         return;
@@ -212,7 +222,12 @@ async fn run(args: Args) {
             }
         };
 
-        rgui::run(tap).unwrap();
+        gui::run(tap, gui::Options {
+            needs_admin: needs_admin(),
+            no_update: args.no_update,
+            ui_args: args.ui.clone().unwrap_or_default(),
+            test_controller: args.test_controller,
+        });
 
         // Check if we need to spawn the updated version after GUI exits
         #[cfg(windows)]

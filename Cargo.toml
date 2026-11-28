@@ -12,8 +12,8 @@ readme = "README.md"
 [dependencies]
 async-stream = "0.3.6"
 clap = { version = "4.5.31", features = ["derive"] }
-jiff = "1.0.3"
 color-eyre = "0.6.3"
+jiff = "1.0.3"
 protobuf = "=3.7.1" # match the protobuf version used in reliquary-codegen
 serde = { version = "1.0.218", features = ["derive"] }
 serde_json = "1.0.139"
@@ -29,17 +29,31 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 futures = { version = "0.3.31" }
 serde_with = "3.12.0"
 open = "5.3.2"
-rfd = { optional = true, version = "0.17.2" }
 tracing-log = "0.2.0"
 axum = { optional = true, version = "0.8.3", features = ["ws", "tracing"] }
 # unreleased 3.0: sets immediate mode on Windows (rust-pcap/pcap#381) and reports a vanished interface as its own error
 pcap = { optional = true, git = "https://github.com/rust-pcap/pcap", rev = "f3476f62e45740e84595754386612f4e354d152a", features = ["capture-stream"] }
-raxis = { optional = true, git = "https://github.com/emmachase/raxis", rev = "662f22f2ef1c689478a1bb715902120200bd34ce", features = ["tokio"] }
+# Rune at a `dev` revision. Every Rune line (here and in `[patch.crates-io]`) takes the same rev
+rune = { optional = true, git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51", default-features = false, features = [
+    "accessibility",
+    "dbus",
+    "embedded-fonts",
+    "native-file-dialog",
+    # SVG backgrounds, which the background picker offers
+    "svg",
+] }
+rune-kit = { optional = true, git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+png = { optional = true, version = "0.18" }
+# Decodes custom backgrounds (Rune decodes with it too); QOI keeps their scaled copies
+image = { optional = true, version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp", "qoi"] }
+# Names the scaled copies of backgrounds by a hash of where they came from
+sha2 = { optional = true, version = "0.11" }
 
 [target.'cfg(windows)'.dependencies]
 self_update = { version = "0.44.0", features = ['ureq', 'rustls'], default-features = false }
+rfd = { optional = true, version = "0.17.2" }
 pktmon = { optional = true, version = "0.6.2", features = ["tokio"] }
-windows = { optional = true, version = "0.61" }
+windows = { optional = true, version = "0.62" }
 windows-registry = { optional = true, version = "0.6.1" }
 
 [build-dependencies]
@@ -58,20 +72,64 @@ winres = "0.1.12"
 # to circumvent the addition that happens in the kcp library
 overflow-checks = false
 
+# Image decoding unoptimized is slow enough to notice: a large background took over ten seconds
+# to show in a debug build. The codecs, and Rune for its mip maps, are optimized even there
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.dev.package.image-webp]
+opt-level = 3
+[profile.dev.package.qoi]
+opt-level = 3
+[profile.dev.package.rune]
+opt-level = 3
+
 [profile.release]
 opt-level = "z"         # optimize for size
 lto = true
 overflow-checks = false # see comment above
 
+# Size optimization makes image decoding several times slower; a background took two seconds
+[profile.release.package.image]
+opt-level = 3
+[profile.release.package.zune-jpeg]
+opt-level = 3
+[profile.release.package.zune-core]
+opt-level = 3
+[profile.release.package.png]
+opt-level = 3
+[profile.release.package.fdeflate]
+opt-level = 3
+[profile.release.package.image-webp]
+opt-level = 3
+[profile.release.package.qoi]
+opt-level = 3
+[profile.release.package.rune]
+opt-level = 3
+
 [features]
 default = ["pcap", "stream"]
 gui = [
     "stream",
-    "dep:raxis",
+    "dep:rune",
+    "dep:rune-kit",
+    "dep:png",
+    "dep:image",
+    "dep:sha2",
     "dep:rfd",
     "windows/Win32_Foundation",
     "windows/Win32_System_Console",
+    "windows/Win32_System_LibraryLoader",
     "windows/Win32_System_Registry",
+    "windows/Win32_UI_Shell",
+    "windows/Win32_UI_WindowsAndMessaging",
     "windows-registry"
 ]
 stream = ["dep:axum"]
@@ -84,3 +142,16 @@ pktmon = [
     "windows/Win32_UI_WindowsAndMessaging",
     "windows/Win32_System_Registry",
 ]
+
+# Rune builds on patched copies of these, and Cargo doesn't take a dependency's patches: an app
+# that depends on Rune patches them too, from the same Rune (Rune's README, "Depending on Rune").
+# winit and sctk-adwaita go together
+[patch.crates-io]
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+naga = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+winit = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+sctk-adwaita = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+accesskit_atspi_common = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
+accesskit_macos = { git = "https://github.com/anomalyco/rune", rev = "048528dc35f0a7499887f334330fd9704cdd8e51" }
