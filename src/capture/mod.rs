@@ -228,7 +228,7 @@ impl Replay {
     }
 
     /// The recording at `path`, if its extension is one that can be read
-    #[cfg(any(feature = "gui", test))]
+    #[cfg(feature = "gui")]
     pub fn for_path(path: PathBuf) -> Option<Self> {
         let extension = path.extension()?.to_str()?.to_ascii_lowercase();
         match extension.as_str() {

@@ -87,7 +87,8 @@ impl Database {
             None => self.avatar_config.get(&item_id)?.Rarity.as_str(),
         };
         // "CombatPowerLightconeRarity5", "CombatPowerAvatarRarityType4" and so on
-        rarity.chars().last()?.to_digit(10).map(|r| r as u8)
+        let stars = rarity.rsplit_once("Rarity")?.1.trim_start_matches("Type");
+        stars.parse().ok().filter(|stars| (1..=5).contains(stars))
     }
 
     /// Whether the item is a light cone rather than a character
