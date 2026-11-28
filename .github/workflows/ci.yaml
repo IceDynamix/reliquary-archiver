@@ -18,6 +18,8 @@ jobs:
       - uses: moonrepo/setup-rust@v1
       - name: Build pcap Windows exe
         run: cargo build --verbose --no-default-features --features pcap,stream,gui
+      - name: Test with the window
+        run: cargo test --no-default-features --features pcap,stream,gui
       - name: Move pcap exe
         run: mv -Force target/debug/reliquary-archiver.exe target/debug/reliquary-archiver-pcap-x64.exe
       - uses: actions/upload-artifact@v4
