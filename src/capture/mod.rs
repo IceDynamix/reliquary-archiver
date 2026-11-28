@@ -17,7 +17,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 use tokio::sync::mpsc;
 use tokio_stream::StreamMap;
-use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream};
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::instrument;
 
 #[cfg(all(windows, feature = "pktmon"))]
@@ -281,8 +281,8 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
             tracing::warn!("Could not find any network devices");
         }
 
-        // Create a channel to forward packets
-        let (tx, rx) = mpsc::unbounded_channel();
+        // Create a channel to forward packets, a slow reader holds up the devices' own channels
+        let (tx, rx) = mpsc::channel(1024);
 
         // Spawn task to manage stream and discover new devices
         tokio::spawn(async move {
@@ -298,7 +298,7 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
                             tracing::warn!(%e);
                         }
 
-                        if tx.send(item).is_err() {
+                        if tx.send(item).await.is_err() {
                             break; // Receiver dropped
                         }
                     }
@@ -309,7 +309,7 @@ impl<B: DeviceBackend> PacketSource for DeviceSource<B> {
             }
         });
 
-        Ok(UnboundedReceiverStream::new(rx).boxed())
+        Ok(ReceiverStream::new(rx).boxed())
     }
 }
 

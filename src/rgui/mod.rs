@@ -40,7 +40,7 @@ use crate::rgui::messages::{RootMessage, SettingsMessage, WebSocketStatus, Windo
 use crate::rgui::state::RootState;
 use crate::rgui::view::view;
 use crate::rgui::worker::archiver_worker;
-use crate::websocket::{PortCommand, PortSource, start_websocket_server};
+use crate::websocket::{PortCommand, start_dynamic_websocket_server};
 use crate::{Args, logging};
 
 // Module declarations
@@ -167,23 +167,17 @@ pub fn run(tap: Tap) -> Result<(), Box<dyn std::error::Error>> {
             Task::future(state.settings_file.writer()).discard(),
             Task::done(RootMessage::Update(update::UpdateMessage::PerformCheck)),
             Task::run(archiver_worker(manager.clone(), tap.clone()), RootMessage::WorkerEvent),
-            Task::future(start_websocket_server(
-                PortSource::Dynamic(WatchStream::new(port_rx.clone())),
-                manager.clone(),
-                selected_account_rx,
-            ))
-            .then(|e| match e {
-                Err(e) => Task::done(RootMessage::ws_status(WebSocketStatus::Failed { error: e })),
-                Ok((port_stream, client_count_stream)) => {
-                    Task::done(RootMessage::ws_status(WebSocketStatus::Pending)).chain(Task::batch(vec![
-                        Task::stream(client_count_stream).map(RootMessage::ws_client_count_changed),
-                        Task::stream(port_stream).map(|port| match port {
-                            Ok(port) => RootMessage::ws_port_changed(port),
-                            Err(e) => RootMessage::ws_invalid_port(e),
-                        }),
-                    ]))
-                }
-            }),
+            {
+                let (port_stream, client_count_stream) =
+                    start_dynamic_websocket_server(WatchStream::new(port_rx.clone()), manager.clone(), selected_account_rx);
+                Task::done(RootMessage::ws_status(WebSocketStatus::Pending)).chain(Task::batch(vec![
+                    Task::stream(client_count_stream).map(RootMessage::ws_client_count_changed),
+                    Task::stream(port_stream).map(|port| match port {
+                        Ok(port) => RootMessage::ws_port_changed(port),
+                        Err(e) => RootMessage::ws_invalid_port(e.to_string()),
+                    }),
+                ]))
+            },
             Task::stream(stream! {
                 loop {
                     logging::wait_for_new_lines().await;

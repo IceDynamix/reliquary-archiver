@@ -43,7 +43,7 @@ fn confirm(msg: &str) -> bool {
     input.starts_with("y") || input.is_empty()
 }
 
-fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
+pub fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
     use std::os::windows::ffi::OsStrExt;
 
     use windows::Win32::System::Console::GetConsoleWindow;
@@ -51,10 +51,9 @@ fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
     use windows::Win32::UI::WindowsAndMessaging::{GW_OWNER, GetWindow, SW_SHOWNORMAL};
     use windows::core::{PCWSTR, w};
 
-    let args_str = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
+    let args_str = command_line(std::env::args_os().skip(1).map(|arg| arg.to_string_lossy().into_owned()));
 
-    let exe_path = std::env::current_exe()
-        .expect("Failed to get current exe")
+    let exe_path = std::env::current_exe()?
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
@@ -82,4 +81,66 @@ fn escalate_to_admin() -> Result<(), Box<dyn std::error::Error>> {
 
     // Exit the current process since we launched a new elevated one
     std::process::exit(0);
+}
+
+/// Joins arguments into a command line that `CommandLineToArgvW` splits back into the same arguments
+fn command_line(args: impl IntoIterator<Item = String>) -> String {
+    let mut line = String::new();
+    for arg in args {
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        quote_argument(&arg, &mut line);
+    }
+    line
+}
+
+/// Quotes an argument if it needs it. Backslashes only escape when they come right before a quote,
+/// so only those (and the ones before the closing quote) are doubled.
+fn quote_argument(arg: &str, line: &mut String) {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\u{b}', '"']) {
+        line.push_str(arg);
+        return;
+    }
+
+    line.push('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                line.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                line.push('"');
+                backslashes = 0;
+            }
+            c => {
+                line.extend(std::iter::repeat_n('\\', backslashes));
+                line.push(c);
+                backslashes = 0;
+            }
+        }
+    }
+    line.extend(std::iter::repeat_n('\\', backslashes * 2));
+    line.push('"');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line(args: &[&str]) -> String {
+        command_line(args.iter().map(|arg| arg.to_string()))
+    }
+
+    #[test]
+    fn arguments_are_quoted_the_way_command_line_to_argv_reads_them() {
+        assert_eq!(line(&["--etl", "capture.etl", "-v"]), "--etl capture.etl -v");
+        assert_eq!(line(&["--log-path", r"C:\My Logs\log.json"]), r#"--log-path "C:\My Logs\log.json""#);
+        assert_eq!(line(&[""]), r#""""#);
+        // Backslashes are doubled only where they end up before a quote
+        assert_eq!(line(&[r"C:\My Folder\"]), r#""C:\My Folder\\""#);
+        assert_eq!(line(&[r"a\\b"]), r"a\\b");
+        assert_eq!(line(&[r#"say "hi""#]), r#""say \"hi\"""#);
+        assert_eq!(line(&[r#"a\"b"#]), r#""a\\\"b""#);
+    }
 }

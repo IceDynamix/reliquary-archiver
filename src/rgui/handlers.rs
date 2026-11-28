@@ -6,7 +6,6 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::Local;
 use raxis::runtime::task::{self, Task};
 use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::OptimizerEvent;
@@ -37,7 +36,9 @@ pub fn handle_export_message(state: &mut RootState, message: ExportMessage) -> O
 
         ExportMessage::New(export) => {
             state.store.json_export = Some(FileContainer {
-                name: Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string(),
+                name: jiff::ZonedDateTime::now()
+                    .strftime("archive_output-%Y-%m-%dT%H-%M-%S.json")
+                    .to_string(),
                 content: serde_json::to_string_pretty(&export).unwrap(),
                 ext: FileExtensions::of("JSON files", &["json"]),
             });
@@ -64,15 +65,11 @@ fn refresh_export_task(state: &RootState, uid: Option<u32>) -> Task<RootMessage>
     let manager = state.manager.clone();
 
     Task::future(async move {
-        let exporter = {
-            let manager = manager.lock().await;
-            match uid {
-                Some(uid) => manager.get_account_exporter(uid),
-                None => manager.get_first_account_exporter(),
-            }
+        let manager = manager.lock().await;
+        let exporter = match uid {
+            Some(uid) => manager.account_exporter(uid),
+            None => manager.latest_exporter(),
         }?;
-
-        let exporter = exporter.lock().await;
         if exporter.is_initialized() { exporter.export() } else { None }
     })
     .and_then(|export| Task::done(RootMessage::new_export(export)))
@@ -83,14 +80,8 @@ fn export_stats_task(state: &RootState, uid: u32) -> Task<RootMessage> {
     let manager = state.manager.clone();
 
     Task::future(async move {
-        let exporter = manager.lock().await.get_account_exporter(uid);
-        let stats = match exporter {
-            Some(exporter) => {
-                let exporter = exporter.lock().await;
-                ExportStats::new(&exporter)
-            }
-            None => ExportStats::default(),
-        };
+        let manager = manager.lock().await;
+        let stats = manager.account_exporter(uid).map_or_else(ExportStats::default, ExportStats::new);
         RootMessage::export_stats(stats)
     })
 }

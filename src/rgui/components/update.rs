@@ -120,7 +120,7 @@ pub fn check_for_updates_task() -> Task<UpdateMessage> {
     Task::future(async move {
         let result = tokio::task::spawn_blocking(|| {
             crate::update::check_for_update()
-                .map(|opt| opt.map(|info| (info.current_version, info.latest_version)))
+                .map(|latest| latest.map(|latest| (env!("CARGO_PKG_VERSION").to_string(), latest)))
                 .map_err(|e| e.to_string())
         })
         .await;

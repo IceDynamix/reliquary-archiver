@@ -9,12 +9,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::lock::Mutex;
-use reliquary::network::command::command_id::{PlayerGetTokenScRsp, PlayerLoginFinishScRsp, PlayerLoginScRsp};
-use reliquary::network::command::proto::PlayerGetTokenScRsp::PlayerGetTokenScRsp as PlayerGetTokenScRspProto;
+use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
 use reliquary::network::command::{GameCommand, GameCommandError};
 use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, NetworkError};
+use reliquary_archiver::export::fribbels::Export;
 use reliquary_archiver::export::Exporter;
-use reliquary_archiver::export::fribbels::{Export, OptimizerExporter};
 use tracing::{info, trace, warn};
 
 use crate::accounts::MultiAccountManager;
@@ -59,7 +58,6 @@ pub struct CaptureSession {
     manager: Arc<Mutex<MultiAccountManager>>,
     /// Sources that sent something that isn't game traffic and are ignored from then on
     poisoned_sources: Option<HashSet<u64>>,
-    latest_uid: Option<u32>,
     stall: StallDetector,
 }
 
@@ -72,7 +70,6 @@ impl CaptureSession {
             merger: SourceMerger::new(),
             manager,
             poisoned_sources: poison_sources.then(HashSet::new),
-            latest_uid: None,
             stall: StallDetector::default(),
         }
     }
@@ -199,19 +196,9 @@ impl CaptureSession {
         }
 
         // Route command to the correct exporter
-        let exporter = self.manager.lock().await.get_or_create_exporter(conv_id);
-
-        // Check if this is a UID discovery packet and register it if so
-        if command.command_id == PlayerGetTokenScRsp
-            && let Ok(token_rsp) = command.parse_proto::<PlayerGetTokenScRspProto>()
-        {
-            let uid = token_rsp.uid;
-            self.manager.lock().await.register_uid(conv_id, uid);
-            self.latest_uid = Some(uid);
+        if let Some(uid) = self.manager.lock().await.read_command(conv_id, command) {
             events.push(SessionEvent::AccountSeen { uid });
         }
-
-        exporter.lock().await.read_command(command);
     }
 
     fn network_error_event(&mut self, error: NetworkError, source_id: u64) -> SessionEvent {
@@ -237,22 +224,18 @@ impl CaptureSession {
         }
     }
 
-    /// The exporter of the account that logged in most recently
-    pub async fn latest_exporter(&self) -> Option<Arc<Mutex<OptimizerExporter>>> {
-        self.manager.lock().await.get_account_exporter(self.latest_uid?)
-    }
-
     /// Whether everything needed for an export of the latest account has been captured
     pub async fn is_initialized(&self) -> bool {
-        match self.latest_exporter().await {
-            Some(exporter) => exporter.lock().await.is_initialized(),
-            None => false,
-        }
+        self.manager
+            .lock()
+            .await
+            .latest_exporter()
+            .is_some_and(|exporter| exporter.is_initialized())
     }
 
     /// Export whatever has been captured for the latest account
     pub async fn export(&self) -> Option<Export> {
-        self.latest_exporter().await?.lock().await.export()
+        self.manager.lock().await.latest_exporter()?.export()
     }
 }
 

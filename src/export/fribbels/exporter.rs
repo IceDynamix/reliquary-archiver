@@ -2,8 +2,6 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use reliquary::network::command::proto::Avatar::Avatar as ProtoCharacter;
 use reliquary::network::command::{GameCommand, command_id};
-#[cfg(feature = "stream")]
-use tokio::sync::broadcast;
 use tracing::{debug, info, instrument, trace, warn};
 
 use crate::export::Exporter;
@@ -29,9 +27,6 @@ pub struct OptimizerExporter {
     pub(super) multipath_base_avatars: HashMap<u32, ProtoCharacter>,
     /// Characters in `characters` that are still waiting for their base avatar
     pub(super) unresolved_multipath_characters: HashSet<u32>,
-
-    #[cfg(feature = "stream")]
-    pub(super) event_channel: broadcast::Sender<OptimizerEvent>,
 }
 
 impl Default for OptimizerExporter {
@@ -58,9 +53,6 @@ impl OptimizerExporter {
             characters: BTreeMap::new(),
             multipath_base_avatars: HashMap::new(),
             unresolved_multipath_characters: HashSet::new(),
-
-            #[cfg(feature = "stream")]
-            event_channel: broadcast::channel(16).0,
         }
     }
 
@@ -106,17 +98,6 @@ impl OptimizerExporter {
         &self.characters
     }
 
-    #[allow(unused_variables)]
-    fn emit_event(&self, event: OptimizerEvent) {
-        if self.initialized {
-            // Send only fails if there are no active receivers. We don't care if this is the case.
-            #[cfg(feature = "stream")]
-            self.event_channel.send(event).ok();
-        } else {
-            // Don't start sending real-time updates until we've completed initialization.
-        }
-    }
-
     fn reset(&mut self) {
         self.initialized = false;
         self.uid = None;
@@ -126,6 +107,7 @@ impl OptimizerExporter {
         self.materials.clear();
         self.light_cones.clear();
         self.relics.clear();
+        self.recon_relics.clear();
         self.characters.clear();
         self.multipath_base_avatars.clear();
         self.unresolved_multipath_characters.clear();
@@ -147,12 +129,6 @@ impl OptimizerExporter {
             && self.characters.is_empty()
             && self.light_cones.is_empty()
     }
-
-    #[cfg(feature = "stream")]
-    fn emit_initial_scan(&self) {
-        let export = self.export().expect("initial scan failed");
-        self.emit_event(OptimizerEvent::InitialScan(export));
-    }
 }
 
 /// Parses the payload of a command, logging if it doesn't have the expected shape
@@ -165,11 +141,11 @@ fn parse<T: protobuf::Message>(command: &GameCommand, description: &str) -> Opti
 
 impl Exporter for OptimizerExporter {
     type Export = Export;
-
-    #[cfg(feature = "stream")]
     type LiveEvent = OptimizerEvent;
 
-    fn read_command(&mut self, command: GameCommand) {
+    fn read_command(&mut self, command: GameCommand) -> Vec<OptimizerEvent> {
+        let mut events = Vec::new();
+
         match command.command_id {
             command_id::PlayerGetTokenScRsp => {
                 info!("detected new login attempt, resetting state");
@@ -200,9 +176,7 @@ impl Exporter for OptimizerExporter {
             }
             command_id::SetAvatarEnhancedIdScRsp => {
                 debug!("detected set avatar enhanced packet");
-                if let Some(event) = parse(&command, "set avatar enhanced data").and_then(|cmd| self.handle_set_avatar_enhanced(cmd)) {
-                    self.emit_event(event);
-                }
+                events.extend(parse(&command, "set avatar enhanced data").and_then(|cmd| self.handle_set_avatar_enhanced(cmd)));
             }
             command_id::GetGachaInfoScRsp => {
                 debug!("detected gacha info packet");
@@ -212,50 +186,45 @@ impl Exporter for OptimizerExporter {
             }
             command_id::DoGachaScRsp => {
                 debug!("detected gacha packet");
-                if let Some(event) = parse(&command, "gacha data").and_then(|cmd| self.handle_gacha(cmd)) {
-                    self.emit_event(event);
-                }
+                events.extend(parse(&command, "gacha data").and_then(|cmd| self.handle_gacha(cmd)));
             }
             command_id::PlayerSyncScNotify => {
                 debug!("detected player sync packet");
                 if let Some(cmd) = parse(&command, "player sync data") {
-                    for event in self.handle_player_sync(cmd) {
-                        self.emit_event(event);
-                    }
+                    events.extend(self.handle_player_sync(cmd));
                 }
             }
             command_id::GetRelicBoxDataScRsp => {
                 debug!("detected get relic recon data packet");
                 if let Some(cmd) = parse(&command, "relic recon state") {
-                    for event in self.handle_relic_box_data(cmd) {
-                        self.emit_event(event);
-                    }
+                    events.extend(self.handle_relic_box_data(cmd));
                 }
             }
             command_id::OpenRelicBoxScRsp => {
                 debug!("detected open relic recon box packet");
-                if let Some(event) = parse(&command, "relic recon drop").and_then(|cmd| self.handle_relic_box_open(cmd)) {
-                    self.emit_event(event);
-                }
+                events.extend(parse(&command, "relic recon drop").and_then(|cmd| self.handle_relic_box_open(cmd)));
             }
             command_id::ConfirmRelicBoxScRsp => {
                 debug!("detected confirm relic recon choice packet");
-                if let Some(event) = parse(&command, "relic recon confirmation").and_then(|cmd| self.handle_relic_box_confirm(cmd)) {
-                    self.emit_event(event);
-                }
+                events.extend(parse(&command, "relic recon confirmation").and_then(|cmd| self.handle_relic_box_confirm(cmd)));
             }
             _ => {
                 trace!(command_id = command.command_id, tag = command.get_command_name(), "ignored");
             }
         }
 
-        if !self.initialized && self.is_finishable() {
-            self.initialized = true;
-            info!("finished initialization");
+        // Updates only make sense to a client that has the whole export, which comes once initialized
+        if !self.initialized {
+            events.clear();
 
-            #[cfg(feature = "stream")]
-            self.emit_initial_scan();
+            if self.is_finishable() {
+                self.initialized = true;
+                info!("finished initialization");
+                events.push(OptimizerEvent::InitialScan(self.export().expect("initial scan failed")));
+            }
         }
+
+        events
     }
 
     fn is_empty(&self) -> bool {
@@ -317,19 +286,5 @@ impl Exporter for OptimizerExporter {
         };
 
         Some(export)
-    }
-
-    #[cfg(feature = "stream")]
-    fn subscribe(&self) -> (Option<OptimizerEvent>, broadcast::Receiver<OptimizerEvent>) {
-        (
-            if self.is_initialized() {
-                Some(OptimizerEvent::InitialScan(
-                    self.export().expect("marked as initialized but data was not recorded"),
-                ))
-            } else {
-                None
-            },
-            self.event_channel.subscribe(),
-        )
     }
 }

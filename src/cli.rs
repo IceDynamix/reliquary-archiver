@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Local;
 use futures::lock::Mutex;
 use futures::{FutureExt, StreamExt, future, select};
 use reliquary_archiver::export::fribbels::Export;
@@ -52,7 +51,7 @@ impl TryFrom<&Args> for SourceSpec {
         #[cfg(feature = "pcap")]
         return Ok(Tap::Pcap.into());
 
-        #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+        #[cfg(pktmon_only)]
         return Ok(Tap::Pktmon.into());
     }
 }
@@ -63,16 +62,19 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
 
     // Recorded captures are read from start to end, streaming only makes sense for live traffic
     #[cfg(feature = "stream")]
-    let selected_account_tx = (args.stream && source.is_tap()).then(|| {
-        use crate::websocket::{PortSource, start_websocket_server};
-
+    let selected_account_tx = if args.stream && source.is_tap() {
         let (tx, rx) = tokio::sync::watch::channel::<Option<u32>>(None);
 
-        tokio::spawn(start_websocket_server(PortSource::Fixed(args.websocket_port), manager.clone(), rx));
-
         info!("WebSocket server starting on port {}...", args.websocket_port);
-        tx
-    });
+        if let Err(e) = crate::websocket::start_websocket_server(args.websocket_port, manager.clone(), rx).await {
+            error!("Could not start the WebSocket server on port {}: {}", args.websocket_port, e);
+            return None;
+        }
+
+        Some(tx)
+    } else {
+        None
+    };
 
     #[cfg(feature = "stream")]
     let streaming = selected_account_tx.is_some();
@@ -80,7 +82,13 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
     #[cfg(not(feature = "stream"))]
     let streaming = false;
 
-    let mut packets = source.open().expect("Failed to start packet capture").fuse();
+    let mut packets = match source.open() {
+        Ok(packets) => packets.fuse(),
+        Err(e) => {
+            error!("Cannot start capturing: {}", e);
+            return None;
+        }
+    };
 
     let timeout = if !source.is_tap() {
         None
@@ -106,6 +114,11 @@ async fn capture(args: &Args, source: &SourceSpec) -> Option<Export> {
         let packet = select! {
             packet = packets.next() => match packet {
                 Some(Ok(packet)) => packet,
+                // A tap reopens itself after an error, a recording can't be read any further
+                Some(Err(e)) if source.is_tap() => {
+                    warn!(%e);
+                    continue 'recv;
+                }
                 Some(Err(e)) => {
                     warn!(%e);
                     break 'recv;
@@ -161,7 +174,9 @@ async fn maybe_timeout(timeout: Option<Duration>) {
 }
 
 fn write_output(output: Option<PathBuf>, export: &Export) {
-    let default_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
+    let default_name = jiff::ZonedDateTime::now()
+        .strftime("archive_output-%Y-%m-%dT%H-%M-%S.json")
+        .to_string();
     let mut output_file = output.unwrap_or_else(|| PathBuf::from(&default_name));
 
     info!("exporting collected data");
@@ -193,7 +208,7 @@ fn write_json(path: &Path, export: &Export) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[cfg(feature = "gui")]
+#[cfg(all(windows, feature = "gui"))]
 fn pick_alternative_path(file_name: &str) -> Option<PathBuf> {
     rfd::FileDialog::new()
         .set_title("Select output file location")
@@ -202,7 +217,7 @@ fn pick_alternative_path(file_name: &str) -> Option<PathBuf> {
         .save_file()
 }
 
-#[cfg(not(feature = "gui"))]
+#[cfg(not(all(windows, feature = "gui")))]
 fn pick_alternative_path(_file_name: &str) -> Option<PathBuf> {
     None
 }
