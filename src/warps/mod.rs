@@ -26,7 +26,13 @@ pub mod api;
 #[cfg(feature = "gui")]
 pub mod authkey;
 #[cfg(feature = "gui")]
+pub mod csv;
+#[cfg(feature = "gui")]
 pub mod reconcile;
+#[cfg(feature = "gui")]
+pub mod service;
+#[cfg(feature = "gui")]
+pub mod srs;
 #[cfg(feature = "gui")]
 pub mod stats;
 #[cfg(feature = "gui")]
