@@ -6,7 +6,7 @@ use parts::{Pill, pill, plate, ring_button};
 use rune::{Cx, El, Tx, col, el, icon, row, text};
 
 use super::settings::{ImageFit, ThemeMode};
-use super::state::{Notice, Panel, Ui, Update};
+use super::state::{Notice, Panel, Screen, Ui, Update};
 use super::theme::{self, Theme};
 use super::{background, icons};
 
@@ -18,6 +18,8 @@ mod settings;
 mod sky;
 mod status;
 pub(super) mod wallpaper;
+mod warp_screen;
+mod warps;
 
 const GITHUB_URL: &str = "https://github.com/IceDynamix/reliquary-archiver";
 const RELEASES_URL: &str = "https://github.com/IceDynamix/reliquary-archiver/releases/latest";
@@ -49,7 +51,8 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
         .gap(22.0)
         .children(update_banner(s, cx, &t))
         .child(status::view(s, cx, &t))
-        .child(delivery::view(s, cx, &t));
+        .child(delivery::view(s, cx, &t))
+        .child(warps::plate_view(s, cx, &t));
 
     // The space between header and footer, with the plates placed in it as the settings say
     let (column, row) = s.settings.card_anchor.cell();
@@ -89,7 +92,12 @@ pub fn view(s: &Ui, cx: &mut Cx<Ui>) -> El {
             page.child(sky::sky(w, h, &t))
         }
     };
-    let page = page.child(content);
+    // The warp screen takes the window over, inside the page so it can read the window's size
+    let page = if s.screen == Screen::Warps {
+        page.child(warp_screen::screen(s, cx, &t).pin(Some(0.0), Some(0.0), Some(0.0), Some(0.0)))
+    } else {
+        page.child(content)
+    };
 
     settings::dialog(s, cx, &t, &mut layer);
     logs::dialog(s, cx, &t, &mut layer);

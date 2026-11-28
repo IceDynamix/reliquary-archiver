@@ -11,6 +11,7 @@
 //! - [`worker`]: reads packets and reports what happened
 //! - [`settings`]: the settings and their file
 //! - [`background`]: the background image, read and scaled off the UI thread
+//! - [`art`]: character and light cone art for the warp screen, downloaded and kept
 //! - `run_on_start`: starting with Windows
 //! - [`controller`]: a second window that puts the app into any state, for trying the views
 //!
@@ -32,9 +33,11 @@ use tracing::info;
 
 use crate::accounts::MultiAccountManager;
 use crate::capture::Tap;
+use crate::warps::item;
 use crate::warps::service::{Command as WarpCommand, WarpService};
 use crate::websocket::{PortCommand, start_dynamic_websocket_server};
 
+mod art;
 mod background;
 mod controller;
 mod icons;
@@ -85,19 +88,30 @@ pub fn run(tap: Tap, options: Options) {
         min_size: Some((420.0, 620.0)),
         scenes: scenes::SCENES,
         poll: Some(|s: &mut Ui, _, tx| {
+            // Each time the window comes on screen or goes off it, poll runs. Snapshots draw
+            // without a window on screen, with everything held
+            if rune::tooling::headless_run().is_none() {
+                s.window_visible(tx.window_visible(), tx);
+            }
             let expired = s.expire(Instant::now());
+            let art = s.art_ready();
             let background = s.background.ready(&s.settings.background_image);
-            // A background arriving comes in on its transition. Rune lands a change no input
-            // caused at once unless it's told otherwise
-            if background {
+            // Art and backgrounds arriving come in on their transitions. Rune lands a change no
+            // input caused at once unless it's told otherwise
+            if art || background {
                 tx.animated();
             }
-            background || expired
+            background || expired || art
         }),
         setup: Some(|s: &mut Ui, waker| {
-            // Snapshots draw a single frame, the background has to be there for it
+            // Snapshots draw a single frame, the art and the background have to be there for it
             let headless = rune::tooling::headless_run().is_some();
             s.background.images = Some(rune::ImageCache::new(waker.clone()));
+            s.art = Some(if headless {
+                art::ArtCache::blocking(waker.clone())
+            } else {
+                art::ArtCache::new(waker.clone())
+            });
             s.background.loader = Some(rune::Latest::new(waker));
             if headless {
                 s.background.load_now(&s.settings.background_image);
@@ -163,6 +177,8 @@ pub fn run(tap: Tap, options: Options) {
         }
         let mut ui = Ui::new(settings.clone());
         ui.needs_admin = options.needs_admin;
+        // Started in the tray, the warp screen's art is only fetched ahead until the window shows
+        ui.visible = !start_in_tray;
 
         let tray = tray(handle.clone());
         if start_in_tray && tray.is_none() {
@@ -188,6 +204,11 @@ pub fn run(tap: Tap, options: Options) {
         if !(s.settings.close_to_tray && s.has_tray) {
             tx.quit();
         }
+    })
+    // Resting, the window lets go of the warp screen's art it doesn't need
+    .on_rest(|s: &mut Ui, _| {
+        s.rest_warp_art();
+        false
     })
     .on_quit(|s: &mut Ui, _| {
         remember_frame(s);
@@ -276,13 +297,28 @@ async fn refresh_inventory(app: &AppHandle<Ui>, manager: &Mutex<MultiAccountMana
     if !exporter.is_initialized() {
         return;
     }
+    let material = |id: u32| exporter.materials().get(&id).map_or(0, |m| m.count);
     let inventory = Inventory {
         relics: exporter.relics().len(),
         light_cones: exporter.light_cones().len(),
         characters: exporter.characters().len(),
         materials: exporter.materials().len(),
+        funds: state::Funds {
+            stellar_jade: exporter.gacha_funds().stellar_jade,
+            passes: material(item::PASS),
+            special_passes: material(item::SPECIAL_PASS),
+            undying_starlight: material(item::UNDYING_STARLIGHT),
+        },
     };
-    app.update_if(move |s, _| s.inventory_changed(uid, inventory));
+    let mut roster = state::Roster::default();
+    for character in exporter.characters().values() {
+        roster.eidolons.insert(character.id, character.eidolon);
+    }
+    for cone in exporter.light_cones().values() {
+        let best = roster.superimpositions.entry(cone.id).or_insert(0);
+        *best = (*best).max(cone.superimposition);
+    }
+    app.update_if(move |s, _| s.inventory_changed(uid, inventory) | s.roster_changed(uid, roster));
 }
 
 /// Runs the WebSocket server and reports its port and clients to the window

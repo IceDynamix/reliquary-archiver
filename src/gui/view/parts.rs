@@ -59,9 +59,14 @@ pub fn ticket(key: &str, tears: &[&str], cx: &Cx<Ui>, t: &Theme) -> El {
 }
 
 /// A ticket with `surface` over its glass and under what it holds, cut to its corners and
-/// notches
+/// notches: a banner's colors and motif behind the warp card
 pub fn ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t: &Theme) -> El {
     cut_ticket(key, tears, surface, PLAIN, cx, t)
+}
+
+/// A [`ticket_on`] with the leading card's [`CORNERS`], for the one card that heads its screen
+pub fn lead_ticket_on(key: &str, tears: &[&str], surface: Option<El>, cx: &Cx<Ui>, t: &Theme) -> El {
+    cut_ticket(key, tears, surface, CORNERS, cx, t)
 }
 
 fn cut_ticket(key: &str, tears: &[&str], surface: Option<El>, corners: [f32; 4], cx: &Cx<Ui>, t: &Theme) -> El {
@@ -185,6 +190,16 @@ pub fn perforation(key: &str, cx: &Cx<Ui>, t: &Theme) -> El {
     dashes(key, true, cx, t)
 }
 
+/// A perforation down a plate, top to bottom, `from_right` points in from its right edge: put it
+/// last in the plate, it's pinned over the rest
+pub fn stub_perforation(key: &str, from_right: f32, cx: &Cx<Ui>, t: &Theme) -> El {
+    col()
+        .pin(None, Some(0.0), Some(from_right - NOTCH), Some(0.0))
+        .w(NOTCH * 2.0)
+        .inert()
+        .child(dashes(key, false, cx, t))
+}
+
 /// How a pill button paints
 #[derive(Clone, Copy, PartialEq)]
 pub enum Pill {
@@ -288,6 +303,11 @@ impl PillButton<'_> {
 /// A wash of the text color: the fill of a [`Pill::Secondary`], and of chips that look like one
 fn wash(t: &Theme) -> Color {
     t.text.alpha(0.08)
+}
+
+/// A row shaped and filled like a [`Pill::Secondary`], for chips that hold more than a label
+pub fn chip(t: &Theme) -> El {
+    row().h(PILL_HEIGHT).center_y().radius(PILL_HEIGHT / 2.0).fill(wash(t))
 }
 
 /// A text field's key handler that does `submit` on Enter
@@ -448,7 +468,10 @@ pub fn track_link(done: bool, size: f32, t: &Theme) -> El {
 pub enum Tone {
     /// Nothing to say
     Quiet,
+    /// Something's under way
+    Busy,
     Good,
+    Warn,
     Bad,
 }
 
@@ -457,7 +480,9 @@ impl Tone {
     pub fn dot(self, t: &Theme) -> Color {
         match self {
             Tone::Quiet => t.faint,
+            Tone::Busy => t.accent,
             Tone::Good => t.good,
+            Tone::Warn => t.warn,
             Tone::Bad => t.bad,
         }
     }

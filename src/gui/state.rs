@@ -5,6 +5,7 @@
 //! capture or the server) goes through [`Services`], which is `None` in headless snapshots and
 //! tests, so every transition can run without a window or a network.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -16,18 +17,27 @@ use super::background::{self, Background};
 use super::services::{self, Services};
 use super::settings::{BackgroundFill, ImageFit, Settings};
 use crate::session::SessionEvent;
+use crate::warps::service::{Command as WarpCommand, ProfileChoice, Summary, Update as WarpUpdate};
+use crate::warps::{Pool, item};
 use crate::websocket::ServerError;
 
 /// A capture error that isn't repeated for this long has resolved itself
 pub const CAPTURE_ERROR_TTL: Duration = Duration::from_secs(15);
 /// How long a notice stays up
 const NOTICE_TTL: Duration = Duration::from_secs(6);
+/// How long the window can be off screen (in the tray, minimized, or under the game) before the
+/// warp screen's art is let go of. Coming back sooner finds it all still there
+const HIDDEN_ART_FOR: Duration = Duration::from_secs(120);
 /// How many of the most recent log lines the logs panel shows
 pub const LOG_TAIL: usize = 400;
 /// The image files a background can be chosen from
 const BACKGROUND_EXTENSIONS: [&str; 7] = ["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg"];
 
 pub struct Ui {
+    /// The main window or the warp screen, which takes it over
+    pub screen: Screen,
+    /// Character and light cone art, set up with the window
+    pub art: Option<super::art::ArtCache>,
     pub capture: Capture,
     /// Accounts in the order they first logged in
     pub accounts: Vec<Account>,
@@ -57,6 +67,11 @@ pub struct Ui {
     pub updates_supported: bool,
     pub services: Option<Services>,
     pub background: Background,
+    pub warps: Warps,
+    /// The window is on screen. Only then is the warp screen's art held
+    pub visible: bool,
+    /// When the window went off screen, to let go of the warp screen's art a while after
+    pub hidden_since: Option<Instant>,
 }
 
 /// The port field in the settings panel, and the port it asked for
@@ -66,6 +81,251 @@ pub struct PortField {
     pub pending: Option<u16>,
     /// Why the port in the field couldn't be used
     pub error: Option<String>,
+}
+
+/// The warp tracker: what the warp database reports, and the warp screen's own state
+pub struct Warps {
+    /// Why the database couldn't be opened
+    pub unavailable: Option<String>,
+    /// Accounts with warps kept, the latest first
+    pub accounts: Vec<u32>,
+    pub summaries: HashMap<u32, Summary>,
+    /// What the database is busy with, e.g. a sync
+    pub busy: Option<String>,
+    /// The command `busy` is for, which alone ends it
+    pub busy_job: Option<crate::warps::service::Job>,
+    /// The pool the warp screen shows
+    pub pool: Pool,
+    /// The warp screen's view of it: its banner, or scrolled down to its history, or further to
+    /// where the history comes from
+    pub page: WarpPage,
+    /// Wheel and trackpad scrolls on their way to turning the warp screen's page
+    pub snap: Snap,
+    /// Where each page's own scroll is, by [`WarpPage`]: its offset and the most it scrolls
+    pub page_scroll: [rune::Live<[f32; 2]>; WarpPage::ALL.len()],
+    /// Where the history's cards, which scroll themselves beside each other on a wide page, are
+    /// scrolled to: its 5 stars, and its latest pulls. Each the offset and the most it scrolls
+    pub fives_scroll: rune::Live<[f32; 2]>,
+    pub latest_scroll: rune::Live<[f32; 2]>,
+    /// A link to the warp history, pasted in
+    pub link_edit: TextEdit,
+    /// A backup with several profiles waiting for the user to pick one
+    pub choose: Option<ProfilePick>,
+    /// The featured 5 star picked on each pool's running banners
+    pub featured: HashMap<Pool, u32>,
+    /// What each account owns, from its login this run
+    pub rosters: HashMap<u32, Roster>,
+    /// When this run started: pulls seen live since make up the session
+    pub session_start: jiff::Timestamp,
+    /// The ticket last picked on the warp screen's rail, and when: its shine plays for a moment
+    /// after, and not again when the layout changes
+    pub picked: Option<(Pool, Instant)>,
+    /// Warps whose art is held besides the one the screen shows: pointed at on the rail, so that
+    /// picking them shows it at once. Let go of once the screen is left
+    pub art_pools: Vec<Pool>,
+}
+
+/// The warp screen's views of a warp, one over the other: what its banner is and what the warps in
+/// hand buy, below it the whole history, and below that importing and exporting it
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WarpPage {
+    #[default]
+    Banner,
+    History,
+    ImportExport,
+}
+
+impl WarpPage {
+    /// Top to bottom
+    pub const ALL: [WarpPage; 3] = [WarpPage::Banner, WarpPage::History, WarpPage::ImportExport];
+
+    /// The page under this one
+    pub fn next(self) -> Option<WarpPage> {
+        WarpPage::ALL.get(self as usize + 1).copied()
+    }
+
+    /// The page over this one
+    pub fn prev(self) -> Option<WarpPage> {
+        (self as usize).checked_sub(1).map(|i| WarpPage::ALL[i])
+    }
+}
+
+/// How far a scroll pulls past a page's end before the page turns, in points
+const SNAP_PULL: f32 = 60.0;
+/// A pause this long between scrolls starts the pull over, in seconds
+const SNAP_PAUSE: f64 = 0.22;
+/// After a turn, scrolls are held this long, so the rest of the gesture doesn't run on into the
+/// new page or turn it back, in seconds
+const SNAP_SETTLE: f64 = 0.55;
+
+/// Turns the warp screen's page with the wheel, as a page that snaps rather than scrolls: a scroll
+/// that pulls far enough past the end of a page goes to the next
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Snap {
+    /// How far the scrolls under way pull, down negative
+    pull: f32,
+    /// When the last scroll came and the page last turned, on Rune's clock ([`Tx::clock`])
+    last: Option<f64>,
+    turned: Option<f64>,
+    /// The scroll under way is over a list in the page that still scrolls its way, which it's
+    /// left to (see [`leave_wheel`])
+    inner: bool,
+}
+
+/// Leaves the wheel scroll under way to a list within the page that scrolls itself, when it still
+/// scrolls that way, rather than turning the page. Call it from the list's own `on_wheel`, which
+/// hears the scroll before the page's; `scroll` is where the list stands. Never takes the scroll
+pub fn leave_wheel(s: &mut Ui, dy: f32, scroll: PageScroll) -> bool {
+    s.warps.snap.inner = if dy < 0.0 { !scroll.at_bottom } else { !scroll.at_top };
+    false
+}
+
+/// Where a page's own scroll stands, for whether a scroll past it turns the page
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PageScroll {
+    pub at_top: bool,
+    pub at_bottom: bool,
+}
+
+impl PageScroll {
+    /// From the offset and the most it scrolls, as the page reports them
+    pub fn of([offset, max]: [f32; 2]) -> PageScroll {
+        PageScroll {
+            at_top: offset <= 1.0,
+            at_bottom: offset >= max - 1.0,
+        }
+    }
+}
+
+/// A wheel or trackpad scroll, as [`snap_wheel`] tells them apart
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Wheel {
+    /// Points, down negative, as Rune gives it
+    pub dy: f32,
+    /// A notch of a mouse wheel, a step
+    pub notch: bool,
+    /// Coasting after the fingers lifted
+    pub momentum: bool,
+}
+
+impl From<rune::WheelEvent> for Wheel {
+    fn from(wheel: rune::WheelEvent) -> Self {
+        Wheel {
+            dy: wheel.dy,
+            notch: wheel.notch,
+            momentum: wheel.momentum,
+        }
+    }
+}
+
+/// A wheel or trackpad scroll over the page. True takes it: it turned the page, or pulls towards
+/// turning it, or comes too soon after a turn. False lets the page scroll itself. `now` is Rune's
+/// clock, in seconds
+pub fn snap_wheel(s: &mut Ui, wheel: Wheel, scroll: PageScroll, now: f64) -> bool {
+    let Wheel { dy, notch, momentum } = wheel;
+    let snap = &mut s.warps.snap;
+    let inner = std::mem::take(&mut snap.inner);
+    if snap.turned.is_some_and(|at| now - at < SNAP_SETTLE) {
+        return true;
+    }
+    if dy == 0.0 {
+        return false;
+    }
+    let (down, page) = (dy < 0.0, s.warps.page);
+    let to = if down {
+        page.next().filter(|_| scroll.at_bottom)
+    } else {
+        page.prev().filter(|_| scroll.at_top)
+    };
+    let Some(to) = to.filter(|_| !momentum && !inner) else {
+        snap.pull = 0.0;
+        return false;
+    };
+    if snap.last.is_none_or(|at| now - at > SNAP_PAUSE) || snap.pull.signum() != dy.signum() {
+        snap.pull = 0.0;
+    }
+    snap.pull += dy;
+    snap.last = Some(now);
+    // A notch of a mouse wheel is a step, it turns the page at once
+    if notch || snap.pull.abs() >= SNAP_PULL {
+        *snap = Snap {
+            turned: Some(now),
+            ..Snap::default()
+        };
+        s.warps.page = to;
+    }
+    true
+}
+
+/// Shows the warp screen's history from its banner, and its banner from anywhere else: what the
+/// header's button and the warp card's history do
+pub fn turn_page(s: &mut Ui) {
+    s.warps.page = match s.warps.page {
+        WarpPage::Banner => WarpPage::History,
+        WarpPage::History | WarpPage::ImportExport => WarpPage::Banner,
+    };
+}
+
+/// How long a ticket picked on the warp screen's rail shines: the shine's delay and sweep, and a
+/// little over
+pub const SHINE_FOR: Duration = Duration::from_millis(600);
+
+/// Picks a warp on the warp screen's rail: it shows, and its ticket shines for a moment
+pub fn pick_warp(s: &mut Ui, pool: Pool, tx: &mut Tx) {
+    s.warps.pool = pool;
+    s.warps.picked = Some((pool, Instant::now()));
+    tx.wake_after(SHINE_FOR);
+    s.preload_warp_art();
+}
+
+/// The characters and light cones an account owns
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Roster {
+    /// Character id to eidolon
+    pub eidolons: HashMap<u32, u32>,
+    /// Light cone id to its highest superimposition
+    pub superimpositions: HashMap<u32, u32>,
+}
+
+impl Roster {
+    /// Copies owned: a character at E2 is 3, a light cone at S1 is 1
+    pub fn copies(&self, item: u32) -> u32 {
+        if let Some(e) = self.eidolons.get(&item) {
+            return e + 1;
+        }
+        self.superimpositions.get(&item).copied().unwrap_or(0)
+    }
+}
+
+pub struct ProfilePick {
+    pub path: PathBuf,
+    pub uid: u32,
+    pub profiles: Vec<ProfileChoice>,
+}
+
+impl Default for Warps {
+    fn default() -> Self {
+        Self {
+            unavailable: None,
+            accounts: Vec::new(),
+            summaries: HashMap::new(),
+            busy: None,
+            busy_job: None,
+            pool: Pool::Character,
+            page: WarpPage::Banner,
+            snap: Snap::default(),
+            page_scroll: std::array::from_fn(|_| rune::Live::new([0.0; 2])),
+            fives_scroll: rune::Live::new([0.0; 2]),
+            latest_scroll: rune::Live::new([0.0; 2]),
+            featured: HashMap::new(),
+            rosters: HashMap::new(),
+            session_start: jiff::Timestamp::now(),
+            picked: None,
+            art_pools: Vec::new(),
+            link_edit: TextEdit::new(""),
+            choose: None,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -92,6 +352,27 @@ pub struct Inventory {
     pub light_cones: usize,
     pub characters: usize,
     pub materials: usize,
+    pub funds: Funds,
+}
+
+/// What the account has to warp with
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Funds {
+    pub stellar_jade: u32,
+    /// Star Rail Passes, for the standard warp
+    pub passes: u32,
+    /// Star Rail Special Passes, for event warps
+    pub special_passes: u32,
+    pub undying_starlight: u32,
+}
+
+/// What the window shows
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Screen {
+    #[default]
+    Main,
+    /// The warp screen, over the whole window
+    Warps,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -148,6 +429,13 @@ pub struct Notice {
     pub until: Instant,
 }
 
+/// Which file dialog to ask with
+#[derive(Clone, Copy, Debug)]
+enum Dialog {
+    Open,
+    Save,
+}
+
 /// Where getting an account's data stands, which is what the window leads with
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
@@ -162,6 +450,8 @@ pub enum Stage {
 impl Ui {
     pub fn new(settings: Settings) -> Self {
         Self {
+            screen: Screen::Main,
+            art: None,
             capture: Capture::default(),
             accounts: Vec::new(),
             selected: None,
@@ -185,6 +475,9 @@ impl Ui {
             has_tray: false,
             updates_supported: false,
             services: None,
+            warps: Warps::default(),
+            visible: true,
+            hidden_since: None,
         }
     }
 
@@ -249,6 +542,11 @@ impl Ui {
             self.notice = None;
             changed = true;
         }
+        // A picked ticket's shine has swept: it goes, so nothing of it lingers at rest
+        if self.warps.picked.is_some_and(|(_, at)| now.duration_since(at) >= SHINE_FOR) {
+            self.warps.picked = None;
+            changed = true;
+        }
         if self
             .capture
             .error
@@ -257,6 +555,13 @@ impl Ui {
         {
             self.capture.error = None;
             changed = true;
+        }
+        if self.hidden_since.is_some_and(|at| now.duration_since(at) >= HIDDEN_ART_FOR) {
+            self.hidden_since = None;
+            self.warps.art_pools.clear();
+            if let Some(art) = &self.art {
+                art.release(|_| false);
+            }
         }
         changed
     }
@@ -327,6 +632,313 @@ impl Ui {
         self.selected = Some(uid);
         if let Some(services) = &self.services {
             services.select_account(uid);
+        }
+        self.warp_command(WarpCommand::Show(uid));
+    }
+
+    // Warps
+
+    /// The account the warp tracker shows: the selected one, or the one with the latest warps
+    pub fn warps_uid(&self) -> Option<u32> {
+        self.selected.or_else(|| self.warps.accounts.first().copied())
+    }
+
+    pub fn warps_summary(&self) -> Option<&Summary> {
+        self.warps.summaries.get(&self.warps_uid()?)
+    }
+
+    /// What the account the warp tracker shows has to warp with, when it logged in this run
+    pub fn warp_funds(&self) -> Option<Funds> {
+        let uid = self.warps_uid()?;
+        let account = self.accounts.iter().find(|a| a.uid == uid)?;
+        Some(account.inventory?.funds)
+    }
+
+    pub fn open_warps(&mut self) {
+        self.screen = Screen::Warps;
+        self.panel = None;
+        self.warps.page = WarpPage::Banner;
+        if let Some(pool) = self.warps_summary().and_then(opening_pool) {
+            self.warps.pool = pool;
+        }
+        self.preload_warp_art();
+    }
+
+    /// What the account the warp screen shows owns, when it logged in this run
+    pub fn warp_roster(&self) -> Option<&Roster> {
+        self.warps.rosters.get(&self.warps_uid()?)
+    }
+
+    pub fn roster_changed(&mut self, uid: u32, roster: Roster) -> bool {
+        if self.warps.rosters.get(&uid) == Some(&roster) {
+            return false;
+        }
+        self.warps.rosters.insert(uid, roster);
+        true
+    }
+
+    pub fn close_warps(&mut self) {
+        self.screen = Screen::Main;
+        // What it opens on next, which may not be the warp it showed
+        self.preload_warp_art();
+    }
+
+    /// Hands art that arrived to Rune. True when there was any
+    pub fn art_ready(&mut self) -> bool {
+        let arrived = self.art.as_ref().is_some_and(|art| art.take_done());
+        if arrived {
+            // The banner art's manifest may be what arrived, which says where the tickets are
+            self.preload_warp_art();
+        }
+        arrived
+    }
+
+    /// Has the art the warp screen shows ready ahead, as soon as the warps and the banner art's
+    /// manifest are in, in [`warp_art`]'s order. While the window is on screen, what the screen
+    /// opens on is held, so it opens with its art in place, and on the screen so is the warp it
+    /// shows and those pointed at on the rail. Everything else is only fetched into the cache
+    /// folder, which it reads from in a moment when it's wanted. Asking for art that's here or on
+    /// its way is free, so this runs again whenever something arrives
+    pub fn preload_warp_art(&self) {
+        let Some((art, tiers)) = self.warp_art_tiers() else { return };
+        if self.visible {
+            for wanted in &tiers.now {
+                let _ = art.get(*wanted);
+            }
+        }
+        let ahead = if self.visible { &[][..] } else { &tiers.now[..] };
+        for wanted in ahead.iter().chain(&tiers.later) {
+            art.warm(*wanted);
+        }
+    }
+
+    /// Lets go of the warp screen's art the window doesn't need, when it rests (`App::on_rest`):
+    /// on the warp screen nothing, since what isn't on screen there is a click away; elsewhere all
+    /// but what the screen opens on
+    /// Off screen it waits for [`HIDDEN_ART_FOR`] instead, so the window comes back as it was
+    pub fn rest_warp_art(&mut self) {
+        if self.screen == Screen::Warps || !self.visible {
+            return;
+        }
+        self.warps.art_pools.clear();
+        let Some((art, tiers)) = self.warp_art_tiers() else { return };
+        let keep: std::collections::HashSet<_> = tiers.now.into_iter().collect();
+        art.release(|wanted| keep.contains(wanted));
+    }
+
+    /// The window came on screen or went off it. Off it, the warp screen's art is let go of after
+    /// [`HIDDEN_ART_FOR`]; back on, it loads again
+    pub fn window_visible(&mut self, visible: bool, tx: &mut Tx) {
+        if visible == self.visible {
+            return;
+        }
+        self.visible = visible;
+        if visible {
+            self.hidden_since = None;
+            self.preload_warp_art();
+        } else {
+            self.hidden_since = Some(Instant::now());
+            tx.wake_after(HIDDEN_ART_FOR);
+        }
+    }
+
+    /// The pointer is on a warp's ticket on the rail: its art loads, to show at once if it's picked
+    pub fn point_at_warp(&mut self, pool: Pool) {
+        if pool != self.warps.pool && !self.warps.art_pools.contains(&pool) {
+            self.warps.art_pools.push(pool);
+            self.preload_warp_art();
+        }
+    }
+
+    /// The art cache, and the warp screen's art in what's held and what's only fetched ahead
+    fn warp_art_tiers(&self) -> Option<(&super::art::ArtCache, WarpArt)> {
+        use super::art::Layer;
+        let (Some(art), Some(summary)) = (self.art.as_ref(), self.warps_summary()) else {
+            return None;
+        };
+        // The warp it shows when it's open, else the one it will open on
+        let mut held = match self.screen {
+            Screen::Warps => vec![self.warps.pool],
+            _ => vec![opening_pool(summary).unwrap_or(self.warps.pool)],
+        };
+        if self.screen == Screen::Warps {
+            held.extend(self.warps.art_pools.iter().copied());
+        }
+        let has = |item: u32| {
+            art.with_banner(item, |banner| {
+                let layers = if banner.placed() {
+                    [Layer::Backdrop, Layer::Back, Layer::Main, Layer::Front, Layer::Front2]
+                        .into_iter()
+                        .filter(|&layer| banner.layer(layer).is_some())
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let pattern = banner.surface.as_ref().is_some_and(|s| s.pattern.is_some());
+                (layers, pattern)
+            })
+            .unwrap_or_default()
+        };
+        Some((art, warp_art(summary, &held, has)))
+    }
+
+    fn warp_command(&self, command: WarpCommand) -> Option<crate::warps::service::Job> {
+        Some(self.services.as_ref()?.warp_command(command))
+    }
+
+    /// What a command is doing, `None` once it's done. Only the command the busy state is for
+    /// ends it or says what it's doing: one queued ahead of it ending doesn't
+    fn warp_busy(&mut self, job: crate::warps::service::Job, what: Option<String>) {
+        if self.warps.busy_job.is_none_or(|current| current == job) {
+            self.warps.busy_job = what.is_some().then_some(job);
+            self.warps.busy = what;
+        }
+    }
+
+    /// Shows `what` as busy until the command it's for says it's done
+    fn warp_command_busy(&mut self, command: WarpCommand, what: &str) {
+        self.warps.busy = Some(what.into());
+        self.warps.busy_job = self.warp_command(command);
+    }
+
+    /// Takes what the warp database reports
+    pub fn warp_update(&mut self, update: WarpUpdate, tx: &mut Tx) {
+        // What the warp database reports changes what's shown: let it come in on its transitions,
+        // which Rune skips for changes no input caused
+        if matches!(update, WarpUpdate::Summary(_) | WarpUpdate::Accounts(_)) {
+            tx.animated();
+        }
+        match update {
+            WarpUpdate::Unavailable(error) => self.warps.unavailable = Some(error),
+            WarpUpdate::Accounts(accounts) => {
+                self.warps.accounts = accounts;
+                if let Some(uid) = self.warps_uid()
+                    && !self.warps.summaries.contains_key(&uid)
+                {
+                    self.warp_command(WarpCommand::Show(uid));
+                }
+            }
+            WarpUpdate::Summary(summary) => {
+                // A pool the account never pulled on drops out of the tabs
+                if summary.uid == self.warps_uid().unwrap_or(summary.uid) && summary.pool(self.warps.pool).is_none() {
+                    self.warps.pool = Pool::Character;
+                }
+                self.warps.summaries.insert(summary.uid, *summary);
+                self.preload_warp_art();
+            }
+            WarpUpdate::Busy { job, what } => self.warp_busy(job, what),
+            WarpUpdate::Notice { title, detail, tone } => self.notify(title, detail, tone.is_error(), None, tx),
+            WarpUpdate::ChooseProfile { path, uid, profiles } => {
+                self.warps.choose = Some(ProfilePick { path, uid, profiles });
+                // The pick is on the warp screen's import and export page, under where backups are imported
+                self.screen = Screen::Warps;
+                self.warps.page = WarpPage::ImportExport;
+            }
+        }
+    }
+
+    pub fn sync_warps(&mut self) {
+        if let Some(uid) = self.warps_uid() {
+            self.warp_command_busy(WarpCommand::Sync(uid), "Syncing…");
+        }
+    }
+
+    pub fn find_cached_key(&mut self) {
+        self.warp_command_busy(WarpCommand::FindCachedKey, "Looking in the game's cache…");
+    }
+
+    pub fn use_history_link(&mut self) {
+        let link = self.warps.link_edit.text.trim().to_string();
+        if link.is_empty() {
+            return;
+        }
+        self.warps.link_edit.replace_text("");
+        self.warp_command_busy(WarpCommand::UseLink(link), "Checking the link…");
+    }
+
+    /// Asks for a Star Rail Station backup, then imports it into the account the tracker shows
+    pub fn import_srs(&mut self, tx: &mut Tx) {
+        let options = |_| {
+            FileDialogOptions {
+                title: "Import a Star Rail Station backup".into(),
+                ..Default::default()
+            }
+            .filter("Star Rail Station backups", &["dat"])
+        };
+        self.warp_file(tx, Dialog::Open, options, |s, path, uid| {
+            s.warps.choose = None;
+            s.warp_command(WarpCommand::ImportSrs { path, uid, profile: None });
+        });
+    }
+
+    /// Asks where to save the warp history of the account the tracker shows, as CSV, then writes it
+    pub fn export_warps_csv(&mut self, tx: &mut Tx) {
+        let options = |uid| {
+            FileDialogOptions {
+                title: "Export the warp history".into(),
+                file_name: Some(
+                    jiff::ZonedDateTime::now()
+                        .strftime(&format!("warps-{uid}-%Y-%m-%d.csv"))
+                        .to_string(),
+                ),
+                ..Default::default()
+            }
+            .filter("CSV files", &["csv"])
+        };
+        self.warp_file(tx, Dialog::Save, options, |s, path, uid| {
+            s.warp_command(WarpCommand::ExportCsv { path, uid });
+        });
+    }
+
+    /// Asks for a CSV of warps, as the export writes them, then imports it into the account the
+    /// tracker shows
+    pub fn import_warps_csv(&mut self, tx: &mut Tx) {
+        let options = |_| {
+            FileDialogOptions {
+                title: "Import a warp history".into(),
+                ..Default::default()
+            }
+            .filter("CSV files", &["csv"])
+        };
+        self.warp_file(tx, Dialog::Open, options, |s, path, uid| {
+            s.warp_command(WarpCommand::ImportCsv { path, uid });
+        });
+    }
+
+    /// Asks for a file for the account the tracker shows, in the dialog `options` makes for it,
+    /// then hands `then` the path picked and the account
+    fn warp_file(
+        &mut self,
+        tx: &mut Tx,
+        dialog: Dialog,
+        options: impl FnOnce(u32) -> FileDialogOptions,
+        then: impl FnOnce(&mut Ui, PathBuf, u32) + 'static,
+    ) {
+        let Some(uid) = self.warps_uid() else {
+            return;
+        };
+        let options = options(uid);
+        let answered = move |s: &mut Ui, result, tx: &mut Tx| {
+            if let Some(path) = s.dialog_path(result, tx) {
+                then(s, path, uid);
+            }
+        };
+        match dialog {
+            Dialog::Open => tx.open_file(options, answered),
+            Dialog::Save => tx.save_file(options, answered),
+        }
+    }
+
+    pub fn choose_profile(&mut self, key: Option<String>) {
+        let Some(pick) = self.warps.choose.take() else {
+            return;
+        };
+        if let Some(key) = key {
+            self.warp_command(WarpCommand::ImportSrs {
+                path: pick.path,
+                uid: pick.uid,
+                profile: Some(key),
+            });
         }
     }
 
@@ -649,6 +1261,109 @@ impl Ui {
     }
 }
 
+/// The warp the warp screen opens on: the one pulled on last. `None` with no pulls
+fn opening_pool(summary: &Summary) -> Option<Pool> {
+    summary
+        .pools
+        .iter()
+        .filter_map(|p| p.recent.first().map(|recent| (recent.pull.sort_key(), p.pool)))
+        .max()
+        .map(|(_, pool)| pool)
+}
+
+/// The art the warp screen shows, in the order it's best had, in what's held and what's only
+/// fetched ahead
+#[derive(Debug)]
+struct WarpArt {
+    /// Everything of the warps in `held`, first of all the one the screen opens on: its ticket and
+    /// each of its running banners', and each of their art (the layers, or a portrait) and
+    /// preview, since its pick switches between them. Then every warp's ticket, which the rail
+    /// shows from the start, and the pass icons
+    now: Vec<super::art::Art>,
+    /// Every other warp's own art and every other running banner's
+    later: Vec<super::art::Art>,
+}
+
+/// The warp screen's art, held for the warps in `held` (see [`WarpArt`]). `has` tells, for an item,
+/// the banner art's placed layers (none to show its portrait) and whether its panel tiles a pattern
+fn warp_art(summary: &Summary, held: &[Pool], has: impl Fn(u32) -> (Vec<super::art::Layer>, bool)) -> WarpArt {
+    use super::art::{Art, Ticket};
+    let push = |order: &mut Vec<Art>, art: Art| {
+        if !order.contains(&art) {
+            order.push(art);
+        }
+    };
+    let ticket = |order: &mut Vec<Art>, ticket: Ticket| {
+        for selected in [false, true] {
+            push(order, Art::Ticket(ticket, selected));
+        }
+    };
+    let shown = |order: &mut Vec<Art>, item: u32| {
+        let (layers, pattern) = has(item);
+        if pattern {
+            push(order, Art::Pattern(item));
+        }
+        if layers.is_empty() {
+            push(order, Art::Portrait(item));
+        }
+        for layer in layers {
+            push(order, Art::Layer(item, layer));
+        }
+        push(order, Art::Preview(item));
+    };
+    // A warp's own: what its newest banner features, or its last 5 star
+    let own = |pool: Pool| {
+        summary
+            .running(pool)
+            .next()
+            .and_then(|banner| banner.fives.first().copied())
+            .or_else(|| {
+                summary
+                    .pools
+                    .iter()
+                    .find(|s| s.pool == pool)?
+                    .fives
+                    .first()
+                    .map(|five| five.item_id)
+            })
+    };
+    let running = |pool: Pool| summary.running(pool).flat_map(|banner| banner.fives.iter().copied());
+
+    let mut now = Vec::new();
+    for &pool in held {
+        if let Some(own_ticket) = Ticket::of(summary, pool, None) {
+            ticket(&mut now, own_ticket);
+        }
+        for item in running(pool) {
+            ticket(&mut now, Ticket::Banner(item));
+        }
+        for item in own(pool).into_iter().chain(running(pool)) {
+            shown(&mut now, item);
+        }
+    }
+    for stats in &summary.pools {
+        if let Some(own_ticket) = Ticket::of(summary, stats.pool, None) {
+            ticket(&mut now, own_ticket);
+        }
+    }
+    for item in summary.banners.iter().flat_map(|banner| banner.fives.iter().copied()) {
+        ticket(&mut now, Ticket::Banner(item));
+    }
+    for pass in [item::PASS, item::SPECIAL_PASS] {
+        push(&mut now, Art::Item(pass));
+    }
+
+    let mut later = Vec::new();
+    for item in summary.pools.iter().filter_map(|stats| own(stats.pool)) {
+        shown(&mut later, item);
+    }
+    for item in summary.banners.iter().flat_map(|banner| banner.fives.iter().copied()) {
+        shown(&mut later, item);
+    }
+    later.retain(|art| !now.contains(art));
+    WarpArt { now, later }
+}
+
 /// `v` between `least` and `most`, to the nearest whole percent
 fn round_percent(v: f32, least: f32, most: f32) -> f32 {
     (v.clamp(least, most) * 100.0).round() / 100.0
@@ -663,8 +1378,218 @@ fn whole_percent(v: f32) -> f32 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_warp_it_opens_on_is_preloaded_first() {
+        use super::super::art::{Art, Layer, Ticket};
+        use crate::warps::service::RunningBanner;
+        let banner = |pool, five| RunningBanner {
+            gacha_id: 0,
+            pool,
+            fives: vec![five],
+            fours: Vec::new(),
+            begin: jiff::Timestamp::UNIX_EPOCH,
+            end: None,
+        };
+        let summary = Summary {
+            // Newest first: a light cone banner between the two character ones
+            banners: vec![
+                banner(Pool::Character, 1511),
+                banner(Pool::LightCone, 23053),
+                banner(Pool::Character, 1415),
+            ],
+            ..super::super::scenes::empty_summary()
+        };
+        // 1511's banner art is placed in layers; the others show portraits
+        let has = |item| match item {
+            1511 => (vec![Layer::Back, Layer::Main], true),
+            _ => (Vec::new(), false),
+        };
+        let art = warp_art(&summary, &[Pool::Character], has);
+        let order: Vec<Art> = art.now.iter().chain(&art.later).copied().collect();
+        let at = |art: Art| {
+            order
+                .iter()
+                .position(|a| *a == art)
+                .unwrap_or_else(|| panic!("{art:?} not asked for"))
+        };
+        // Every character banner's art and tickets before anything of the light cone warp's
+        let last_character = [
+            at(Art::Preview(1415)),
+            at(Art::Portrait(1415)),
+            at(Art::Ticket(Ticket::Banner(1415), true)),
+            at(Art::Layer(1511, Layer::Main)),
+        ];
+        let first_light_cone = [at(Art::Ticket(Ticket::Banner(23053), false)), at(Art::Portrait(23053))];
+        assert!(last_character.iter().max() < first_light_cone.iter().min(), "{order:?}");
+        // The banner the warp opens on first of all, its tickets, then its art
+        assert_eq!(order[..2], [
+            Art::Ticket(Ticket::Banner(1511), false),
+            Art::Ticket(Ticket::Banner(1511), true)
+        ]);
+        assert!(at(Art::Pattern(1511)) < at(Art::Layer(1511, Layer::Back)));
+        // Nothing twice
+        assert_eq!(order.iter().filter(|a| **a == Art::Preview(1511)).count(), 1);
+        // Held: the warp it opens on, every ticket and the passes. The light cone warp's art is
+        // only fetched ahead
+        assert_eq!(art.now[art.now.len() - 2..], [Art::Item(item::PASS), Art::Item(item::SPECIAL_PASS)]);
+        assert!(art.now.contains(&Art::Ticket(Ticket::Banner(23053), true)));
+        assert!(art.later.contains(&Art::Portrait(23053)) && !art.now.contains(&Art::Portrait(23053)));
+
+        // Opening on the light cone warp turns it around
+        let art = warp_art(&summary, &[Pool::LightCone], has);
+        assert!(art.now.contains(&Art::Preview(23053)));
+        assert!(art.later.contains(&Art::Layer(1511, Layer::Main)));
+        // A warp pointed at on the rail is held too
+        let art = warp_art(&summary, &[Pool::LightCone, Pool::Character], has);
+        assert!(art.now.contains(&Art::Layer(1511, Layer::Main)) && art.later.is_empty());
+    }
+
+    #[test]
+    fn only_the_command_the_busy_state_is_for_ends_it() {
+        let mut s = ui();
+        s.warps.busy = Some("Syncing…".into());
+        s.warps.busy_job = Some(5);
+        // A command queued ahead of it finishing
+        s.warp_busy(4, None);
+        assert_eq!(s.warps.busy.as_deref(), Some("Syncing…"));
+        s.warp_busy(5, Some("Syncing Character warps… 20".into()));
+        assert_eq!(s.warps.busy.as_deref(), Some("Syncing Character warps… 20"));
+        s.warp_busy(5, None);
+        assert_eq!((s.warps.busy.as_deref(), s.warps.busy_job), (None, None));
+        // With nothing shown, any command can say what it's doing
+        s.warp_busy(6, Some("Reading the backup…".into()));
+        assert_eq!(s.warps.busy_job, Some(6));
+    }
+
+    const AT_TOP: PageScroll = PageScroll {
+        at_top: true,
+        at_bottom: false,
+    };
+    const AT_BOTTOM: PageScroll = PageScroll {
+        at_top: false,
+        at_bottom: true,
+    };
+    const BOTH: PageScroll = PageScroll {
+        at_top: true,
+        at_bottom: true,
+    };
+
+    #[test]
+    fn a_wheel_notch_past_the_banner_turns_to_the_history_and_back() {
+        let mut s = ui();
+        assert!(snap_wheel(&mut s, notch(-100.0), BOTH, 1.0));
+        assert_eq!(s.warps.page, WarpPage::History);
+        // The rest of the gesture is held, it doesn't turn the page straight back
+        assert!(snap_wheel(&mut s, notch(100.0), BOTH, 1.2));
+        assert_eq!(s.warps.page, WarpPage::History);
+        assert!(snap_wheel(&mut s, notch(100.0), BOTH, 2.0));
+        assert_eq!(s.warps.page, WarpPage::Banner);
+    }
+
+    #[test]
+    fn import_export_is_under_the_history_and_nothing_under_it() {
+        let mut s = ui();
+        s.warps.page = WarpPage::History;
+        assert!(snap_wheel(&mut s, notch(-100.0), BOTH, 1.0));
+        assert_eq!(s.warps.page, WarpPage::ImportExport);
+        assert!(!snap_wheel(&mut s, notch(-100.0), BOTH, 2.0), "the last page scrolls nowhere");
+        assert_eq!(s.warps.page, WarpPage::ImportExport);
+        assert!(snap_wheel(&mut s, notch(100.0), BOTH, 3.0));
+        assert_eq!(s.warps.page, WarpPage::History);
+        // The header's button goes back to the banner from either
+        s.warps.page = WarpPage::ImportExport;
+        turn_page(&mut s);
+        assert_eq!(s.warps.page, WarpPage::Banner);
+    }
+
+    #[test]
+    fn a_list_in_the_history_scrolls_up_before_the_page_turns() {
+        let mut s = ui();
+        s.warps.page = WarpPage::History;
+        // The latest pulls scrolled partway down, the page at its top: the list scrolls back up
+        let partway = PageScroll {
+            at_top: false,
+            at_bottom: false,
+        };
+        assert!(!leave_wheel(&mut s, 100.0, partway));
+        assert!(!snap_wheel(&mut s, notch(100.0), BOTH, 1.0));
+        assert_eq!(s.warps.page, WarpPage::History);
+        // Back at its top, the next scroll up turns the page
+        assert!(!leave_wheel(&mut s, 100.0, AT_TOP));
+        assert!(snap_wheel(&mut s, notch(100.0), BOTH, 2.0));
+        assert_eq!(s.warps.page, WarpPage::Banner);
+    }
+
+    #[test]
+    fn a_page_scrolls_itself_until_its_end() {
+        let mut s = ui();
+        // The banner taller than its room, partway down: it scrolls
+        let partway = PageScroll {
+            at_top: false,
+            at_bottom: false,
+        };
+        assert!(!snap_wheel(&mut s, notch(-100.0), partway, 1.0));
+        assert_eq!(s.warps.page, WarpPage::Banner);
+        // Scrolling up at the banner's top goes nowhere either
+        assert!(!snap_wheel(&mut s, notch(100.0), AT_TOP, 2.0));
+
+        s.warps.page = WarpPage::History;
+        assert!(!snap_wheel(&mut s, notch(-100.0), AT_TOP, 3.0), "the history scrolls down");
+        assert!(!snap_wheel(&mut s, notch(100.0), AT_BOTTOM, 4.0), "and back up");
+        assert_eq!(s.warps.page, WarpPage::History);
+    }
+
+    #[test]
+    fn a_trackpad_turns_the_page_once_it_pulls_far_enough() {
+        let mut s = ui();
+        for i in 0..5 {
+            assert!(snap_wheel(&mut s, swipe(-10.0), AT_BOTTOM, 1.0 + i as f64 * 0.016));
+        }
+        assert_eq!(s.warps.page, WarpPage::Banner, "50 points isn't enough");
+        // A pause starts the pull over
+        assert!(snap_wheel(&mut s, swipe(-10.0), AT_BOTTOM, 2.0));
+        assert_eq!(s.warps.page, WarpPage::Banner);
+        for i in 1..6 {
+            snap_wheel(&mut s, swipe(-10.0), AT_BOTTOM, 2.0 + i as f64 * 0.016);
+        }
+        assert_eq!(s.warps.page, WarpPage::History);
+        // Coasting after the fingers lift never turns it
+        let mut s = ui();
+        for i in 0..20 {
+            snap_wheel(&mut s, coast(-30.0), AT_BOTTOM, 1.0 + i as f64 * 0.016);
+        }
+        assert_eq!(s.warps.page, WarpPage::Banner);
+    }
+
     fn ui() -> Ui {
         Ui::new(Settings::default())
+    }
+
+    /// A notch of a mouse wheel
+    fn notch(dy: f32) -> Wheel {
+        Wheel {
+            dy,
+            notch: true,
+            momentum: false,
+        }
+    }
+
+    /// A trackpad's fingers moving
+    fn swipe(dy: f32) -> Wheel {
+        Wheel {
+            dy,
+            notch: false,
+            momentum: false,
+        }
+    }
+
+    /// A trackpad coasting after the fingers lifted
+    fn coast(dy: f32) -> Wheel {
+        Wheel {
+            dy,
+            notch: false,
+            momentum: true,
+        }
     }
 
     #[test]
@@ -693,6 +1618,7 @@ mod tests {
             light_cones: 2,
             characters: 3,
             materials: 4,
+            funds: Funds::default(),
         };
         assert!(ui.inventory_changed(7, inventory));
         assert!(!ui.inventory_changed(7, inventory));

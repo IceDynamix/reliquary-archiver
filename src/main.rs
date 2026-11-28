@@ -29,7 +29,7 @@ mod logging;
 mod merge;
 mod session;
 mod stall;
-#[allow(dead_code)]
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
 mod warps;
 
 #[derive(Parser, Debug, Clone)]
