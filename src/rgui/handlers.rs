@@ -6,7 +6,6 @@
 
 use std::time::{Duration, Instant};
 
-use chrono::Local;
 use raxis::runtime::task::{self, Task};
 use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::OptimizerEvent;
@@ -37,7 +36,9 @@ pub fn handle_export_message(state: &mut RootState, message: ExportMessage) -> O
 
         ExportMessage::New(export) => {
             state.store.json_export = Some(FileContainer {
-                name: Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string(),
+                name: jiff::ZonedDateTime::now()
+                    .strftime("archive_output-%Y-%m-%dT%H-%M-%S.json")
+                    .to_string(),
                 content: serde_json::to_string_pretty(&export).unwrap(),
                 ext: FileExtensions::of("JSON files", &["json"]),
             });

@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Local;
 use futures::lock::Mutex;
 use futures::{FutureExt, StreamExt, future, select};
 use reliquary_archiver::export::fribbels::Export;
@@ -161,7 +160,9 @@ async fn maybe_timeout(timeout: Option<Duration>) {
 }
 
 fn write_output(output: Option<PathBuf>, export: &Export) {
-    let default_name = Local::now().format("archive_output-%Y-%m-%dT%H-%M-%S.json").to_string();
+    let default_name = jiff::ZonedDateTime::now()
+        .strftime("archive_output-%Y-%m-%dT%H-%M-%S.json")
+        .to_string();
     let mut output_file = output.unwrap_or_else(|| PathBuf::from(&default_name));
 
     info!("exporting collected data");

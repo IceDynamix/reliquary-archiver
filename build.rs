@@ -4,8 +4,10 @@ use std::fs::File;
 use std::path::Path;
 
 use reliquary::resource::excel::{
-    AvatarConfigMap, AvatarExRankConfigMap, AvatarSkillTreeConfigMap, EquipmentConfigMap, ItemConfigMap, MultiplePathAvatarConfigMap,
-    RelicConfigMap, RelicMainAffixConfigMap, RelicSetConfigMap, RelicSubAffixConfigMap,
+    AvatarConfig, AvatarConfigMap, AvatarExRankConfig, AvatarExRankConfigMap, AvatarSkillTreeConfig, AvatarSkillTreeConfigMap,
+    EquipmentConfig, EquipmentConfigMap, ItemConfig, ItemConfigMap, MultiplePathAvatarConfig, MultiplePathAvatarConfigMap, RelicConfig,
+    RelicConfigMap, RelicMainAffixConfig, RelicMainAffixConfigMap, RelicSetConfig, RelicSetConfigMap, RelicSubAffixConfig,
+    RelicSubAffixConfigMap,
 };
 use reliquary::resource::{ResourceMap, TextMapEntry};
 use ureq::serde::Serialize;
@@ -14,90 +16,35 @@ use ureq::serde::de::DeserializeOwned;
 const GITLAB_FILES_API_PATH: &str = "projects/Dimbreath%2Fturnbasedgamedata/repository/files";
 const GITHUB_RAW_URL: &str = "https://raw.githubusercontent.com/DimbreathBot/TurnBasedGameData/main";
 
-macro_rules! download_config {
-    ($t:ty, $ex:expr, [$($url:expr),+ $(,)?]) => {
-        write_to_out(
-            {
-                let mut merged = <$t>::new_empty();
-                $(
-                    let value = download_as_json::<$t>($url);
-                    $ex(&value);
-                    merged.0.extend(value.0);
-                )+
-                merged
-            },
-            <$t>::get_json_name(),
-        )
-    };
-
-    ($t:ty, [$($url:expr),+ $(,)?]) => {
-        download_config!($t, |_| {}, [$($url),+]);
-    };
-
-    ($t:ty, $ex:expr) => {
-        download_config!($t, $ex, [&resource_path::<$t>()]);
-    };
-
-    ($t:ty) => {
-        download_config!($t, |_| {}, [&resource_path::<$t>()]);
-    };
-}
-
-macro_rules! download_config_and_store_text_hashes {
-    ($t:ty, $field:ident, $hashes:ident, $urls:tt) => {
-        download_config!(
-            $t,
-            |value: &$t| {
-                for cfg in value.0.iter() {
-                    $hashes.insert(cfg.$field);
-                }
-            },
-            $urls
-        );
-    };
-
-    ($t:ty, $field:ident, $hashes:ident) => {
-        download_config_and_store_text_hashes!($t, $field, $hashes, [&resource_path::<$t>()]);
-    };
-}
-
-macro_rules! download_config_and_store_partial_text_hashes {
-    ($t:ty, $field:ident, $hashes:ident) => {
-        download_config!($t, |value: &$t| {
-            for cfg in value.0.iter() {
-                if let Some(hash) = cfg.$field {
-                    $hashes.insert(hash);
-                }
-            }
-        });
-    };
-}
-
 fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
+
+    // `pktmon_only`: pktmon is the capture backend, pcap is preferred when both are built in
+    println!("cargo::rustc-check-cfg=cfg(pktmon_only)");
+    if env::var_os("CARGO_FEATURE_PKTMON").is_some() && env::var_os("CARGO_FEATURE_PCAP").is_none() {
+        println!("cargo::rustc-cfg=pktmon_only");
+    }
 
     // the text map is really, REALLY large (>25MB), so we're optimizing by only
     // keeping the entries used from relevant config files where the strings are required
     // for the export
     let mut text_hashes: HashSet<TextMapEntry> = HashSet::new();
 
-    download_config_and_store_text_hashes!(AvatarConfigMap, AvatarName, text_hashes, [
-        &resource_path::<AvatarConfigMap>(),
-        &resource_path_of("AvatarConfigLD.json"),
-    ]);
-    download_config_and_store_text_hashes!(EquipmentConfigMap, EquipmentName, text_hashes);
-    download_config_and_store_text_hashes!(RelicSetConfigMap, SetName, text_hashes);
-    download_config_and_store_partial_text_hashes!(ItemConfigMap, ItemName, text_hashes);
+    let avatars = download_config::<AvatarConfigMap, AvatarConfig>(&["AvatarConfigLD.json"]);
+    text_hashes.extend(avatars.iter().map(|cfg| cfg.AvatarName));
+    let equipment = download_config::<EquipmentConfigMap, EquipmentConfig>(&[]);
+    text_hashes.extend(equipment.iter().map(|cfg| cfg.EquipmentName));
+    let relic_sets = download_config::<RelicSetConfigMap, RelicSetConfig>(&[]);
+    text_hashes.extend(relic_sets.iter().map(|cfg| cfg.SetName));
+    let items = download_config::<ItemConfigMap, ItemConfig>(&[]);
+    text_hashes.extend(items.iter().filter_map(|cfg| cfg.ItemName));
 
-    download_config!(AvatarSkillTreeConfigMap, [
-        &resource_path::<AvatarSkillTreeConfigMap>(),
-        &resource_path_of("AvatarSkillTreeConfigLD.json"),
-    ]);
-    download_config!(MultiplePathAvatarConfigMap);
-    download_config!(RelicConfigMap);
-    download_config!(RelicMainAffixConfigMap);
-    download_config!(RelicSubAffixConfigMap);
-    download_config!(AvatarExRankConfigMap);
+    download_config::<AvatarSkillTreeConfigMap, AvatarSkillTreeConfig>(&["AvatarSkillTreeConfigLD.json"]);
+    download_config::<MultiplePathAvatarConfigMap, MultiplePathAvatarConfig>(&[]);
+    download_config::<RelicConfigMap, RelicConfig>(&[]);
+    download_config::<RelicMainAffixConfigMap, RelicMainAffixConfig>(&[]);
+    download_config::<RelicSubAffixConfigMap, RelicSubAffixConfig>(&[]);
+    download_config::<AvatarExRankConfigMap, AvatarExRankConfig>(&[]);
 
     save_text_map(&text_hashes, "EN");
 
@@ -107,6 +54,17 @@ fn main() {
         res.set_icon("assets/icon.ico").set("InternalName", "Reliquary Archiver");
         res.compile().unwrap();
     }
+}
+
+/// Downloads the entries of config map `M`, plus those in `more_files` (configs some entries are
+/// kept apart in), and writes them all to OUT_DIR as `M`'s file. Returns the entries.
+fn download_config<M: ResourceMap, Entry: Serialize + DeserializeOwned>(more_files: &[&str]) -> Vec<Entry> {
+    let files = std::iter::once(M::get_json_name()).chain(more_files.iter().copied());
+    let entries: Vec<Entry> = files
+        .flat_map(|file| download_as_json::<Vec<Entry>>(&resource_path(file)))
+        .collect();
+    write_to_out(&entries, M::get_json_name());
+    entries
 }
 
 fn save_text_map(hashes: &HashSet<TextMapEntry>, language: &str) {
@@ -119,14 +77,10 @@ fn save_text_map(hashes: &HashSet<TextMapEntry>, language: &str) {
         .filter(|(k, _)| hashes.contains(k))
         .collect();
 
-    write_to_out(text_map, &file_name);
+    write_to_out(&text_map, &file_name);
 }
 
-fn resource_path<T: ResourceMap>() -> String {
-    resource_path_of(T::get_json_name())
-}
-
-fn resource_path_of(name: &str) -> String {
+fn resource_path(name: &str) -> String {
     format!("ExcelOutput/{name}")
 }
 
@@ -213,11 +167,11 @@ fn glab_available() -> bool {
     })
 }
 
-fn write_to_out<T: DeserializeOwned + Serialize>(value: T, file_name: &str) {
+fn write_to_out<T: Serialize>(value: &T, file_name: &str) {
     let out_dir = env::var_os("OUT_DIR").unwrap();
     let out_path = Path::new(&out_dir).join(file_name);
 
     let mut file = File::create(out_path).unwrap();
 
-    ureq::serde_json::to_writer(&mut file, &value).unwrap();
+    ureq::serde_json::to_writer(&mut file, value).unwrap();
 }
