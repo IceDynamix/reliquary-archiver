@@ -19,6 +19,7 @@ use crate::export::database::get_database;
 
 // Long-standing game data that the embedded database is expected to contain
 const MARCH_7TH: u32 = 1001; // 4* character
+const ASTA: u32 = 1009; // 4* character
 const HIMEKO: u32 = 1003; // 5* character
 const ARROWS: u32 = 20000; // 3* light cone
 const TWO_STAR_HEAD: u32 = 31011; // relic of set 101
@@ -74,13 +75,13 @@ fn pull(item_ids: &[u32]) -> DoGachaScRsp {
     }
 }
 
-fn exporter_with_banner(rate_up: u32) -> OptimizerExporter {
+/// An exporter that knows a banner featuring `rate_up`
+fn exporter_with_banner(rate_up: &[u32]) -> OptimizerExporter {
     let mut exporter = OptimizerExporter::new();
     exporter.handle_gacha_info(GetGachaInfoScRsp {
         gacha_info_list: vec![GachaInfo {
             gacha_id: CHARACTER_BANNER,
-            prize_item_list: vec![rate_up],
-            item_detail_list: vec![rate_up],
+            prize_item_list: rate_up.to_vec(),
             ..Default::default()
         }],
         ..Default::default()
@@ -210,7 +211,7 @@ fn player_sync_updates_and_deletes_relics() {
 
 #[test]
 fn gacha_pity_follows_the_pulled_rarities() {
-    let mut exporter = exporter_with_banner(HIMEKO);
+    let mut exporter = exporter_with_banner(&[HIMEKO]);
 
     let Some(OptimizerEvent::GachaResult(result)) = exporter.handle_gacha(pull(&[ARROWS, ARROWS, MARCH_7TH, ARROWS])) else {
         panic!("expected a gacha result");
@@ -235,8 +236,21 @@ fn gacha_pity_follows_the_pulled_rarities() {
 }
 
 #[test]
+fn a_featured_4_star_sets_no_guarantee() {
+    let mut exporter = exporter_with_banner(&[ASTA, HIMEKO]);
+
+    let Some(OptimizerEvent::GachaResult(result)) = exporter.handle_gacha(pull(&[ARROWS, ASTA])) else {
+        panic!("expected a gacha result");
+    };
+    assert!(matches!(result.pity_4, PityUpdate::ResetPity {
+        amount: 0,
+        set_guarantee: false
+    }));
+}
+
+#[test]
 fn gacha_result_with_unknown_item_is_dropped() {
-    let mut exporter = exporter_with_banner(HIMEKO);
+    let mut exporter = exporter_with_banner(&[HIMEKO]);
     assert!(exporter.handle_gacha(pull(&[ARROWS, 999_999])).is_none());
 }
 
@@ -244,6 +258,43 @@ fn gacha_result_with_unknown_item_is_dropped() {
 fn gacha_on_unknown_banner_is_dropped() {
     let mut exporter = OptimizerExporter::new();
     assert!(exporter.handle_gacha(pull(&[ARROWS])).is_none());
+}
+
+#[test]
+fn light_cone_banner_is_recognized_by_its_items() {
+    let mut exporter = OptimizerExporter::new();
+    exporter.handle_gacha_info(GetGachaInfoScRsp {
+        gacha_info_list: vec![GachaInfo {
+            gacha_id: CHARACTER_BANNER,
+            prize_item_list: vec![ARROWS],
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+    assert!(matches!(exporter.banners[&CHARACTER_BANNER].banner_type, BannerType::LightCone));
+}
+
+#[test]
+fn relic_recon_list_replaces_what_was_known() {
+    use reliquary::network::command::proto::GetRelicBoxDataScRsp::GetRelicBoxDataScRsp;
+    use reliquary::network::command::proto::OpenRelicBoxScRsp::OpenRelicBoxScRsp;
+
+    let mut exporter = OptimizerExporter::new();
+    let box_data = |ids: &[u32]| GetRelicBoxDataScRsp {
+        relic_id_list: ids.to_vec(),
+        ..Default::default()
+    };
+
+    exporter.handle_relic_box_data(box_data(&[1, 2]));
+    exporter.handle_relic_box_open(OpenRelicBoxScRsp {
+        relic_id: 3,
+        ..Default::default()
+    });
+    assert_eq!(exporter.recon_relics, vec![1, 2, 3]);
+
+    let events = exporter.handle_relic_box_data(box_data(&[1, 2, 3]));
+    assert_eq!(events.len(), 3);
+    assert_eq!(exporter.recon_relics, vec![1, 2, 3]);
 }
 
 #[test]

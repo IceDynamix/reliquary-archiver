@@ -17,8 +17,13 @@ use reliquary::network::command::proto::SetAvatarEnhancedIdScRsp::SetAvatarEnhan
 use tracing::{debug, info, warn};
 
 use super::OptimizerExporter;
+use crate::export::banner_rate_up;
+use crate::export::database::Database;
 use crate::export::fribbels::converters::*;
 use crate::export::fribbels::models::*;
+
+/// The standard banner, which every account has and which features its whole pool
+const STANDARD_BANNER: u32 = 1001;
 
 impl OptimizerExporter {
     pub(super) fn handle_token(&mut self, token: PlayerGetTokenScRsp) {
@@ -79,7 +84,7 @@ impl OptimizerExporter {
     pub(super) fn ingest_multipath_character(&mut self, proto_multipath_character: &AvatarPathData) -> Option<Character> {
         let Some(character) = export_proto_multipath_character(self.database, proto_multipath_character) else {
             warn!(
-                uid = &proto_multipath_character.avatar_id,
+                avatar_id = proto_multipath_character.avatar_id,
                 "multipath character config not found, skipping"
             );
             return None;
@@ -87,8 +92,8 @@ impl OptimizerExporter {
 
         let character_id = character.id;
 
-        // If it's the trailblazer, determine the gender
-        if character.name == "Trailblazer" {
+        if Database::is_trailblazer(character_id) {
+            // Each path has a trailblazer of either gender: Stelle on even ids, Caelus on odd ones
             self.trailblazer = Some(if character_id % 2 == 0 { "Stelle" } else { "Caelus" });
         }
 
@@ -96,7 +101,7 @@ impl OptimizerExporter {
 
         let resolved = self.resolve_multipath_character(character_id);
         if resolved.is_none() {
-            debug!(uid = &character_id, "multipath character not resolved");
+            debug!(avatar_id = character_id, "multipath character not resolved");
             self.unresolved_multipath_characters.insert(character_id);
         }
 
@@ -127,7 +132,7 @@ impl OptimizerExporter {
     pub(super) fn resolve_multipath_character(&mut self, character_id: u32) -> Option<Character> {
         let base_avatar_id = self.get_multipath_base_id(character_id);
         let Some(character) = self.characters.get_mut(&character_id) else {
-            warn!(uid = &character_id, "multipath character not found");
+            warn!(avatar_id = character_id, "multipath character not found");
             return None;
         };
 
@@ -200,7 +205,7 @@ impl OptimizerExporter {
                 if let Some(character) = self.ingest_multipath_character(&multipath_avatar_info) {
                     updated_characters.push(character);
                 } else {
-                    warn!(uid = &multipath_avatar_info.avatar_id, "multipath character not resolved");
+                    warn!(avatar_id = multipath_avatar_info.avatar_id, "multipath character not resolved");
                 }
             }
         }
@@ -216,7 +221,7 @@ impl OptimizerExporter {
     pub(super) fn handle_set_avatar_enhanced(&mut self, set_avatar_enhanced: SetAvatarEnhancedIdScRsp) -> Option<OptimizerEvent> {
         let Some(character) = self.characters.get_mut(&set_avatar_enhanced.growth_avatar_id) else {
             warn!(
-                uid = &set_avatar_enhanced.growth_avatar_id,
+                avatar_id = set_avatar_enhanced.growth_avatar_id,
                 "character not found when setting enhanced id, skipping"
             );
             return None;
@@ -227,36 +232,17 @@ impl OptimizerExporter {
         Some(OptimizerEvent::UpdateCharacters(vec![character.clone()]))
     }
 
-    fn is_lightcone(&self, item_id: u32) -> bool {
-        self.database.equipment_config.get(&item_id).is_some()
-    }
-
-    /// The star rating of a light cone or character that can be pulled from a banner
-    fn gacha_item_grade(&self, item_id: u32) -> Option<u32> {
-        let rarity = if let Some(lc_config) = self.database.equipment_config.get(&item_id) {
-            &lc_config.Rarity
-        } else {
-            &self.database.avatar_config.get(&item_id)?.Rarity
-        };
-
-        match rarity.as_str() {
-            "CombatPowerLightconeRarity5" | "CombatPowerAvatarRarityType5" => Some(5),
-            "CombatPowerLightconeRarity4" | "CombatPowerAvatarRarityType4" => Some(4),
-            "CombatPowerLightconeRarity3" => Some(3),
-            _ => None,
-        }
-    }
-
     pub(super) fn handle_gacha_info(&mut self, gacha_info: GetGachaInfoScRsp) {
         for banner in gacha_info.gacha_info_list {
+            let rate_up_item_list = banner_rate_up(&banner);
             let banner_type = match banner.gacha_id {
-                1001 => BannerType::Standard,
-                _ if banner.prize_item_list.first().is_some_and(|item_id| self.is_lightcone(*item_id)) => BannerType::LightCone,
+                STANDARD_BANNER => BannerType::Standard,
+                _ if rate_up_item_list.iter().any(|&item_id| self.database.is_light_cone(item_id)) => BannerType::LightCone,
                 _ => BannerType::Character,
             };
 
             self.banners.insert(banner.gacha_id, BannerInfo {
-                rate_up_item_list: banner.item_detail_list,
+                rate_up_item_list,
                 banner_type,
             });
         }
@@ -281,7 +267,7 @@ impl OptimizerExporter {
             gacha_result.pull_results.push(item_id);
 
             // Guessing the rarity would report a wrong pity, which is worse than not reporting the pull
-            let Some(grade) = self.gacha_item_grade(item_id) else {
+            let Some(grade) = self.database.warp_item_rarity(item_id) else {
                 warn!(item_id, "pulled an item of unknown rarity, skipping gacha result");
                 return None;
             };
@@ -308,13 +294,12 @@ impl OptimizerExporter {
         Some(OptimizerEvent::GachaResult(gacha_result))
     }
 
+    /// The response lists every relic the event has given so far
     pub(super) fn handle_relic_box_data(&mut self, data: GetRelicBoxDataScRsp) -> Vec<OptimizerEvent> {
-        let ids = data.relic_id_list.clone();
-        ids.into_iter()
-            .map(|id| {
-                self.recon_relics.push(id);
-                OptimizerEvent::RelicBox(RelicBoxEvent::Add { relic_id: id })
-            })
+        self.recon_relics = data.relic_id_list;
+        self.recon_relics
+            .iter()
+            .map(|&relic_id| OptimizerEvent::RelicBox(RelicBoxEvent::Add { relic_id }))
             .collect()
     }
 

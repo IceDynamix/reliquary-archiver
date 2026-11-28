@@ -1,61 +1,59 @@
 use std::error::Error;
+use std::fmt::{self, Display};
 use std::io;
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::Arc;
 
 use axum::extract::ws::{Message, Utf8Bytes, WebSocket, WebSocketUpgrade};
 use axum::routing::get;
 use axum::{Extension, Router};
 use futures::lock::Mutex;
 use futures::sink::SinkExt;
-use futures::stream::{SplitSink, Stream, StreamExt};
+use futures::stream::{SplitSink, StreamExt};
 use reliquary_archiver::export::Exporter;
 use reliquary_archiver::export::fribbels::OptimizerEvent;
 use serde::Serialize;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::watch;
 use tokio::task::AbortHandle;
-use tokio_stream::wrappers::WatchStream;
-use tracing::{debug, info, warn};
+use tracing::{error, info, warn};
 
 use crate::accounts::{AccountEvent, MultiAccountManager};
 
+/// Why the server could not start
+#[derive(Debug, Clone)]
+pub enum ServerError {
+    /// Something else listens on the port, which the error names
+    #[allow(dead_code)]
+    PortInUse(u16),
+    Other(String),
+}
+
+impl Display for ServerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ServerError::PortInUse(_) => {
+                f.write_str("Address already in use, please close any other instances of the application or try another address")
+            }
+            ServerError::Other(e) => f.write_str(e),
+        }
+    }
+}
+
+impl Error for ServerError {}
+
 struct WebSocketServerState {
-    pub manager: Arc<Mutex<MultiAccountManager>>,
-    pub selected_account_rx: watch::Receiver<Option<u32>>,
-    pub client_count: Arc<AtomicUsize>,
-    pub client_count_tx: watch::Sender<usize>,
-    pub service_handle: StdMutex<Option<AbortHandle>>,
-    pub active_port: AtomicU16,
+    manager: Arc<Mutex<MultiAccountManager>>,
+    selected_account_rx: watch::Receiver<Option<u32>>,
+    /// How many clients are connected
+    client_count: watch::Sender<usize>,
 }
 
 impl WebSocketServerState {
-    /// Replaces the running server (if any) with a new one
-    pub fn replace_service(&self, handle: AbortHandle, port: u16) {
-        self.abort_service();
-        self.active_port.store(port, Ordering::Relaxed);
-        *self.service_handle.lock().unwrap() = Some(handle);
-    }
-
-    pub fn abort_service(&self) {
-        if let Some(handle) = self.service_handle.lock().unwrap().take() {
-            let current_port = self.active_port.load(Ordering::Relaxed);
-            info!("Terminating WebSocket server on 0.0.0.0:{}", current_port);
-            handle.abort();
-        }
-    }
-
     /// Sends the complete state of the account to the client, if there is one to send yet
     async fn send_initial_scan(&self, uid: u32, sender: &mut SplitSink<WebSocket, Message>) -> Result<(), Box<dyn Error>> {
-        let Some(exporter) = self.manager.lock().await.get_account_exporter(uid) else {
-            return Ok(());
-        };
-
-        let export = {
-            let exporter = exporter.lock().await;
-            if !exporter.is_initialized() {
-                return Ok(());
-            }
-            exporter.export()
+        let export = match self.manager.lock().await.account_exporter(uid) {
+            Some(exporter) if exporter.is_initialized() => exporter.export(),
+            _ => None,
         };
 
         match export {
@@ -63,12 +61,16 @@ impl WebSocketServerState {
             None => Ok(()),
         }
     }
-}
 
-pub enum PortSource {
-    Fixed(u16),
-    #[cfg(feature = "gui")]
-    Dynamic(WatchStream<PortCommand>),
+    /// Changes the client count by `change` and returns the new count
+    fn count_clients(&self, change: isize) -> usize {
+        let mut count = 0;
+        self.client_count.send_modify(|clients| {
+            *clients = clients.saturating_add_signed(change);
+            count = *clients;
+        });
+        count
+    }
 }
 
 #[cfg(feature = "gui")]
@@ -78,92 +80,100 @@ pub enum PortCommand {
     Close,
 }
 
+/// Serves on `port` for as long as the program runs
 pub async fn start_websocket_server(
-    #[cfg_attr(not(feature = "gui"), allow(unused_mut))] mut port_source: PortSource,
+    port: u16,
     manager: Arc<Mutex<MultiAccountManager>>,
     selected_account_rx: watch::Receiver<Option<u32>>,
-) -> Result<(impl Stream<Item = Result<u16, String>>, impl Stream<Item = usize>), String> {
-    let initial_port = match port_source {
-        PortSource::Fixed(ref port) => *port,
-        #[cfg(feature = "gui")]
-        PortSource::Dynamic(_) => 0,
-    };
-
-    let (client_count_tx, client_count_rx) = watch::channel(0);
-    let (port_tx, port_rx) = watch::channel::<Result<u16, String>>(Ok(initial_port));
-
+) -> Result<(), ServerError> {
     let state = Arc::new(WebSocketServerState {
-        manager: manager.clone(),
+        manager,
         selected_account_rx,
-        client_count: Arc::new(AtomicUsize::new(0)),
-        client_count_tx,
-        service_handle: StdMutex::new(None),
-        active_port: AtomicU16::new(initial_port),
+        client_count: watch::channel(0).0,
     });
 
-    // Create streams from the watch receivers
-    let client_count_stream = WatchStream::new(client_count_rx);
-    // The port channel starts out with a placeholder, only report the ports the server actually runs on
-    let port_stream = WatchStream::from_changes(port_rx);
+    serve(port, &state).await.map(|_| ())
+}
+
+/// Serves on the port `commands` asked for last, until it asks to close.
+///
+/// Returns the ports the server opens (or why it couldn't), and how many clients are connected.
+/// A server that runs keeps running when it can't move to another port.
+#[cfg(feature = "gui")]
+pub fn start_dynamic_websocket_server(
+    mut commands: tokio_stream::wrappers::WatchStream<PortCommand>,
+    manager: Arc<Mutex<MultiAccountManager>>,
+    selected_account_rx: watch::Receiver<Option<u32>>,
+) -> (
+    impl futures::Stream<Item = Result<u16, ServerError>>,
+    impl futures::Stream<Item = usize>,
+) {
+    use tokio_stream::wrappers::WatchStream;
+
+    let (client_count, client_count_rx) = watch::channel(0);
+    let (port_tx, port_rx) = watch::channel::<Result<u16, ServerError>>(Ok(0));
+
+    let state = Arc::new(WebSocketServerState {
+        manager,
+        selected_account_rx,
+        client_count,
+    });
 
     tokio::spawn(async move {
-        loop {
-            // Without the gui feature there is only a single kind of port source
-            #[cfg_attr(not(feature = "gui"), allow(clippy::infallible_destructuring_match))]
-            let port = match port_source {
-                PortSource::Fixed(port) => port,
-                #[cfg(feature = "gui")]
-                PortSource::Dynamic(ref mut stream) => match stream.next().await {
-                    None => break,
-                    Some(PortCommand::Close) => {
-                        state.abort_service();
-                        continue;
+        let mut running: Option<(u16, AbortHandle)> = None;
+
+        while let Some(command) = commands.next().await {
+            match command {
+                PortCommand::Close => stop(&mut running),
+                PortCommand::Open(port) => match serve(port, &state).await {
+                    Ok(server) => {
+                        stop(&mut running);
+                        port_tx.send(Ok(server.0)).ok();
+                        running = Some(server);
                     }
-                    Some(PortCommand::Open(port)) => port,
+                    Err(e) => {
+                        port_tx.send(Err(e)).ok();
+                    }
                 },
-            };
-
-            let service = Router::new()
-                .route("/ws", get(ws_handler))
-                .layer(Extension(state.clone()))
-                .into_make_service();
-
-            let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
-
-            let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| match e.kind() {
-                io::ErrorKind::AddrInUse => {
-                    "Address already in use, please close any other instances of the application or try another address".to_string()
-                }
-                _ => e.to_string(),
-            });
-
-            match listener {
-                Ok(listener) => {
-                    let port = listener.local_addr().unwrap().port();
-                    state.replace_service(
-                        tokio::spawn(async move {
-                            let local_addr = listener.local_addr().unwrap();
-                            info!("Starting WebSocket server on {}", local_addr);
-                            debug!("Listening on {}", local_addr);
-                            axum::serve(listener, service).await.unwrap();
-                        })
-                        .abort_handle(),
-                        port,
-                    );
-                    port_tx.send(Ok(port)).ok();
-                }
-                Err(e) => {
-                    port_tx.send(Err(e)).ok();
-                }
             }
-
-            if matches!(port_source, PortSource::Fixed(_)) {
-                break;
-            };
         }
     });
 
-    Ok((port_stream, client_count_stream))
+    // The port channel starts out with a placeholder, only report the ports the server actually runs on
+    (WatchStream::from_changes(port_rx), WatchStream::new(client_count_rx))
+}
+
+#[cfg(feature = "gui")]
+fn stop(running: &mut Option<(u16, AbortHandle)>) {
+    if let Some((port, handle)) = running.take() {
+        info!("Terminating WebSocket server on 0.0.0.0:{}", port);
+        handle.abort();
+    }
+}
+
+/// Starts serving on `port` (any free one for 0). Returns the port and what stops the server.
+async fn serve(port: u16, state: &Arc<WebSocketServerState>) -> Result<(u16, AbortHandle), ServerError> {
+    let addr = std::net::SocketAddr::from(([0, 0, 0, 0], port));
+
+    let listener = tokio::net::TcpListener::bind(addr).await.map_err(|e| match e.kind() {
+        io::ErrorKind::AddrInUse => ServerError::PortInUse(port),
+        _ => ServerError::Other(e.to_string()),
+    })?;
+    let local_addr = listener.local_addr().map_err(|e| ServerError::Other(e.to_string()))?;
+
+    let service = Router::new()
+        .route("/ws", get(ws_handler))
+        .layer(Extension(state.clone()))
+        .into_make_service();
+
+    let task = tokio::spawn(async move {
+        info!("Starting WebSocket server on {}", local_addr);
+        if let Err(e) = axum::serve(listener, service).await {
+            error!("WebSocket server on {} stopped: {}", local_addr, e);
+        }
+    });
+
+    Ok((local_addr.port(), task.abort_handle()))
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, Extension(state): Extension<Arc<WebSocketServerState>>) -> axum::response::Response {
@@ -178,12 +188,8 @@ async fn send_serialized_message<T: Serialize>(sender: &mut SplitSink<WebSocket,
 }
 
 async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
-    // Increment client count
-    let client_count = state.client_count.fetch_add(1, Ordering::SeqCst) + 1;
+    let client_count = state.count_clients(1);
     info!("New client connected, total clients: {}", client_count);
-
-    // Notify GUI of client count change
-    let _ = state.client_count_tx.send(client_count);
 
     let (mut sender, mut receiver) = socket.split();
 
@@ -205,9 +211,9 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
     loop {
         tokio::select! {
             // Events from manager
-            Ok(event) = manager_rx.recv() => {
+            event = manager_rx.recv() => {
                 match event {
-                    AccountEvent::ExporterEvent { uid, event } => {
+                    Ok(AccountEvent::ExporterEvent { uid, event }) => {
                         // Only send if this is the selected account
                         if Some(uid) == selected_uid
                             && let Err(e) = send_serialized_message(&mut sender, event).await
@@ -216,10 +222,21 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
                             break;
                         }
                     }
-                    AccountEvent::Discovered { .. } | AccountEvent::Reconnected { .. } => {
+                    Ok(AccountEvent::Discovered { .. } | AccountEvent::Reconnected { .. }) => {
                         // No-op, if the account is selected, the exporter will send the initial state on selection change.
                         // Or for the automatic initial export after exporter initialization.
                     }
+                    // The client missed updates, the whole state brings it up to date again
+                    Err(RecvError::Lagged(skipped)) => {
+                        warn!(skipped, "WebSocket client fell behind, sending the whole state again");
+                        if let Some(uid) = selected_uid
+                            && let Err(e) = state.send_initial_scan(uid, &mut sender).await
+                        {
+                            warn!("Failed to send initial state after falling behind: {}", e);
+                            break;
+                        }
+                    }
+                    Err(RecvError::Closed) => break,
                 }
             }
             // GUI selection changed
@@ -252,10 +269,6 @@ async fn handle_socket(socket: WebSocket, state: Arc<WebSocketServerState>) {
         }
     }
 
-    // Decrement client count when client disconnects
-    let client_count = state.client_count.fetch_sub(1, Ordering::SeqCst) - 1;
+    let client_count = state.count_clients(-1);
     info!("Client disconnected, total clients: {}", client_count);
-
-    // Notify GUI of client count change
-    let _ = state.client_count_tx.send(client_count);
 }
