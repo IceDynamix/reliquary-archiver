@@ -22,6 +22,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter", "json"] }
 ureq = "2.12.1"
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v25.0.1", features = [
     "proto-rqa",
+    "proto-auth",
 ] }
 tokio = { version = "1.44.2", features = ["full"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
@@ -45,6 +46,7 @@ windows-registry = { optional = true, version = "0.6.1" }
 ureq = { version = "2.12.1", features = ["json"] }
 reliquary = { git = "https://github.com/IceDynamix/reliquary", tag = "v25.0.1", features = [
     "proto-rqa",
+    "proto-auth",
 ] }
 
 [target.'cfg(windows)'.build-dependencies]

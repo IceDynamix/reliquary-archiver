@@ -9,17 +9,24 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::lock::Mutex;
-use reliquary::network::command::command_id::{PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::command_id::{self, PlayerLoginFinishScRsp, PlayerLoginScRsp};
+use reliquary::network::command::proto::DoGachaScRsp::DoGachaScRsp as DoGachaScRspProto;
+use reliquary::network::command::proto::GetAuthkeyScRsp::GetAuthkeyScRsp as GetAuthkeyScRspProto;
+use reliquary::network::command::proto::GetGachaInfoScRsp::GetGachaInfoScRsp as GetGachaInfoScRspProto;
 use reliquary::network::command::{GameCommand, GameCommandError};
 use reliquary::network::{ConnectionPacket, ConnectionPacketError, GamePacket, GameSniffer, NetworkError};
 use reliquary_archiver::export::fribbels::Export;
-use reliquary_archiver::export::Exporter;
+use reliquary_archiver::export::{Exporter, banner_rate_up};
 use tracing::{info, trace, warn};
 
 use crate::accounts::MultiAccountManager;
 use crate::capture::Packet;
 use crate::merge::{MessageKey, SourceMerger};
 use crate::stall::{STALL_THRESHOLD, StallChange, StallDetector};
+use crate::warps::{BannerInfo, LiveRequest, WarpEvent};
+
+/// The web app the game asks an authkey for when it opens the warp history
+const WARP_HISTORY_APP: &str = "webview_gacha";
 
 /// Something that happened while processing a packet
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +50,8 @@ pub enum SessionEvent {
     Stalled,
     /// Commands are being decoded again after [`SessionEvent::Stalled`]
     Recovered,
+    /// Something to keep in the warp history
+    Warp(WarpEvent),
 }
 
 /// Decodes packets into commands for the exporters.
@@ -195,9 +204,69 @@ impl CaptureSession {
             events.push(SessionEvent::LoginFinished);
         }
 
+        let manager = self.manager.clone();
+        let mut manager = manager.lock().await;
+
+        if let Some(event) = self.warp_event(manager.uid_of(conv_id), &command) {
+            events.push(SessionEvent::Warp(event));
+        }
+
         // Route command to the correct exporter
-        if let Some(uid) = self.manager.lock().await.read_command(conv_id, command) {
+        if let Some(uid) = manager.read_command(conv_id, command) {
             events.push(SessionEvent::AccountSeen { uid });
+        }
+    }
+
+    /// What the command says about warps, if anything. `uid` is the account the connection logged in as.
+    fn warp_event(&self, uid: Option<u32>, command: &GameCommand) -> Option<WarpEvent> {
+        match command.command_id {
+            command_id::DoGachaScRsp => {
+                let result = command.parse_proto::<DoGachaScRspProto>().ok()?;
+                // The result carries the counter the account's next warp request will send, one
+                // more than this request's
+                let request_no = result.next_gacha_random.checked_sub(1);
+                if result.retcode != 0 || result.gacha_item_list.is_empty() {
+                    return None;
+                }
+                let Some(uid) = uid else {
+                    warn!("a warp was made before the account was known, it can't be kept");
+                    return None;
+                };
+                Some(WarpEvent::Pulled(LiveRequest {
+                    uid,
+                    gacha_id: result.gacha_id,
+                    request_no,
+                    items: result.gacha_item_list.iter().map(|item| item.gacha_item.item_id).collect(),
+                    captured_at: jiff::Timestamp::now(),
+                }))
+            }
+            command_id::GetAuthkeyScRsp => {
+                let response = command.parse_proto::<GetAuthkeyScRspProto>().ok()?;
+                if response.retcode != 0 || response.auth_appid != WARP_HISTORY_APP || response.authkey.is_empty() {
+                    return None;
+                }
+                let uid = uid?;
+                Some(WarpEvent::Authkey {
+                    uid,
+                    authkey: response.authkey,
+                })
+            }
+            command_id::GetGachaInfoScRsp => {
+                let info = command.parse_proto::<GetGachaInfoScRspProto>().ok()?;
+                let banners = info
+                    .gacha_info_list
+                    .iter()
+                    .map(|banner| BannerInfo {
+                        gacha_id: banner.gacha_id,
+                        begin: crate::warps::from_second(banner.begin_time),
+                        // 0 when it doesn't end
+                        end: Some(banner.end_time).filter(|&end| end != 0).map(crate::warps::from_second),
+                        rate_up: banner_rate_up(banner),
+                    })
+                    .collect();
+                Some(WarpEvent::Banners { banners })
+            }
+            _ => None,
         }
     }
 
@@ -378,6 +447,91 @@ mod tests {
         from_each_source(&mut session, &[1, 2], &handshake_established(7)).await;
         let events = from_each_source(&mut session, &[1, 2], &handshake_established(8)).await;
         assert_eq!(count(&events, SessionEvent::ConnectionEstablished), 1);
+    }
+
+    /// A command carrying `proto`, as the sniffer hands it on
+    fn command(command_id: u16, proto: &impl protobuf::Message) -> GameCommand {
+        let proto_data = proto.write_to_bytes().unwrap();
+        GameCommand {
+            command_id,
+            header_len: 0,
+            data_len: proto_data.len() as u32,
+            proto_header: Vec::new(),
+            proto_data,
+        }
+    }
+
+    #[test]
+    fn a_warp_is_reported_with_its_request_counter() {
+        use reliquary::network::command::proto::GachaItem::GachaItem;
+        use reliquary::network::command::proto::Item::Item;
+
+        let item = |item_id: u32| GachaItem {
+            gacha_item: Some(Item {
+                item_id,
+                ..Default::default()
+            })
+            .into(),
+            ..Default::default()
+        };
+        let pull = command(command_id::DoGachaScRsp, &DoGachaScRspProto {
+            gacha_id: 2142,
+            next_gacha_random: 1577,
+            gacha_item_list: vec![item(20011), item(1106)],
+            ..Default::default()
+        });
+
+        let event = session().warp_event(Some(602857786), &pull);
+        let Some(WarpEvent::Pulled(request)) = event else {
+            panic!("expected a pull, got {event:?}");
+        };
+        assert_eq!((request.uid, request.gacha_id, request.request_no), (602857786, 2142, Some(1576)));
+        assert_eq!(request.items, [20011, 1106]);
+
+        // A pull before the account is known can't be kept
+        assert!(session().warp_event(None, &pull).is_none());
+    }
+
+    #[test]
+    fn only_the_warp_history_authkey_is_reported() {
+        let authkey = |auth_appid: &str| {
+            command(command_id::GetAuthkeyScRsp, &GetAuthkeyScRspProto {
+                auth_appid: auth_appid.into(),
+                authkey: "key".into(),
+                ..Default::default()
+            })
+        };
+        let session = session();
+
+        assert!(matches!(
+            session.warp_event(Some(7), &authkey(WARP_HISTORY_APP)),
+            Some(WarpEvent::Authkey { uid: 7, authkey }) if authkey == "key"
+        ));
+        // The game asks for one for its surveys at login too
+        assert!(session.warp_event(Some(7), &authkey("webview_survey")).is_none());
+    }
+
+    #[test]
+    fn banners_are_reported_with_their_rate_ups() {
+        use reliquary::network::command::proto::GachaInfo::GachaInfo;
+
+        let info = command(command_id::GetGachaInfoScRsp, &GetGachaInfoScRspProto {
+            gacha_info_list: vec![GachaInfo {
+                gacha_id: 2142,
+                begin_time: 1794349800,
+                end_time: 1797969600,
+                prize_item_list: vec![1511, 1009, 1110, 1207],
+                ..Default::default()
+            }],
+            ..Default::default()
+        });
+
+        let Some(WarpEvent::Banners { banners }) = session().warp_event(None, &info) else {
+            panic!("expected the banners");
+        };
+        assert_eq!(banners.len(), 1);
+        assert_eq!(banners[0].gacha_id, 2142);
+        assert_eq!(banners[0].rate_up, [1009, 1110, 1207, 1511]);
     }
 
     #[tokio::test]

@@ -102,6 +102,11 @@ impl MultiAccountManager {
         self.event_tx.send(event).ok();
     }
 
+    /// The account logged in on the conversation, once it is known
+    pub fn uid_of(&self, conv_id: u32) -> Option<u32> {
+        self.exporters.get(&conv_id)?.uid()
+    }
+
     /// The exporter of an account
     pub fn account_exporter(&self, uid: u32) -> Option<&OptimizerExporter> {
         self.exporters.get(self.uid_to_conv.get(&uid)?)
