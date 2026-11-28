@@ -1568,8 +1568,8 @@ pub(super) fn live_badge(tint: Color) -> El {
 
 // ---- words and numbers -------------------------------------------------------------------------
 
-fn time_left(end: i64) -> String {
-    let left = (end - jiff::Timestamp::now().as_second()).max(0);
+fn time_left(end: jiff::Timestamp) -> String {
+    let left = (end.as_second() - jiff::Timestamp::now().as_second()).max(0);
     let (days, hours) = (left / 86400, left % 86400 / 3600);
     if days > 0 {
         format!("{days}d {hours}h left")

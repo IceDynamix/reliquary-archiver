@@ -237,7 +237,7 @@ impl CaptureSession {
                     gacha_id: result.gacha_id,
                     request_no,
                     items: result.gacha_item_list.iter().map(|item| item.gacha_item.item_id).collect(),
-                    captured_at: jiff::Timestamp::now().as_millisecond(),
+                    captured_at: jiff::Timestamp::now(),
                 }))
             }
             command_id::GetAuthkeyScRsp => {
@@ -258,8 +258,9 @@ impl CaptureSession {
                     .iter()
                     .map(|banner| BannerInfo {
                         gacha_id: banner.gacha_id,
-                        begin: banner.begin_time,
-                        end: banner.end_time,
+                        begin: crate::warps::from_second(banner.begin_time),
+                        // 0 when it doesn't end
+                        end: Some(banner.end_time).filter(|&end| end != 0).map(crate::warps::from_second),
                         rate_up: banner_rate_up(banner),
                     })
                     .collect();

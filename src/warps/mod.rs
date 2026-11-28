@@ -40,6 +40,8 @@ pub mod stats;
 #[cfg(feature = "gui")]
 pub mod store;
 
+use jiff::Timestamp;
+
 /// The warp types the game keeps separate pity for, numbered as the game's history numbers them
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Pool {
@@ -178,8 +180,8 @@ pub struct Pull {
     pub gacha_id: u32,
     pub item_id: u32,
     pub rarity: u8,
-    /// When it was pulled, in Unix seconds
-    pub time: i64,
+    /// When it was pulled. Kept to the second
+    pub time: Timestamp,
     /// The account's warp request counter, for pulls seen live
     pub request_no: Option<u32>,
     /// Where it came in its request, 0 for a single pull
@@ -191,7 +193,7 @@ pub struct Pull {
 impl Pull {
     /// The order pulls were made in: known ids sort among themselves, pulls without one by when
     /// they were seen, after any pull with an id from the same second
-    pub fn sort_key(&self) -> (i64, i64, u32, u8) {
+    pub fn sort_key(&self) -> (Timestamp, i64, u32, u8) {
         (
             self.time,
             self.id.unwrap_or(i64::MAX),
@@ -221,17 +223,17 @@ pub struct LiveRequest {
     pub request_no: Option<u32>,
     /// What was pulled, in the order the game listed it
     pub items: Vec<u32>,
-    /// When the capture saw it, in Unix milliseconds
-    pub captured_at: i64,
+    /// When the capture saw it, on this computer's clock
+    pub captured_at: Timestamp,
 }
 
 /// A banner and what it features
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BannerInfo {
     pub gacha_id: u32,
-    /// Unix seconds, 0 when the banner doesn't end
-    pub begin: i64,
-    pub end: i64,
+    pub begin: Timestamp,
+    /// `None` when the banner doesn't end
+    pub end: Option<Timestamp>,
     /// The items with a raised rate, 5 and 4 stars
     pub rate_up: Vec<u32>,
 }
@@ -267,12 +269,14 @@ impl Uid {
     }
 }
 
-/// A `2024-05-01 12:00:00` time as Unix seconds, reading it as UTC
-fn parse_datetime(text: &str) -> Option<i64> {
-    let time = jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", text).ok()?;
-    time.to_zoned_datetime(jiff::tz::TimeZone::UTC)
-        .ok()
-        .map(|t| t.timestamp().as_second())
+/// A `2024-05-01 12:00:00` time, without the zone it's in
+fn parse_datetime(text: &str) -> Option<jiff::civil::DateTime> {
+    jiff::civil::DateTime::strptime("%Y-%m-%d %H:%M:%S", text).ok()
+}
+
+/// Unix seconds as a time, for what's kept as seconds. Out of jiff's range, the nearest it has
+pub fn from_second(seconds: i64) -> Timestamp {
+    Timestamp::from_second(seconds).unwrap_or(if seconds < 0 { Timestamp::MIN } else { Timestamp::MAX })
 }
 
 #[cfg(test)]

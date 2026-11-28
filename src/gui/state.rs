@@ -115,8 +115,8 @@ pub struct Warps {
     pub featured: HashMap<Pool, u32>,
     /// What each account owns, from its login this run
     pub rosters: HashMap<u32, Roster>,
-    /// When this run started, in Unix seconds: pulls seen live since make up the session
-    pub session_start: i64,
+    /// When this run started: pulls seen live since make up the session
+    pub session_start: jiff::Timestamp,
     /// The ticket last picked on the warp screen's rail, and when: its shine plays for a moment
     /// after, and not again when the layout changes
     pub picked: Option<(Pool, Instant)>,
@@ -319,7 +319,7 @@ impl Default for Warps {
             latest_scroll: rune::Live::new([0.0; 2]),
             featured: HashMap::new(),
             rosters: HashMap::new(),
-            session_start: jiff::Timestamp::now().as_second(),
+            session_start: jiff::Timestamp::now(),
             picked: None,
             art_pools: Vec::new(),
             link_edit: TextEdit::new(""),
@@ -1387,7 +1387,7 @@ mod tests {
             pool,
             fives: vec![five],
             fours: Vec::new(),
-            begin: 0,
+            begin: jiff::Timestamp::UNIX_EPOCH,
             end: None,
         };
         let summary = Summary {

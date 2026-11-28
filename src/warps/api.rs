@@ -241,8 +241,16 @@ fn to_pull(record: &Record, time_zone: i32) -> Result<Pull, ApiError> {
     let pool = Pool::from_gacha_type(number(&record.gacha_type, "warp type", record)?)
         .ok_or_else(|| ApiError::Malformed(format!("unknown warp type in the history: {record:?}")))?;
     // The server's own time of day, `time_zone` hours ahead of UTC
-    let local =
-        super::parse_datetime(&record.time).ok_or_else(|| ApiError::Malformed(format!("unexpected time in the history: {record:?}")))?;
+    let bad_time = || ApiError::Malformed(format!("unexpected time in the history: {record:?}"));
+    let local = super::parse_datetime(&record.time).ok_or_else(bad_time)?;
+    let offset = i8::try_from(time_zone)
+        .ok()
+        .and_then(|hours| jiff::tz::Offset::from_hours(hours).ok())
+        .ok_or_else(|| ApiError::Malformed(format!("unexpected time zone in the history: {time_zone}")))?;
+    let time = local
+        .to_zoned_datetime(jiff::tz::TimeZone::fixed(offset))
+        .map_err(|_| bad_time())?
+        .timestamp();
     Ok(Pull {
         id: Some(number(&record.id, "id", record)?),
         uid: number(&record.uid, "uid", record)?,
@@ -250,7 +258,7 @@ fn to_pull(record: &Record, time_zone: i32) -> Result<Pull, ApiError> {
         gacha_id: number(&record.gacha_id, "banner", record)?,
         item_id: number(&record.item_id, "item", record)?,
         rarity: number(&record.rank_type, "rarity", record)?,
-        time: local - i64::from(time_zone) * 3600,
+        time,
         request_no: None,
         batch_index: 0,
         sources: source::API,
@@ -281,7 +289,7 @@ mod tests {
         };
         let pull = to_pull(&record, -5).unwrap();
         // 23:27:09 UTC, the same as Star Rail Station recorded it
-        assert_eq!(pull.time, 1777246029);
+        assert_eq!(pull.time.as_second(), 1777246029);
         assert_eq!(pull.pool, Pool::LightCone);
     }
 

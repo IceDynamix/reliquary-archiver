@@ -41,7 +41,7 @@ pub struct Highlight {
     pub item_id: u32,
     pub pity: u32,
     pub outcome: Outcome,
-    pub time: i64,
+    pub time: jiff::Timestamp,
     /// The game's history has it, it isn't only known from the capture
     pub confirmed: bool,
 }
@@ -282,7 +282,7 @@ mod tests {
             gacha_id,
             item_id,
             rarity,
-            time: id,
+            time: crate::warps::from_second(id),
             request_no: None,
             batch_index: 0,
             sources: source::API,

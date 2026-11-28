@@ -36,7 +36,7 @@ pub fn group_requests(pulls: &[Pull]) -> Vec<Vec<usize>> {
             group.len() < MAX_REQUEST
                 && last.gacha_id == pull.gacha_id
                 && pull.id.unwrap() - last.id.unwrap() == ID_STEP
-                && (pull.time - last.time).abs() <= 1
+                && (pull.time.as_second() - last.time.as_second()).abs() <= 1
         });
         if joins {
             groups.last_mut().unwrap().push(i);
@@ -117,13 +117,17 @@ pub fn confirm(live: &[LiveRow], history: &[Pull]) -> Vec<(usize, usize)> {
     // what can be any of them
     let history_groups: Vec<Vec<usize>> = group_requests(history)
         .into_iter()
-        .filter(|group| reach.contains(&history[group[0]].time))
+        .filter(|group| reach.contains(&history[group[0]].time.as_second()))
         .collect();
     let history_requests: Vec<Request> = history_groups
         .iter()
         .map(|group| {
             let first = &history[group[0]];
-            Request::new(first.gacha_id, group.iter().map(|&i| history[i].item_id).collect(), first.time)
+            Request::new(
+                first.gacha_id,
+                group.iter().map(|&i| history[i].item_id).collect(),
+                first.time.as_second(),
+            )
         })
         .collect();
 
@@ -256,7 +260,7 @@ mod tests {
             gacha_id,
             item_id: 20000,
             rarity: 3,
-            time,
+            time: crate::warps::from_second(time),
             request_no: None,
             batch_index: 0,
             sources: source::API,

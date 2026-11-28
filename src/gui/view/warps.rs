@@ -149,7 +149,9 @@ impl SyncStatus {
                 next: summary.next_look,
             },
             (count @ 1.., false, _) => SyncStatus::PendingKey { count },
-            (_, true, Some(at)) => SyncStatus::Synced { ago: ago(now, at) },
+            (_, true, Some(at)) => SyncStatus::Synced {
+                ago: ago(crate::warps::from_second(now), crate::warps::from_second(at)),
+            },
             _ if summary.total == 0 => SyncStatus::Tracking,
             _ => SyncStatus::Kept { total: summary.total },
         }
@@ -202,14 +204,14 @@ impl SyncStatus {
 /// and for another of the same in the same second (a ten pull can give two) how many came before
 /// it. A count of the repeats only, so a new 5 star doesn't change the others' keys
 pub(super) fn five_keys<'a>(fives: impl IntoIterator<Item = &'a Highlight>) -> Vec<String> {
-    let mut seen: std::collections::HashMap<(i64, u32), usize> = std::collections::HashMap::new();
+    let mut seen: std::collections::HashMap<(jiff::Timestamp, u32), usize> = std::collections::HashMap::new();
     fives
         .into_iter()
         .map(|five| {
             let n = seen.entry((five.time, five.item_id)).or_default();
             let key = match *n {
-                0 => format!("five-{}-{}", five.time, five.item_id),
-                n => format!("five-{}-{}-{n}", five.time, five.item_id),
+                0 => format!("five-{}-{}", five.time.as_second(), five.item_id),
+                n => format!("five-{}-{}-{n}", five.time.as_second(), five.item_id),
             };
             *n += 1;
             key
@@ -245,7 +247,7 @@ mod tests {
             item_id,
             pity: 80,
             outcome: Outcome::Unknown,
-            time,
+            time: crate::warps::from_second(time),
             confirmed: true,
         };
         let fives = [five(300, 1), five(200, 7), five(200, 7), five(200, 8), five(100, 7)];

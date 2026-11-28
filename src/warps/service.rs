@@ -37,7 +37,7 @@ const RETRY_AFTER_FAILURE: i64 = 10 * 60;
 const NEW_KEY_HINT: &str = "Open Warp → View Details in the game for a new one";
 /// Authkeys stop working after about a day, there's no use asking with an older one
 const KEY_LIFETIME: i64 = 24 * 3600;
-/// A banner end this far off (Unix seconds, in 2096) means it doesn't end, as 0 does
+/// A banner end this far off (in 2096) means it doesn't end, as none does
 const NEVER_ENDS: i64 = 4_000_000_000;
 
 /// Who asked for a sync
@@ -135,8 +135,8 @@ pub struct ProfileChoice {
     pub key: String,
     pub name: String,
     pub pulls: usize,
-    /// Unix seconds
-    pub latest: Option<i64>,
+    /// When its newest pull was made
+    pub latest: Option<jiff::Timestamp>,
     /// Its pull ids end in the account's uid
     pub fits: bool,
 }
@@ -173,9 +173,9 @@ pub struct RunningBanner {
     /// Its featured 5 and 4 stars
     pub fives: Vec<u32>,
     pub fours: Vec<u32>,
-    /// When it started and when it ends, in Unix seconds; none when it doesn't end
-    pub begin: i64,
-    pub end: Option<i64>,
+    /// When it started and when it ends; none when it doesn't end
+    pub begin: jiff::Timestamp,
+    pub end: Option<jiff::Timestamp>,
 }
 
 impl Summary {
@@ -199,9 +199,8 @@ impl Summary {
         self.names.get(&item_id).cloned().unwrap_or_else(|| item_name(item_id))
     }
 
-    /// The pulls seen live from `since` on, in Unix seconds, of those each pool keeps in
-    /// [`PoolStats::recent`]
-    pub fn session(&self, since: i64) -> impl Iterator<Item = &RecentPull> {
+    /// The pulls seen live from `since` on, of those each pool keeps in [`PoolStats::recent`]
+    pub fn session(&self, since: jiff::Timestamp) -> impl Iterator<Item = &RecentPull> {
         self.pools
             .iter()
             .flat_map(|stats| &stats.recent)
@@ -810,7 +809,7 @@ fn requests_kept(pulls: &[Pull]) -> usize {
         pulls
             .iter()
             .filter(|p| p.id.is_none())
-            .map(|p| LiveKey::new(p.gacha_id, p.time, p.request_no)),
+            .map(|p| LiveKey::new(p.gacha_id, p.time.as_second(), p.request_no)),
     );
     group_requests(pulls).len() + waiting.len()
 }
@@ -873,7 +872,7 @@ fn summary(store: &Store, uid: u32, now: i64) -> rusqlite::Result<Summary> {
                 fives: rarity(5).collect(),
                 fours: rarity(4).collect(),
                 begin: banner.begin,
-                end: (banner.end > 0 && banner.end < NEVER_ENDS).then_some(banner.end),
+                end: banner.end.filter(|end| end.as_second() < NEVER_ENDS),
             })
         })
         .filter(|banner| !banner.fives.is_empty())
@@ -945,13 +944,13 @@ mod tests {
         // half, and the collaborations', which don't end
         let (half, version) = (Some(1_796_230_740), Some(1_797_969_600));
         let (first, second, collab, collab2) = (1_794_349_800, 1_796_230_800, 1_752_253_200, 1_784_912_400);
-        let banner = |gacha_id, pool, five, begin, end| RunningBanner {
+        let banner = |gacha_id, pool, five, begin, end: Option<i64>| RunningBanner {
             gacha_id,
             pool,
             fives: vec![five],
             fours: Vec::new(),
-            begin,
-            end,
+            begin: crate::warps::from_second(begin),
+            end: end.map(crate::warps::from_second),
         };
         let featured = |mut banners: Vec<RunningBanner>, pool| {
             banners.sort_by(featured_first);
@@ -1041,7 +1040,7 @@ mod tests {
             gacha_id: 2142,
             item_id,
             rarity,
-            time: 1_700_000_000 + n,
+            time: crate::warps::from_second(1_700_000_000 + n),
             request_no: None,
             batch_index: 0,
             sources: source::API,
@@ -1074,10 +1073,15 @@ mod tests {
 
         let mut kept = into.store.pulls(UID).unwrap();
         kept.sort_by_key(Pull::sort_key);
-        assert_eq!(kept.iter().map(|p| (p.id, p.item_id, p.rarity, p.time)).collect::<Vec<_>>(), [
-            (pull(0, 0, 0).id, 20000, 3, 1_700_000_000),
-            (pull(1, 0, 0).id, 1006, 5, 1_700_000_001)
-        ]);
+        assert_eq!(
+            kept.iter()
+                .map(|p| (p.id, p.item_id, p.rarity, p.time.as_second()))
+                .collect::<Vec<_>>(),
+            [
+                (pull(0, 0, 0).id, 20000, 3, 1_700_000_000),
+                (pull(1, 0, 0).id, 1006, 5, 1_700_000_001)
+            ]
+        );
         assert!(kept.iter().all(|p| p.sources == source::CSV));
         let notices = notices.lock().unwrap();
         let said: Vec<&str> = notices.iter().map(|(n, _)| n.as_str()).collect();
@@ -1099,7 +1103,7 @@ mod tests {
             gacha_id,
             item_id,
             rarity,
-            time: 1_700_000_000 + n,
+            time: crate::warps::from_second(1_700_000_000 + n),
             request_no: None,
             batch_index: 0,
             sources: source::API,
@@ -1161,13 +1165,13 @@ mod tests {
                 gacha_id,
                 request_no: None,
                 items,
-                captured_at: 1_700_000_000_000,
+                captured_at: crate::warps::from_second(1_700_000_000),
             };
             store.record_live(&request, |_| 3).unwrap();
         }
         let summary = summary(&store, UID, 1_700_000_100).unwrap();
         assert_eq!((summary.total, summary.requests), (3, 2));
-        assert_eq!(summary.session(1_700_000_000).count(), 3);
-        assert_eq!(summary.session(1_700_000_001).count(), 0);
+        assert_eq!(summary.session(crate::warps::from_second(1_700_000_000)).count(), 3);
+        assert_eq!(summary.session(crate::warps::from_second(1_700_000_001)).count(), 0);
     }
 }

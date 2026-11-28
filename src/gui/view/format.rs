@@ -33,25 +33,23 @@ pub fn percent(p: f64) -> String {
 
 /// A Unix time as the local time of day
 pub fn clock(at: i64) -> String {
-    local(at, "%H:%M")
+    local(crate::warps::from_second(at), "%H:%M")
 }
 
 /// A Unix time in the system's time zone, as `format` (strftime) writes it; empty when it's out of
 /// range
-pub fn local(at: i64, format: &str) -> String {
-    jiff::Timestamp::from_second(at).map_or(String::new(), |t| {
-        t.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime(format).to_string()
-    })
+pub fn local(at: jiff::Timestamp, format: &str) -> String {
+    at.to_zoned_datetime(jiff::tz::TimeZone::system()).strftime(format).to_string()
 }
 
 /// A Unix time in UTC, as `format` (strftime) writes it; empty when it's out of range
-pub fn utc(at: i64, format: &str) -> String {
-    jiff::Timestamp::from_second(at).map_or(String::new(), |t| t.strftime(format).to_string())
+pub fn utc(at: jiff::Timestamp, format: &str) -> String {
+    at.strftime(format).to_string()
 }
 
 /// How long ago a Unix time was, roughly
-pub fn ago(now: i64, then: i64) -> String {
-    let seconds = (now - then).max(0);
+pub fn ago(now: jiff::Timestamp, then: jiff::Timestamp) -> String {
+    let seconds = (now.as_second() - then.as_second()).max(0);
     match seconds {
         0..60 => "just now".to_string(),
         60..3600 => format!("{} min ago", seconds / 60),
@@ -93,6 +91,7 @@ mod tests {
 
     #[test]
     fn times_read_as_how_long_ago() {
+        let ago = |now, then| ago(crate::warps::from_second(now), crate::warps::from_second(then));
         assert_eq!(ago(1000, 990), "just now");
         assert_eq!(ago(10_000, 10_000 - 300), "5 min ago");
         assert_eq!(ago(100_000, 100_000 - 7200), "2 h ago");

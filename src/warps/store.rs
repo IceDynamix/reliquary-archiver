@@ -208,7 +208,7 @@ impl Store {
                 gacha_id: row.get(2)?,
                 item_id: row.get(3)?,
                 rarity: row.get(4)?,
-                time: row.get(5)?,
+                time: super::from_second(row.get(5)?),
                 request_no: row.get(6)?,
                 batch_index: row.get(7)?,
                 sources: row.get(8)?,
@@ -254,7 +254,7 @@ impl Store {
             return Ok(false);
         };
         let tx = self.conn.transaction()?;
-        let time = request.captured_at.div_euclid(1000);
+        let time = request.captured_at.as_second();
         let first_item = request.items.first().copied().unwrap_or_default();
 
         // The counter only ever goes up. A request at or below it that isn't one already kept means
@@ -361,7 +361,7 @@ impl Store {
                     pull.gacha_id,
                     pull.item_id,
                     pull.rarity,
-                    pull.time,
+                    pull.time.as_second(),
                     from
                 ],
             )?;
@@ -467,8 +467,9 @@ impl Store {
                 params![
                     banner.gacha_id,
                     serde_json::to_string(&banner.rate_up).unwrap_or_default(),
-                    banner.begin,
-                    banner.end
+                    banner.begin.as_second(),
+                    // 0 for no end
+                    banner.end.map_or(0, |end| end.as_second())
                 ],
             )?;
         }
@@ -510,8 +511,8 @@ impl Store {
                 Ok(BannerInfo {
                     gacha_id: row.get(0)?,
                     rate_up: serde_json::from_str(&row.get::<_, String>(1)?).unwrap_or_default(),
-                    begin: row.get(2)?,
-                    end: row.get(3)?,
+                    begin: super::from_second(row.get(2)?),
+                    end: Some(row.get::<_, i64>(3)?).filter(|&end| end != 0).map(super::from_second),
                 })
             })?
             .collect()
@@ -574,7 +575,7 @@ fn confirm_live(tx: &Transaction, uid: u32, fresh: &mut Vec<Pull>, from: u8) -> 
         let pull = &fresh[h];
         tx.execute(
             "UPDATE pulls SET id = ?2, time = ?3, rarity = ?4, sources = sources | ?5 WHERE rowid = ?1",
-            params![live[l].rowid, pull.id, pull.time, pull.rarity, from],
+            params![live[l].rowid, pull.id, pull.time.as_second(), pull.rarity, from],
         )?;
         used.insert(h);
     }
@@ -601,7 +602,7 @@ mod tests {
             gacha_id,
             item_id,
             rarity: 3,
-            time,
+            time: super::super::from_second(time),
             request_no: None,
             batch_index: 0,
             sources: source::API,
@@ -614,7 +615,7 @@ mod tests {
             gacha_id,
             request_no: Some(request_no),
             items,
-            captured_at: time * 1000,
+            captured_at: super::super::from_second(time),
         }
     }
 
@@ -742,8 +743,8 @@ mod tests {
         store
             .save_banners(&[BannerInfo {
                 gacha_id: 2142,
-                begin: 1,
-                end: 2,
+                begin: super::super::from_second(1),
+                end: Some(super::super::from_second(2)),
                 rate_up: vec![1506],
             }])
             .unwrap();
@@ -794,8 +795,8 @@ mod tests {
             .unwrap();
         let banner = |gacha_id| BannerInfo {
             gacha_id,
-            begin: 1,
-            end: 2,
+            begin: super::super::from_second(1),
+            end: Some(super::super::from_second(2)),
             rate_up: vec![1506],
         };
         assert!(store.save_banners(&[banner(2142), banner(9999)]).is_err());

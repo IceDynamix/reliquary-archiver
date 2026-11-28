@@ -38,8 +38,7 @@ pub fn write(pulls: &[Pull], outcomes: &[Outcome], name: impl Fn(u32) -> Option<
     let mut out = COLUMNS.join(",");
     out.push('\n');
     for (i, pull) in pulls.iter().enumerate() {
-        let time = jiff::Timestamp::from_second(pull.time)
-            .map_or_else(|_| pull.time.to_string(), |t| t.strftime("%Y-%m-%dT%H:%M:%SZ").to_string());
+        let time = pull.time.strftime("%Y-%m-%dT%H:%M:%SZ").to_string();
         let fields = [
             pull.id.map_or_else(String::new, |id| id.to_string()),
             pull.uid.to_string(),
@@ -153,12 +152,16 @@ pub fn read(text: &str, rarity: impl Fn(u32) -> Option<u8>) -> Result<CsvImport,
     Ok(read)
 }
 
-/// A time as RFC 3339, as `YYYY-MM-DD HH:MM:SS` in UTC, or as Unix seconds
-fn parse_time(text: &str) -> Option<i64> {
-    if let Ok(t) = text.parse::<jiff::Timestamp>() {
-        return Some(t.as_second());
-    }
-    super::parse_datetime(text).or_else(|| text.parse().ok())
+/// A time as RFC 3339, as `YYYY-MM-DD HH:MM:SS` in UTC, or as Unix seconds. Kept to the second
+fn parse_time(text: &str) -> Option<jiff::Timestamp> {
+    let time = if let Ok(time) = text.parse::<jiff::Timestamp>() {
+        time
+    } else if let Some(utc) = super::parse_datetime(text) {
+        utc.to_zoned_datetime(jiff::tz::TimeZone::UTC).ok()?.timestamp()
+    } else {
+        jiff::Timestamp::from_second(text.parse().ok()?).ok()?
+    };
+    Some(super::from_second(time.as_second()))
 }
 
 /// The rows of a CSV, each its fields: quoted fields may hold commas, doubled quotes and line
@@ -202,7 +205,7 @@ mod tests {
             gacha_id: 2142,
             item_id,
             rarity,
-            time,
+            time: crate::warps::from_second(time),
             request_no: None,
             batch_index: 0,
             sources: source::API,

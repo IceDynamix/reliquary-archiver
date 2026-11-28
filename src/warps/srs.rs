@@ -34,7 +34,7 @@ impl Profile {
     }
 
     /// The newest pull's time
-    pub fn latest(&self) -> Option<i64> {
+    pub fn latest(&self) -> Option<jiff::Timestamp> {
         self.pulls.iter().map(|p| p.time).max()
     }
 }
@@ -128,7 +128,8 @@ fn to_pull(item: &Value, pool: Pool) -> Option<(Pull, i64)> {
         gacha_id: number(item, "gachaId")?,
         item_id: number(item, "itemId")?,
         rarity: number(item, "rarity")?,
-        time: number::<i64>(item, "timestamp")? / 1000,
+        // Unix milliseconds, kept to the second
+        time: super::from_second(number::<i64>(item, "timestamp")?.div_euclid(1000)),
         request_no: None,
         batch_index: 0,
         sources: source::SRS,

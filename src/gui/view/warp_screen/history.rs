@@ -282,7 +282,7 @@ fn legend(t: &Theme) -> El {
 /// The latest pulls, newest first, with the pity the 5 stars came at. When it `scrolls` the card
 /// fills the column it's in and the list scrolls within it, before the page turns
 fn latest_card(s: &Ui, view: &View, scrolls: bool, cx: &Cx<Ui>, t: &Theme) -> El {
-    let now = jiff::Timestamp::now().as_second();
+    let now = jiff::Timestamp::now();
     let stats = view.stats;
     let shown = if scrolls { LATEST_SCROLLED } else { LATEST };
     let rows = stats
@@ -361,14 +361,15 @@ fn import_export(s: &Ui, summary: &Summary, t: &Theme) -> El {
         Some(key) if key.usable(now) => format!(
             "Authkey from {}, {} · valid ~24h",
             origin_label(key.origin),
-            ago(now, key.obtained_at)
+            ago(crate::warps::from_second(now), crate::warps::from_second(key.obtained_at))
         ),
         Some(_) => "The authkey has expired. Open Warp → View Details in the game for a new one.".to_string(),
         None => "Open Warp → View Details in the game to sync.".to_string(),
     };
     let mut detail = col().gap(3.0).child(text(key_detail).font(theme::SMALL).color(t.muted).wrap());
     if let Some(at) = summary.last_sync {
-        detail = detail.child(text(format!("Last synced {}", ago(now, at))).font(theme::SMALL).color(t.faint));
+        let at = ago(crate::warps::from_second(now), crate::warps::from_second(at));
+        detail = detail.child(text(format!("Last synced {at}")).font(theme::SMALL).color(t.faint));
     }
     if let Some(error) = &summary.last_error {
         detail = detail.child(text(error.clone()).font(theme::SMALL).color(t.bad).wrap());
