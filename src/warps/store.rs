@@ -22,7 +22,7 @@ pub fn default_path() -> Option<PathBuf> {
     crate::dirs::data_dir().map(|dir| dir.join("warps.sqlite3"))
 }
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA: &str = "
 CREATE TABLE pulls (
@@ -74,28 +74,6 @@ CREATE TABLE banners (
     begin    INTEGER,
     end      INTEGER
 );
-";
-
-/// Schema 1 to 2: a pull's id is unique per account, not across all of them
-const MIGRATE_1_TO_2: &str = "
-CREATE TABLE pulls_2 (
-    uid         INTEGER NOT NULL,
-    id          INTEGER,
-    pool        INTEGER NOT NULL,
-    gacha_id    INTEGER NOT NULL,
-    item_id     INTEGER NOT NULL,
-    rarity      INTEGER NOT NULL,
-    time        INTEGER NOT NULL,
-    request_no  INTEGER,
-    batch_index INTEGER NOT NULL DEFAULT 0,
-    sources     INTEGER NOT NULL,
-    UNIQUE (uid, id),
-    UNIQUE (uid, request_no, batch_index)
-);
-INSERT INTO pulls_2 SELECT uid, id, pool, gacha_id, item_id, rarity, time, request_no, batch_index, sources FROM pulls;
-DROP TABLE pulls;
-ALTER TABLE pulls_2 RENAME TO pulls;
-CREATE INDEX pulls_by_account ON pulls (uid, pool, time);
 ";
 
 /// How far apart in time the same live request can be seen twice. A counter that comes again
@@ -185,18 +163,12 @@ impl Store {
         Self::setup(Connection::open_in_memory()?)
     }
 
-    fn setup(mut conn: Connection) -> rusqlite::Result<Store> {
+    fn setup(conn: Connection) -> rusqlite::Result<Store> {
         let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         match version {
             0 => {
                 conn.execute_batch(SCHEMA)?;
                 conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            }
-            1 => {
-                let tx = conn.transaction()?;
-                tx.execute_batch(MIGRATE_1_TO_2)?;
-                tx.pragma_update(None, "user_version", 2)?;
-                tx.commit()?;
             }
             SCHEMA_VERSION => {}
             _ => {
@@ -732,28 +704,7 @@ mod tests {
     }
 
     #[test]
-    fn a_first_schema_database_moves_to_the_second() {
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            &SCHEMA
-                .replace("    UNIQUE (uid, id),\n", "")
-                .replace("    id          INTEGER,", "    id          INTEGER UNIQUE,"),
-        )
-        .unwrap();
-        conn.pragma_update(None, "user_version", 1).unwrap();
-        conn.execute(
-            "INSERT INTO pulls (uid, id, pool, gacha_id, item_id, rarity, time, sources) VALUES (?1, 100086, 1, 1001, 20000, 3, 5, 2)",
-            [UID],
-        )
-        .unwrap();
-        let mut store = Store::setup(conn).unwrap();
-        assert_eq!(store.pulls(UID).unwrap().len(), 1);
-        let theirs = Pull {
-            uid: UID + 100,
-            ..history(100086, 1001, 20001, 5)
-        };
-        assert_eq!(store.merge_history(UID + 100, &[theirs], source::API).unwrap().added, 1);
-
+    fn a_database_from_a_newer_version_is_refused() {
         let newer = Connection::open_in_memory().unwrap();
         newer.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
         assert!(Store::setup(newer).is_err());
