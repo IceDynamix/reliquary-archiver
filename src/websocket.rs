@@ -22,8 +22,8 @@ use crate::accounts::{AccountEvent, MultiAccountManager};
 /// Why the server could not start
 #[derive(Debug, Clone)]
 pub enum ServerError {
-    /// Something else listens on the port, which the error names
-    #[allow(dead_code)]
+    /// Something else listens on the port. Only the GUI reads it, the CLI knows its one port
+    #[cfg_attr(not(feature = "gui"), allow(dead_code))]
     PortInUse(u16),
     Other(String),
 }
