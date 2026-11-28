@@ -18,13 +18,9 @@ pub trait Exporter: Send + 'static {
     fn export(&self) -> Option<Self::Export>;
 }
 
-/// The items a banner features, sorted.
-///
-/// `prize_item_list` holds every featured item (the whole pool on the standard banner) and
-/// `item_detail_list` at most an item that can't be pulled. The field names are reconstructed and
-/// could trade places with a proto update, so both are read.
+/// A banner's rate-up 5 and 4 stars, sorted. The standard banner's is its whole pool
 pub fn banner_rate_up(banner: &GachaInfo) -> Vec<u32> {
-    let mut rate_up: Vec<u32> = banner.prize_item_list.iter().chain(&banner.item_detail_list).copied().collect();
+    let mut rate_up = banner.prize_item_list.clone();
     rate_up.sort_unstable();
     rate_up.dedup();
     rate_up
