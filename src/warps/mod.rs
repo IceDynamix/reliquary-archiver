@@ -28,6 +28,8 @@ pub mod authkey;
 #[cfg(feature = "gui")]
 pub mod csv;
 #[cfg(feature = "gui")]
+pub mod odds;
+#[cfg(feature = "gui")]
 pub mod reconcile;
 #[cfg(feature = "gui")]
 pub mod service;
