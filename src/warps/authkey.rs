@@ -5,7 +5,8 @@ use std::path::{Path, PathBuf};
 
 use super::api::HistoryKey;
 
-/// Reads the authkey and server out of a link to the warp history
+/// Reads the authkey and region out of a link to the warp history. The link only picks between the
+/// two servers the history is on, the authkey is never sent where it points
 pub fn from_url(url: &str) -> Option<HistoryKey> {
     let url = url.trim();
     let rest = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://"))?;
@@ -24,15 +25,11 @@ pub fn from_url(url: &str) -> Option<HistoryKey> {
         }
     }
     let authkey = authkey.filter(|key| !key.is_empty())?;
-    let mut key = HistoryKey::for_region(host.ends_with("mihoyo.com"), authkey);
-    // The page itself lives elsewhere than its data, the data is what's asked for
-    if !host.contains("webstatic") {
-        key.host = host.to_string();
-    }
-    if let Some(game_biz) = game_biz {
-        key.game_biz = game_biz;
-    }
-    Some(key)
+    let mainland = match game_biz.as_deref() {
+        Some(game_biz) => game_biz == "hkrpg_cn",
+        None => host == "mihoyo.com" || host.ends_with(".mihoyo.com"),
+    };
+    Some(HistoryKey::for_region(mainland, authkey))
 }
 
 fn percent_decode(text: &str) -> Option<String> {
@@ -147,16 +144,24 @@ mod tests {
         let url = "https://public-operation-hkrpg-sg.hoyoverse.com/common/hkrpg_gacha_record/api/getGachaLog?authkey_ver=1&sign_type=2&lang=en&authkey=ab%2bcd%2fef%3d&game_biz=hkrpg_global";
         let key = from_url(url).unwrap();
         assert_eq!(key.authkey, "ab+cd/ef=");
-        assert_eq!(key.host, "public-operation-hkrpg-sg.hoyoverse.com");
-        assert_eq!(key.game_biz, "hkrpg_global");
+        assert_eq!(key.host(), "public-operation-hkrpg-sg.hoyoverse.com");
+        assert_eq!(key.game_biz(), "hkrpg_global");
     }
 
     #[test]
     fn the_page_link_points_at_its_data() {
         let url = "https://webstatic.mihoyo.com/hkrpg/event/e20211215gacha-v2/index.html?authkey=x#/log";
         let key = from_url(url).unwrap();
-        assert_eq!(key.host, "public-operation-hkrpg.mihoyo.com");
-        assert_eq!(key.game_biz, "hkrpg_cn");
+        assert_eq!(key.host(), "public-operation-hkrpg.mihoyo.com");
+        assert_eq!(key.game_biz(), "hkrpg_cn");
+    }
+
+    #[test]
+    fn the_key_only_goes_to_the_history() {
+        let key = from_url("https://example.com/getGachaLog?authkey=x&game_biz=hkrpg_global").unwrap();
+        assert_eq!(key.host(), "public-operation-hkrpg-sg.hoyoverse.com");
+        let key = from_url("https://evilmihoyo.com/?authkey=x").unwrap();
+        assert_eq!(key.host(), "public-operation-hkrpg-sg.hoyoverse.com");
     }
 
     #[test]

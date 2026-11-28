@@ -192,7 +192,7 @@ mod agreement {
             let Some(theirs) = store["types"].get(t.to_string()) else {
                 continue;
             };
-            let ours = pool_stats(pool, &refs, &profile.rate_ups, |item| get_database().warp_item_rarity(item));
+            let ours = pool_stats(pool, &refs, &profile.rate_ups, true, |item| get_database().warp_item_rarity(item));
             println!(
                 "{pool:?}: pity5 {} vs {}, pity4 {} vs {}, guarantee5 {:?} vs {}",
                 ours.pity5, theirs["pity5"], ours.pity4, theirs["pity4"], ours.guarantee5, theirs["guarantee5"]

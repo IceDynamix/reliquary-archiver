@@ -16,9 +16,8 @@ use super::{Pool, Pull, source};
 pub struct HistoryKey {
     /// From the game, valid for about a day
     pub authkey: String,
-    /// The server the history is on, e.g. `public-operation-hkrpg-sg.hoyoverse.com`
-    pub host: String,
-    pub game_biz: String,
+    /// Whose history it is: mainland China's server's, or everyone else's
+    pub mainland: bool,
 }
 
 /// The history's server and game name for mainland China's accounts, and everyone else's
@@ -26,14 +25,17 @@ const MAINLAND: (&str, &str) = ("public-operation-hkrpg.mihoyo.com", "hkrpg_cn")
 const GLOBAL: (&str, &str) = ("public-operation-hkrpg-sg.hoyoverse.com", "hkrpg_global");
 
 impl HistoryKey {
-    /// The server a region's history is on
     pub fn for_region(mainland: bool, authkey: String) -> Self {
-        let (host, game_biz) = if mainland { MAINLAND } else { GLOBAL };
-        Self {
-            authkey,
-            host: host.into(),
-            game_biz: game_biz.into(),
-        }
+        Self { authkey, mainland }
+    }
+
+    /// The server the history is on. Only ever one of the two: the authkey goes nowhere else
+    pub fn host(&self) -> &'static str {
+        if self.mainland { MAINLAND.0 } else { GLOBAL.0 }
+    }
+
+    pub fn game_biz(&self) -> &'static str {
+        if self.mainland { MAINLAND.1 } else { GLOBAL.1 }
     }
 
     /// The server an account's history is on
@@ -79,8 +81,7 @@ struct Response {
 #[derive(Deserialize)]
 struct Page {
     list: Vec<Record>,
-    #[serde(default)]
-    region_time_zone: i32,
+    region_time_zone: Option<i32>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -135,7 +136,7 @@ impl Client {
 
     fn page_once(&self, pool: Pool, end_id: i64, size: u32) -> Result<Vec<Pull>, ApiError> {
         let endpoint = if pool.is_collab() { "getLdGachaLog" } else { "getGachaLog" };
-        let url = format!("https://{}/common/hkrpg_gacha_record/api/{endpoint}", self.key.host);
+        let url = format!("https://{}/common/hkrpg_gacha_record/api/{endpoint}", self.key.host());
         let request = self
             .agent
             .get(&url)
@@ -143,7 +144,7 @@ impl Client {
             .query("authkey_ver", "1")
             .query("sign_type", "2")
             .query("lang", "en")
-            .query("game_biz", &self.key.game_biz)
+            .query("game_biz", self.key.game_biz())
             .query("authkey", &self.key.authkey)
             .query("gacha_type", &pool.gacha_type().to_string())
             .query("page", "1")
@@ -151,12 +152,14 @@ impl Client {
             .query("end_id", &end_id.to_string());
 
         let body = match request.call() {
-            Ok(response) => response.into_string().map_err(|e| ApiError::Network(e.to_string()))?,
+            Ok(response) => response.into_string().map_err(|e| ApiError::Network(e.kind().to_string()))?,
             Err(ureq::Error::Status(429 | 503, _)) => return Err(ApiError::Throttled),
             Err(ureq::Error::Status(code, response)) => {
                 return Err(ApiError::Other(code.into(), response.status_text().to_owned()));
             }
-            Err(e) => return Err(ApiError::Network(e.to_string())),
+            // What went wrong without the request's URL, which ureq's message starts with: it
+            // carries the authkey, and errors are logged and kept
+            Err(ureq::Error::Transport(e)) => return Err(ApiError::Network(e.kind().to_string())),
         };
         let response: Response = serde_json::from_str(&body).map_err(|e| ApiError::Malformed(e.to_string()))?;
 
@@ -168,7 +171,14 @@ impl Client {
             code => return Err(ApiError::Other(code, response.message)),
         }
         let page = response.data.ok_or_else(|| ApiError::Malformed("no data".into()))?;
-        page.list.iter().map(|record| to_pull(record, page.region_time_zone)).collect()
+        if page.list.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Times are the server's own, without it every one would be hours off
+        let time_zone = page
+            .region_time_zone
+            .ok_or_else(|| ApiError::Malformed("no time zone for the history's times".into()))?;
+        page.list.iter().map(|record| to_pull(record, time_zone)).collect()
     }
 
     /// The pause the server wants between requests
@@ -190,11 +200,13 @@ impl Client {
         Ok(None)
     }
 
-    /// A pool's history, newest first, until a pull `known` says is already kept (it and what's
-    /// older are left out) or the history ends. `progress` hears how many were fetched so far
+    /// A pool's new pulls, newest first, until a page's worth in a row `known` says are already
+    /// kept, or the history ends. Going a page past the first kept pull finds any the history
+    /// published late, under ones kept before. `progress` hears how many were fetched so far
     pub fn pool(&self, pool: Pool, known: impl Fn(i64) -> bool, mut progress: impl FnMut(usize)) -> Result<Vec<Pull>, ApiError> {
         let mut pulls = Vec::new();
         let mut end_id = 0;
+        let mut known_in_a_row = 0;
         loop {
             let page = self.page(pool, end_id, PAGE_SIZE)?;
             let Some(last) = page.last() else {
@@ -202,16 +214,16 @@ impl Client {
             };
             end_id = last.id.unwrap_or_default();
             let full = page.len() == PAGE_SIZE as usize;
-            let mut reached_known = false;
             for pull in page {
                 if known(pull.id.unwrap_or_default()) {
-                    reached_known = true;
-                    break;
+                    known_in_a_row += 1;
+                } else {
+                    known_in_a_row = 0;
+                    pulls.push(pull);
                 }
-                pulls.push(pull);
             }
             progress(pulls.len());
-            if reached_known || !full {
+            if known_in_a_row >= PAGE_SIZE as usize || !full {
                 break;
             }
             self.pause();
@@ -275,7 +287,7 @@ mod tests {
 
     #[test]
     fn accounts_find_their_server() {
-        assert_eq!(HistoryKey::for_account(602857786, String::new()).game_biz, "hkrpg_global");
-        assert_eq!(HistoryKey::for_account(100000001, String::new()).game_biz, "hkrpg_cn");
+        assert_eq!(HistoryKey::for_account(602857786, String::new()).game_biz(), "hkrpg_global");
+        assert_eq!(HistoryKey::for_account(100000001, String::new()).game_biz(), "hkrpg_cn");
     }
 }

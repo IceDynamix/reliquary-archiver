@@ -415,7 +415,7 @@ fn warps(s: &mut Ui, synced: bool) {
                     let lost = pool != Pool::Standard && !lost_next && k % 3 == 1;
                     lost_next = lost;
                     (if lost || pool == Pool::Standard { standard } else { featured }, 5)
-                } else if n % 9 == 0 {
+                } else if n.is_multiple_of(9) {
                     (fours[(n as usize / 9) % fours.len()], 4)
                 } else {
                     (threes[(n as usize * 7) % threes.len()], 3)
@@ -465,7 +465,7 @@ fn warps(s: &mut Ui, synced: bool) {
         .iter()
         .map(|plan| plan.0)
         .map(|pool| {
-            pool_stats(pool, &refs, &rate_ups, |item| {
+            pool_stats(pool, &refs, &rate_ups, true, |item| {
                 reliquary_archiver::export::database::get_database().warp_item_rarity(item)
             })
         })
@@ -512,7 +512,7 @@ pub(super) fn empty_summary() -> Summary {
         uid: UID,
         pools: [Pool::Character, Pool::LightCone, Pool::Standard]
             .into_iter()
-            .map(|pool| pool_stats(pool, &[], &RateUps::new(), |_| None))
+            .map(|pool| pool_stats(pool, &[], &RateUps::new(), true, |_| None))
             .collect(),
         total: 0,
         unconfirmed: 0,

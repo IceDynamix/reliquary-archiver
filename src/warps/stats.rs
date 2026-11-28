@@ -92,13 +92,14 @@ pub type RateUps = HashMap<u32, Featured>;
 /// How many of the latest pulls [`PoolStats::recent`] keeps
 pub const RECENT: usize = 200;
 
-/// Works out the stats of one pool from its pulls, which can come in any order. `rarity` gives an
-/// item's star rating, for banners whose list only has some of what they feature
-pub fn pool_stats(pool: Pool, pulls: &[&Pull], rate_ups: &RateUps, rarity: impl Fn(u32) -> Option<u8>) -> PoolStats {
+/// Works out the stats of one pool from its pulls, which can come in any order. `complete` says
+/// they reach back to the account's first warp, so nothing was guaranteed before them. `rarity`
+/// gives an item's star rating, for banners whose list only has some of what they feature
+pub fn pool_stats(pool: Pool, pulls: &[&Pull], rate_ups: &RateUps, complete: bool, rarity: impl Fn(u32) -> Option<u8>) -> PoolStats {
     let mut ordered: Vec<&Pull> = pulls.iter().copied().filter(|p| p.pool == pool).collect();
     ordered.sort_by_key(|p| p.sort_key());
 
-    let mut walk = Walk::new(pool);
+    let mut walk = Walk::new(pool, complete);
     let mut stats = PoolStats {
         pool,
         total: ordered.len(),
@@ -167,13 +168,13 @@ pub fn pool_stats(pool: Pool, pulls: &[&Pull], rate_ups: &RateUps, rarity: impl 
 
 /// Each pull's outcome, in the order of `pulls`, which can hold any pools in any order. An outcome
 /// that rests on the standard 5 stars rather than on what's known of the banner is `Unknown`, for
-/// keeping outcomes somewhere they'd be taken as known
-pub fn recorded_outcomes(pulls: &[Pull], rate_ups: &RateUps, rarity: impl Fn(u32) -> Option<u8>) -> Vec<Outcome> {
+/// keeping outcomes somewhere they'd be taken as known. `complete` as for [`pool_stats`]
+pub fn recorded_outcomes(pulls: &[Pull], rate_ups: &RateUps, complete: bool, rarity: impl Fn(u32) -> Option<u8>) -> Vec<Outcome> {
     let mut outcomes = vec![Outcome::None; pulls.len()];
     for pool in Pool::ALL {
         let mut ordered: Vec<usize> = (0..pulls.len()).filter(|&i| pulls[i].pool == pool).collect();
         ordered.sort_by_key(|&i| pulls[i].sort_key());
-        let mut walk = Walk::new(pool);
+        let mut walk = Walk::new(pool, complete);
         for i in ordered {
             outcomes[i] = match walk.step(&pulls[i], rate_ups, &rarity) {
                 (_, Some(Basis::Guess)) => Outcome::Unknown,
@@ -192,11 +193,14 @@ struct Walk {
 }
 
 impl Walk {
-    fn new(pool: Pool) -> Self {
+    /// From the account's first warp when `complete`, when nothing is guaranteed. Otherwise what
+    /// came before is unknown, until a 50/50 tells
+    fn new(pool: Pool, complete: bool) -> Self {
+        let start = (pool.has_rate_up() && complete).then_some(false);
         Walk {
             pool,
-            guarantee5: pool.has_rate_up().then_some(false),
-            guarantee4: pool.has_rate_up().then_some(false),
+            guarantee5: start,
+            guarantee4: start,
         }
     }
 
@@ -210,7 +214,9 @@ impl Walk {
         } else {
             &mut self.guarantee4
         };
-        let found = featured(pull, rate_ups, rarity);
+        // Not being a standard 5 star doesn't make one featured: a lost 50/50 can give others too.
+        // Being one still means it was lost
+        let found = featured(pull, rate_ups, rarity).filter(|&(featured, basis)| !(featured && basis == Basis::Guess));
         let featured = found.map(|(featured, _)| featured);
         let outcome = match featured {
             None => Outcome::Unknown,
@@ -293,7 +299,7 @@ mod tests {
             pull(5, 1001, 20002, 3),
         ];
         let refs: Vec<&Pull> = pulls.iter().collect();
-        let stats = pool_stats(Pool::Standard, &refs, &RateUps::new(), |_| None);
+        let stats = pool_stats(Pool::Standard, &refs, &RateUps::new(), true, |_| None);
         assert_eq!((stats.pity5, stats.pity4), (1, 3));
         assert_eq!(stats.fives[0].pity, 4);
         assert_eq!(stats.fives[0].outcome, Outcome::None);
@@ -304,11 +310,18 @@ mod tests {
         let pulls = [
             pull(1, 2116, 1003, 5), // Himeko on a character banner: lost
             pull(2, 2116, 20000, 3),
-            pull(3, 2116, 1506, 5), // limited: guaranteed
-            pull(4, 2142, 1506, 5), // limited again: a won 50/50
+            pull(3, 2116, 1506, 5), // featured: guaranteed
+            pull(4, 2142, 1506, 5), // featured again: a won 50/50
         ];
         let refs: Vec<&Pull> = pulls.iter().collect();
-        let stats = pool_stats(Pool::Character, &refs, &RateUps::new(), |_| None);
+        let mut rate_ups = RateUps::new();
+        for gacha_id in [2116, 2142] {
+            rate_ups.insert(gacha_id, Featured {
+                items: HashSet::from([1506]),
+                not: HashSet::new(),
+            });
+        }
+        let stats = pool_stats(Pool::Character, &refs, &rate_ups, true, |_| Some(5));
         let outcomes: Vec<Outcome> = stats.fives.iter().rev().map(|h| h.outcome).collect();
         assert_eq!(outcomes, [Outcome::Lost, Outcome::Guaranteed, Outcome::Won]);
         assert_eq!(stats.guarantee5, Some(false));
@@ -319,7 +332,7 @@ mod tests {
     fn four_stars_need_to_know_the_banner() {
         let pulls = [pull(1, 2116, 1214, 4), pull(2, 2116, 21002, 4)];
         let refs: Vec<&Pull> = pulls.iter().collect();
-        let unknown = pool_stats(Pool::Character, &refs, &RateUps::new(), |_| None);
+        let unknown = pool_stats(Pool::Character, &refs, &RateUps::new(), true, |_| None);
         assert_eq!(unknown.guarantee4, None);
 
         let mut rate_ups = RateUps::new();
@@ -329,7 +342,33 @@ mod tests {
         });
         // 1506 is a 5 star, 1214 and 1109 are 4 stars
         let rarity = |item| Some(if item == 1506 { 5 } else { 4 });
-        let known = pool_stats(Pool::Character, &refs, &rate_ups, rarity);
+        let known = pool_stats(Pool::Character, &refs, &rate_ups, true, rarity);
         assert_eq!(known.guarantee4, Some(true));
+    }
+
+    #[test]
+    fn what_was_guaranteed_before_the_history_is_unknown() {
+        let pulls = [pull(1, 2116, 1506, 5), pull(2, 2116, 1003, 5), pull(3, 2116, 1506, 5)];
+        let refs: Vec<&Pull> = pulls.iter().collect();
+        let mut rate_ups = RateUps::new();
+        rate_ups.insert(2116, Featured {
+            items: HashSet::from([1506]),
+            not: HashSet::new(),
+        });
+        let stats = pool_stats(Pool::Character, &refs, &rate_ups, false, |_| Some(5));
+        let outcomes: Vec<Outcome> = stats.fives.iter().rev().map(|h| h.outcome).collect();
+        // The first may have come guaranteed; the loss after it tells the rest
+        assert_eq!(outcomes, [Outcome::Unknown, Outcome::Lost, Outcome::Guaranteed]);
+        assert_eq!(stats.guarantee5, Some(false));
+    }
+
+    #[test]
+    fn a_five_star_only_guessed_featured_leaves_the_guarantee_unknown() {
+        // No record of the banner: 1506 isn't a standard 5 star, which doesn't make it featured
+        let pulls = [pull(1, 2116, 1506, 5)];
+        let refs: Vec<&Pull> = pulls.iter().collect();
+        let stats = pool_stats(Pool::Character, &refs, &RateUps::new(), true, |_| None);
+        assert_eq!(stats.fives[0].outcome, Outcome::Unknown);
+        assert_eq!(stats.guarantee5, None);
     }
 }

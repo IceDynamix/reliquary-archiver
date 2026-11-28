@@ -16,7 +16,7 @@ use super::api::{self, ApiError, Client, HistoryKey};
 use super::reconcile::{LiveKey, group_live, group_requests};
 use super::srs::{self, Profile};
 use super::stats::{PoolStats, RecentPull, pool_stats, recorded_outcomes};
-use super::store::{KeyOrigin, Store, StoredKey};
+use super::store::{AccountState, KeyOrigin, Store, StoredKey};
 use super::{Pool, Pull, WarpEvent, csv, source};
 
 /// The game's history is filled in an hour at a time, the hour a pull's id names: its pulls show
@@ -27,6 +27,9 @@ const PUBLISH_DELAY: i64 = 45 * 60;
 const LATE_RECHECK: i64 = 10 * 60;
 /// How long to keep looking that often, after that it's hourly
 const LATE_FOR: i64 = 3 * 3600;
+/// How long after it's made the history surely has a pull: published past its hour, and late for
+/// as long as it's looked for often. A live pull without an id by then is dropped
+const STALE_AFTER: i64 = 3600 + PUBLISH_DELAY + LATE_FOR;
 /// How long to wait after a sync failed before trying again
 const RETRY_AFTER_FAILURE: i64 = 10 * 60;
 /// Where a new authkey comes from, for the notices about an old one
@@ -464,7 +467,7 @@ impl Worker {
             return;
         }
 
-        let (fetched, failure) = self.fetch(uid, key.key, pools);
+        let (fetched, failure) = self.fetch(uid, key.key, &pools, quiet);
 
         if let Some(other) = fetched.iter().find(|pull| pull.uid != uid) {
             warn!(uid, other = other.uid, "the authkey is another account's");
@@ -478,12 +481,13 @@ impl Worker {
 
         match failure {
             Some(error) => self.sync_failed(uid, error, &fetched, full, quiet),
-            None => self.sync_succeeded(uid, &fetched, full, quiet),
+            None => self.sync_succeeded(uid, &fetched, &pools, full, quiet),
         }
     }
 
-    /// Fetches the pools' new pulls, up to the first pool that fails, and why it failed
-    fn fetch(&self, uid: u32, key: HistoryKey, pools: Vec<Pool>) -> (Vec<Pull>, Option<ApiError>) {
+    /// Fetches the pools' new pulls, up to the first pool that fails, and why it failed. `quiet`
+    /// leaves the busy state alone: a timed sync didn't set it, so it isn't its to clear
+    fn fetch(&self, uid: u32, key: HistoryKey, pools: &[Pool], quiet: bool) -> (Vec<Pull>, Option<ApiError>) {
         let known = self.store.history_ids(uid).unwrap_or_else(|e| {
             warn!(%e, uid, "couldn't read the pulls already synced, fetching them all");
             HashSet::new()
@@ -491,7 +495,7 @@ impl Worker {
         let client = Client::new(key);
         let mut fetched: Vec<Pull> = Vec::new();
         let mut failure = None;
-        for (i, pool) in pools.into_iter().enumerate() {
+        for (i, &pool) in pools.iter().enumerate() {
             if i > 0 {
                 client.pause();
             }
@@ -501,7 +505,9 @@ impl Worker {
                 pool,
                 |id| known.contains(&id),
                 |count| {
-                    (self.report)(Update::Busy(Some(format!("Syncing {label} warps… {}", before + count))));
+                    if !quiet {
+                        (self.report)(Update::Busy(Some(format!("Syncing {label} warps… {}", before + count))));
+                    }
                 },
             );
             match result {
@@ -512,7 +518,9 @@ impl Worker {
                 }
             }
         }
-        self.busy(None);
+        if !quiet {
+            self.busy(None);
+        }
         (fetched, failure)
     }
 
@@ -560,8 +568,13 @@ impl Worker {
         self.show(uid);
     }
 
-    fn sync_succeeded(&mut self, uid: u32, fetched: &[Pull], full: bool, quiet: bool) {
+    fn sync_succeeded(&mut self, uid: u32, fetched: &[Pull], pools: &[Pool], full: bool, quiet: bool) {
         let merged = self.store.merge_history(uid, fetched, source::API);
+        match self.store.drop_stale_live(uid, pools, now() - STALE_AFTER) {
+            Ok(0) => {}
+            Ok(dropped) => warn!(uid, dropped, "dropped live pulls the history never recognized"),
+            Err(e) => warn!(%e, uid, "couldn't drop stale live pulls"),
+        }
         self.mark_synced(uid, None);
         if full {
             self.full_pending.remove(&uid);
@@ -686,7 +699,8 @@ impl Worker {
             warn!(%e, "couldn't read what banners feature, exporting without outcomes");
             Default::default()
         });
-        let outcomes = recorded_outcomes(&pulls, &rate_ups, |item| db.warp_item_rarity(item));
+        let complete = self.store.account(uid).is_ok_and(|account| history_complete(&account, &pulls));
+        let outcomes = recorded_outcomes(&pulls, &rate_ups, complete, |item| db.warp_item_rarity(item));
         let text = csv::write(&pulls, &outcomes, |item| db.warp_item_name(item));
         match std::fs::write(path, text) {
             Ok(()) => {
@@ -771,17 +785,39 @@ impl Worker {
     }
 }
 
+/// The requests the account's pulls were made in: the history's, and the live ones still waiting
+fn requests_kept(pulls: &[Pull]) -> usize {
+    let waiting = group_live(
+        pulls
+            .iter()
+            .filter(|p| p.id.is_none())
+            .map(|p| LiveKey::new(p.gacha_id, p.time, p.request_no)),
+    );
+    group_requests(pulls).len() + waiting.len()
+}
+
+/// Whether the pulls reach back to the account's first warp: as many requests as its counter says
+/// it made
+fn history_complete(account: &AccountState, pulls: &[Pull]) -> bool {
+    account
+        .request_counter
+        .is_some_and(|counter| requests_kept(pulls) > counter as usize)
+}
+
 /// How the account stands at `now`, in Unix seconds
 fn summary(store: &Store, uid: u32, now: i64) -> rusqlite::Result<Summary> {
     let pulls = store.pulls(uid)?;
     let rate_ups = store.rate_ups()?;
     let refs: Vec<&Pull> = pulls.iter().collect();
     let db = get_database();
+    let account = store.account(uid)?;
+    let requests = requests_kept(&pulls);
+    let complete = history_complete(&account, &pulls);
 
     let pools: Vec<PoolStats> = Pool::ALL
         .iter()
         .filter(|&&pool| matches!(pool, Pool::Character | Pool::LightCone | Pool::Standard) || pulls.iter().any(|p| p.pool == pool))
-        .map(|&pool| pool_stats(pool, &refs, &rate_ups, |item| db.warp_item_rarity(item)))
+        .map(|&pool| pool_stats(pool, &refs, &rate_ups, complete, |item| db.warp_item_rarity(item)))
         .collect();
 
     let mut names = HashMap::new();
@@ -828,16 +864,6 @@ fn summary(store: &Store, uid: u32, now: i64) -> rusqlite::Result<Summary> {
         names.entry(item).or_insert_with(|| item_name(item));
     }
 
-    // Requests: the history's, and the live ones still waiting
-    let waiting = group_live(
-        pulls
-            .iter()
-            .filter(|p| p.id.is_none())
-            .map(|p| LiveKey::new(p.gacha_id, p.time, p.request_no)),
-    );
-    let requests = group_requests(&pulls).len() + waiting.len();
-
-    let account = store.account(uid)?;
     let key = store.authkey(uid)?.map(|key| key_state(&key));
     Ok(Summary {
         next_look: next_look_for(store, uid, now)?,
@@ -1068,6 +1094,8 @@ mod tests {
             pull(4, 2143, 1102, 5),
         ];
         from.store.merge_history(UID, &pulls, source::API).unwrap();
+        // The history reaches back to the account's first warp, so its first 50/50s are known
+        from.store.set_request_counter(UID, 0).unwrap();
         let mut known = RateUps::new();
         known.insert(2142, Featured {
             items: [1006, 1105].into_iter().collect(),
@@ -1096,7 +1124,9 @@ mod tests {
             pulls.sort_by_key(Pull::sort_key);
             let refs: Vec<&Pull> = pulls.iter().collect();
             let db = get_database();
-            let stats = pool_stats(Pool::Character, &refs, &store.rate_ups().unwrap(), |item| db.warp_item_rarity(item));
+            let stats = pool_stats(Pool::Character, &refs, &store.rate_ups().unwrap(), true, |item| {
+                db.warp_item_rarity(item)
+            });
             stats.recent.iter().map(|r| r.outcome).collect::<Vec<_>>()
         };
         assert_eq!(outcomes(&into.store), outcomes(&from.store));
