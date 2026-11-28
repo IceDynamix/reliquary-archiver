@@ -41,6 +41,20 @@ pub fn config_dir() -> Option<PathBuf> {
     absolute(base).map(|path| path.join(APP))
 }
 
+/// The warp database: the local app data folder on Windows, Application Support on macOS, the XDG
+/// data folder elsewhere
+#[cfg_attr(not(feature = "gui"), allow(dead_code))]
+pub fn data_dir() -> Option<PathBuf> {
+    let base = if cfg!(windows) {
+        local_app_data()
+    } else if cfg!(target_os = "macos") {
+        home(&["Library", "Application Support"])
+    } else {
+        xdg("XDG_DATA_HOME", &[".local", "share"])
+    };
+    absolute(base).map(|path| path.join(APP))
+}
+
 /// What can be fetched or made again (downloads, scaled backgrounds): under the local app data
 /// folder on Windows, Caches on macOS, the XDG cache folder elsewhere
 #[cfg_attr(not(feature = "gui"), allow(dead_code))]

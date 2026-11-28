@@ -32,6 +32,7 @@ use tracing::info;
 
 use crate::accounts::MultiAccountManager;
 use crate::capture::Tap;
+use crate::warps::service::{Command as WarpCommand, WarpService};
 use crate::websocket::{PortCommand, start_dynamic_websocket_server};
 
 mod background;
@@ -234,7 +235,9 @@ fn keep_on_screen(window: &rune::WindowHandle, handle: &AppHandle<Ui>) {
 }
 
 /// Hands what the capture finds to the window
-async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManager>>, tap: Tap) {
+async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManager>>, tap: Tap, warps: WarpService) {
+    use crate::session::SessionEvent;
+
     let mut events = pin!(worker::archiver_worker(manager.clone(), tap));
     // Every packet is reported, the window only needs to hear about the first one
     let mut traffic = false;
@@ -250,6 +253,9 @@ async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManag
             WorkerEvent::CaptureFailed(message) => {
                 traffic = false;
                 app.update(move |s, tx| s.capture_failed(message, tx));
+            }
+            WorkerEvent::Session(SessionEvent::Warp(event)) => {
+                warps.send(WarpCommand::Event(event));
             }
             WorkerEvent::Session(event) => app.update_if(move |s, _| s.session_event(&event)),
             WorkerEvent::AccountLoggedIn { uid } => {

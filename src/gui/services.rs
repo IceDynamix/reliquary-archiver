@@ -13,12 +13,13 @@ use reliquary_archiver::export::fribbels::Export;
 use rune::{AppHandle, FileDialogOptions, Tx};
 use tokio::runtime::Handle;
 use tokio::sync::watch;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::settings::{Settings, SettingsFile};
 use super::state::Ui;
 use crate::accounts::MultiAccountManager;
 use crate::capture::{Replay, Tap};
+use crate::warps::service::WarpService;
 use crate::websocket::PortCommand;
 
 pub struct Services {
@@ -87,6 +88,8 @@ impl Services {
         } = start;
         let manager = Arc::new(Mutex::new(MultiAccountManager::new()));
         let (selected_tx, selected_rx) = watch::channel(None);
+        // Nothing shows the warp history yet, what it reports is only logged
+        let warps = WarpService::start(crate::warps::store::default_path(), |update| debug!(?update, "warps"));
         let (port_tx, port_rx) = watch::channel(PortCommand::Open(ws_port));
 
         rt.spawn(settings_file.writer());
@@ -94,7 +97,7 @@ impl Services {
         if needs_admin {
             warn!("not capturing, administrator rights are needed");
         } else {
-            rt.spawn(super::forward_worker(app.clone(), manager.clone(), tap));
+            rt.spawn(super::forward_worker(app.clone(), manager.clone(), tap, warps));
         }
         rt.spawn(super::forward_logs(app.clone()));
 
