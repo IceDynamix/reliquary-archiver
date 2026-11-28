@@ -88,6 +88,11 @@ pub fn run(tap: Tap, options: Options) {
         min_size: Some((420.0, 620.0)),
         scenes: scenes::SCENES,
         poll: Some(|s: &mut Ui, _, tx| {
+            // Each time the window comes on screen or goes off it, poll runs. Snapshots draw
+            // without a window on screen, with everything held
+            if rune::tooling::headless_run().is_none() {
+                s.window_visible(tx.window_visible(), tx);
+            }
             let expired = s.expire(Instant::now());
             let art = s.art_ready();
             let background = s.background.ready(&s.settings.background_image);
@@ -172,6 +177,8 @@ pub fn run(tap: Tap, options: Options) {
         }
         let mut ui = Ui::new(settings.clone());
         ui.needs_admin = options.needs_admin;
+        // Started in the tray, the warp screen's art is only fetched ahead until the window shows
+        ui.visible = !start_in_tray;
 
         let tray = tray(handle.clone());
         if start_in_tray && tray.is_none() {
@@ -197,6 +204,11 @@ pub fn run(tap: Tap, options: Options) {
         if !(s.settings.close_to_tray && s.has_tray) {
             tx.quit();
         }
+    })
+    // Resting, the window lets go of the warp screen's art it doesn't need
+    .on_rest(|s: &mut Ui, _| {
+        s.rest_warp_art();
+        false
     })
     .on_quit(|s: &mut Ui, _| {
         remember_frame(s);

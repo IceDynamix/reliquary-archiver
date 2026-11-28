@@ -25,6 +25,9 @@ use crate::websocket::ServerError;
 pub const CAPTURE_ERROR_TTL: Duration = Duration::from_secs(15);
 /// How long a notice stays up
 const NOTICE_TTL: Duration = Duration::from_secs(6);
+/// How long the window can be off screen (in the tray, minimized, or under the game) before the
+/// warp screen's art is let go of. Coming back sooner finds it all still there
+const HIDDEN_ART_FOR: Duration = Duration::from_secs(120);
 /// How many of the most recent log lines the logs panel shows
 pub const LOG_TAIL: usize = 400;
 /// The image files a background can be chosen from
@@ -65,6 +68,10 @@ pub struct Ui {
     pub services: Option<Services>,
     pub background: Background,
     pub warps: Warps,
+    /// The window is on screen. Only then is the warp screen's art held
+    pub visible: bool,
+    /// When the window went off screen, to let go of the warp screen's art a while after
+    pub hidden_since: Option<Instant>,
 }
 
 /// The port field in the settings panel, and the port it asked for
@@ -111,6 +118,9 @@ pub struct Warps {
     /// The ticket last picked on the warp screen's rail, and when: its shine plays for a moment
     /// after, and not again when the layout changes
     pub picked: Option<(Pool, Instant)>,
+    /// Warps whose art is held besides the one the screen shows: pointed at on the rail, so that
+    /// picking them shows it at once. Let go of once the screen is left
+    pub art_pools: Vec<Pool>,
 }
 
 /// The warp screen's views of a warp, one over the other: what its banner is and what the warps in
@@ -263,6 +273,7 @@ pub fn pick_warp(s: &mut Ui, pool: Pool, tx: &mut Tx) {
     s.warps.pool = pool;
     s.warps.picked = Some((pool, Instant::now()));
     tx.wake_after(SHINE_FOR);
+    s.preload_warp_art();
 }
 
 /// The characters and light cones an account owns
@@ -307,6 +318,7 @@ impl Default for Warps {
             rosters: HashMap::new(),
             session_start: jiff::Timestamp::now().as_second(),
             picked: None,
+            art_pools: Vec::new(),
             link_edit: TextEdit::new(""),
             choose: None,
         }
@@ -461,6 +473,8 @@ impl Ui {
             updates_supported: false,
             services: None,
             warps: Warps::default(),
+            visible: true,
+            hidden_since: None,
         }
     }
 
@@ -538,6 +552,13 @@ impl Ui {
         {
             self.capture.error = None;
             changed = true;
+        }
+        if self.hidden_since.is_some_and(|at| now.duration_since(at) >= HIDDEN_ART_FOR) {
+            self.hidden_since = None;
+            self.warps.art_pools.clear();
+            if let Some(art) = &self.art {
+                art.release(|_| false);
+            }
         }
         changed
     }
@@ -637,6 +658,7 @@ impl Ui {
         if let Some(pool) = self.warps_summary().and_then(opening_pool) {
             self.warps.pool = pool;
         }
+        self.preload_warp_art();
     }
 
     /// What the account the warp screen shows owns, when it logged in this run
@@ -654,6 +676,8 @@ impl Ui {
 
     pub fn close_warps(&mut self) {
         self.screen = Screen::Main;
+        // What it opens on next, which may not be the warp it showed
+        self.preload_warp_art();
     }
 
     /// Hands art that arrived to Rune. True when there was any
@@ -666,20 +690,77 @@ impl Ui {
         arrived
     }
 
-    /// Asks for everything the warp screen shows, as soon as the warps and the banner art's manifest
-    /// are in, so the screen opens with it ready, in [`warp_art_order`]: the warp it opens on first.
-    /// Asking for art that's here or on its way is free, so this runs again whenever something
-    /// arrives
+    /// Has the art the warp screen shows ready ahead, as soon as the warps and the banner art's
+    /// manifest are in, in [`warp_art`]'s order. While the window is on screen, what the screen
+    /// opens on is held, so it opens with its art in place, and on the screen so is the warp it
+    /// shows and those pointed at on the rail. Everything else is only fetched into the cache
+    /// folder, which it reads from in a moment when it's wanted. Asking for art that's here or on
+    /// its way is free, so this runs again whenever something arrives
     pub fn preload_warp_art(&self) {
+        let Some((art, tiers)) = self.warp_art_tiers() else { return };
+        if self.visible {
+            for wanted in &tiers.now {
+                let _ = art.get(*wanted);
+            }
+        }
+        let ahead = if self.visible { &[][..] } else { &tiers.now[..] };
+        for wanted in ahead.iter().chain(&tiers.later) {
+            art.warm(*wanted);
+        }
+    }
+
+    /// Lets go of the warp screen's art the window doesn't need, when it rests (`App::on_rest`):
+    /// on the warp screen nothing, since what isn't on screen there is a click away; elsewhere all
+    /// but what the screen opens on
+    /// Off screen it waits for [`HIDDEN_ART_FOR`] instead, so the window comes back as it was
+    pub fn rest_warp_art(&mut self) {
+        if self.screen == Screen::Warps || !self.visible {
+            return;
+        }
+        self.warps.art_pools.clear();
+        let Some((art, tiers)) = self.warp_art_tiers() else { return };
+        let keep: std::collections::HashSet<_> = tiers.now.into_iter().collect();
+        art.release(|wanted| keep.contains(wanted));
+    }
+
+    /// The window came on screen or went off it. Off it, the warp screen's art is let go of after
+    /// [`HIDDEN_ART_FOR`]; back on, it loads again
+    pub fn window_visible(&mut self, visible: bool, tx: &mut Tx) {
+        if visible == self.visible {
+            return;
+        }
+        self.visible = visible;
+        if visible {
+            self.hidden_since = None;
+            self.preload_warp_art();
+        } else {
+            self.hidden_since = Some(Instant::now());
+            tx.wake_after(HIDDEN_ART_FOR);
+        }
+    }
+
+    /// The pointer is on a warp's ticket on the rail: its art loads, to show at once if it's picked
+    pub fn point_at_warp(&mut self, pool: Pool) {
+        if pool != self.warps.pool && !self.warps.art_pools.contains(&pool) {
+            self.warps.art_pools.push(pool);
+            self.preload_warp_art();
+        }
+    }
+
+    /// The art cache, and the warp screen's art in what's held and what's only fetched ahead
+    fn warp_art_tiers(&self) -> Option<(&super::art::ArtCache, WarpArt)> {
         use super::art::Layer;
         let (Some(art), Some(summary)) = (self.art.as_ref(), self.warps_summary()) else {
-            return;
+            return None;
         };
         // The warp it shows when it's open, else the one it will open on
-        let first = match self.screen {
-            Screen::Warps => self.warps.pool,
-            _ => opening_pool(summary).unwrap_or(self.warps.pool),
+        let mut held = match self.screen {
+            Screen::Warps => vec![self.warps.pool],
+            _ => vec![opening_pool(summary).unwrap_or(self.warps.pool)],
         };
+        if self.screen == Screen::Warps {
+            held.extend(self.warps.art_pools.iter().copied());
+        }
         let has = |item: u32| {
             art.with_banner(item, |banner| {
                 let layers = if banner.placed() {
@@ -695,9 +776,7 @@ impl Ui {
             })
             .unwrap_or_default()
         };
-        for wanted in warp_art_order(summary, first, has) {
-            let _ = art.get(wanted);
-        }
+        Some((art, warp_art(summary, &held, has)))
     }
 
     fn warp_command(&self, command: WarpCommand) {
@@ -1179,15 +1258,23 @@ fn opening_pool(summary: &Summary) -> Option<Pool> {
         .map(|(_, pool)| pool)
 }
 
-/// The art the warp screen shows, in the order it's best had. First everything of `first`, the
-/// warp the screen opens on: its ticket and each of its running banners', and each of their art
-/// (the layers, or a portrait) and preview, since its pick switches between them. Then every
-/// other warp's ticket, which the rail shows from the start; each warp's own art; every other
-/// running banner's; and the pass icons. `has` tells, for an item, the banner art's placed layers
-/// (none to show its portrait) and whether its panel tiles a pattern
-fn warp_art_order(summary: &Summary, first: Pool, has: impl Fn(u32) -> (Vec<super::art::Layer>, bool)) -> Vec<super::art::Art> {
+/// The art the warp screen shows, in the order it's best had, in what's held and what's only
+/// fetched ahead
+#[derive(Debug)]
+struct WarpArt {
+    /// Everything of the warps in `held`, first of all the one the screen opens on: its ticket and
+    /// each of its running banners', and each of their art (the layers, or a portrait) and
+    /// preview, since its pick switches between them. Then every warp's ticket, which the rail
+    /// shows from the start, and the pass icons
+    now: Vec<super::art::Art>,
+    /// Every other warp's own art and every other running banner's
+    later: Vec<super::art::Art>,
+}
+
+/// The warp screen's art, held for the warps in `held` (see [`WarpArt`]). `has` tells, for an item,
+/// the banner art's placed layers (none to show its portrait) and whether its panel tiles a pattern
+fn warp_art(summary: &Summary, held: &[Pool], has: impl Fn(u32) -> (Vec<super::art::Layer>, bool)) -> WarpArt {
     use super::art::{Art, Ticket};
-    let mut order: Vec<Art> = Vec::new();
     let push = |order: &mut Vec<Art>, art: Art| {
         if !order.contains(&art) {
             order.push(art);
@@ -1229,34 +1316,39 @@ fn warp_art_order(summary: &Summary, first: Pool, has: impl Fn(u32) -> (Vec<supe
     };
     let running = |pool: Pool| summary.running(pool).flat_map(|banner| banner.fives.iter().copied());
 
-    if let Some(own_ticket) = Ticket::of(summary, first, None) {
-        ticket(&mut order, own_ticket);
+    let mut now = Vec::new();
+    for &pool in held {
+        if let Some(own_ticket) = Ticket::of(summary, pool, None) {
+            ticket(&mut now, own_ticket);
+        }
+        for item in running(pool) {
+            ticket(&mut now, Ticket::Banner(item));
+        }
+        for item in own(pool).into_iter().chain(running(pool)) {
+            shown(&mut now, item);
+        }
     }
-    for item in running(first) {
-        ticket(&mut order, Ticket::Banner(item));
-    }
-    for item in own(first).into_iter().chain(running(first)) {
-        shown(&mut order, item);
-    }
-
     for stats in &summary.pools {
         if let Some(own_ticket) = Ticket::of(summary, stats.pool, None) {
-            ticket(&mut order, own_ticket);
+            ticket(&mut now, own_ticket);
         }
     }
     for item in summary.banners.iter().flat_map(|banner| banner.fives.iter().copied()) {
-        ticket(&mut order, Ticket::Banner(item));
-    }
-    for item in summary.pools.iter().filter_map(|stats| own(stats.pool)) {
-        shown(&mut order, item);
-    }
-    for item in summary.banners.iter().flat_map(|banner| banner.fives.iter().copied()) {
-        shown(&mut order, item);
+        ticket(&mut now, Ticket::Banner(item));
     }
     for pass in [item::PASS, item::SPECIAL_PASS] {
-        push(&mut order, Art::Item(pass));
+        push(&mut now, Art::Item(pass));
     }
-    order
+
+    let mut later = Vec::new();
+    for item in summary.pools.iter().filter_map(|stats| own(stats.pool)) {
+        shown(&mut later, item);
+    }
+    for item in summary.banners.iter().flat_map(|banner| banner.fives.iter().copied()) {
+        shown(&mut later, item);
+    }
+    later.retain(|art| !now.contains(art));
+    WarpArt { now, later }
 }
 
 /// `v` between `least` and `most`, to the nearest whole percent
@@ -1299,7 +1391,8 @@ mod tests {
             1511 => (vec![Layer::Back, Layer::Main], true),
             _ => (Vec::new(), false),
         };
-        let order = warp_art_order(&summary, Pool::Character, has);
+        let art = warp_art(&summary, &[Pool::Character], has);
+        let order: Vec<Art> = art.now.iter().chain(&art.later).copied().collect();
         let at = |art: Art| {
             order
                 .iter()
@@ -1321,14 +1414,21 @@ mod tests {
             Art::Ticket(Ticket::Banner(1511), true)
         ]);
         assert!(at(Art::Pattern(1511)) < at(Art::Layer(1511, Layer::Back)));
-        // Nothing twice, and the passes last
+        // Nothing twice
         assert_eq!(order.iter().filter(|a| **a == Art::Preview(1511)).count(), 1);
-        assert_eq!(order[order.len() - 2..], [Art::Item(item::PASS), Art::Item(item::SPECIAL_PASS)]);
+        // Held: the warp it opens on, every ticket and the passes. The light cone warp's art is
+        // only fetched ahead
+        assert_eq!(art.now[art.now.len() - 2..], [Art::Item(item::PASS), Art::Item(item::SPECIAL_PASS)]);
+        assert!(art.now.contains(&Art::Ticket(Ticket::Banner(23053), true)));
+        assert!(art.later.contains(&Art::Portrait(23053)) && !art.now.contains(&Art::Portrait(23053)));
 
         // Opening on the light cone warp turns it around
-        let order = warp_art_order(&summary, Pool::LightCone, has);
-        let at = |art: Art| order.iter().position(|a| *a == art).unwrap();
-        assert!(at(Art::Preview(23053)) < at(Art::Ticket(Ticket::Banner(1511), false)));
+        let art = warp_art(&summary, &[Pool::LightCone], has);
+        assert!(art.now.contains(&Art::Preview(23053)));
+        assert!(art.later.contains(&Art::Layer(1511, Layer::Main)));
+        // A warp pointed at on the rail is held too
+        let art = warp_art(&summary, &[Pool::LightCone, Pool::Character], has);
+        assert!(art.now.contains(&Art::Layer(1511, Layer::Main)) && art.later.is_empty());
     }
 
     const AT_TOP: PageScroll = PageScroll {

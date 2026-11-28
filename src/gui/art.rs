@@ -11,11 +11,15 @@
 //! The view asks with [`ArtCache::get`], which answers at once: the image if it's there, `None`
 //! while it's on its way. Worker threads download, several at once, and decode, a few at once,
 //! then wake the window, and [`ArtCache::take_done`] (called from `poll`) hands the result to Rune.
+//!
+//! Decoded, the warp screen's art is hundreds of MB, so only what's on screen or about to be is
+//! held. The rest is fetched ahead into the cache folder with [`ArtCache::warm`], from where it
+//! reads in a moment, and [`ArtCache::release`] lets go of what's no longer needed.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, mpsc};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use image::DynamicImage;
@@ -312,6 +316,25 @@ impl Manifest {
         self.hashes.get(file).map_or(&self.build, |hash| hash.get(..16).unwrap_or(hash))
     }
 
+    /// The names everything it has is kept under in the cache folder ([`Art::cache_name`])
+    fn cache_names(&self) -> HashSet<String> {
+        let own = self.own.values().flat_map(|own| [&own.portrait, &own.preview, &own.icon]).flatten();
+        let banners = self.banners.values().flat_map(|banner| {
+            let pattern = banner.surface.as_ref().and_then(|s| s.pattern.as_ref()).map(|p| &p.file);
+            banner.layers.iter().map(|l| &l.file).chain(pattern)
+        });
+        let tickets = self.tickets.values().flatten().flatten();
+        own.chain(banners)
+            .chain(tickets)
+            .chain(self.items.values())
+            // A portrait's copy is named for its height, anything else's isn't: either may be kept
+            .flat_map(|file| {
+                let version = self.version(file);
+                [Art::Portrait(0), Art::Item(0)].map(|art| art.cache_name(file, version))
+            })
+            .collect()
+    }
+
     fn parse(bytes: &[u8]) -> Option<Manifest> {
         let json: Value = serde_json::from_slice(bytes).ok()?;
         let build = json["game"]["build"].as_str().unwrap_or("0").to_string();
@@ -418,6 +441,7 @@ fn srgb(rgb: [f32; 3], alpha: f32) -> Color {
 
 enum Slot {
     Loading,
+    /// Handed to Rune, which may still be preparing it to draw ([`Image::is_ready`])
     Ready(Image),
     /// Couldn't be had this run, it isn't asked for again until the app restarts
     Missing,
@@ -448,6 +472,54 @@ struct Source {
 enum Job {
     Manifest,
     Art(Art, Source),
+    /// Into the cache folder only, for later
+    Warm(Art, Source),
+}
+
+/// The art threads' work: what the window waits on first, then what's fetched ahead
+#[derive(Default)]
+struct Queue {
+    jobs: Mutex<Jobs>,
+    added: Condvar,
+}
+
+#[derive(Default)]
+struct Jobs {
+    now: VecDeque<Job>,
+    later: VecDeque<Job>,
+    /// The cache is gone, the threads end
+    closed: bool,
+}
+
+impl Queue {
+    fn push(&self, job: Job) {
+        let mut jobs = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
+        match job {
+            Job::Warm(..) => jobs.later.push_back(job),
+            _ => jobs.now.push_back(job),
+        }
+        drop(jobs);
+        self.added.notify_one();
+    }
+
+    /// The next job, in the order asked, waiting for one. `None` once the cache is gone
+    fn pop(&self) -> Option<Job> {
+        let mut jobs = self.jobs.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if jobs.closed {
+                return None;
+            }
+            if let Some(job) = jobs.now.pop_front().or_else(|| jobs.later.pop_front()) {
+                return Some(job);
+            }
+            jobs = self.added.wait(jobs).unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+
+    fn close(&self) {
+        self.jobs.lock().unwrap_or_else(PoisonError::into_inner).closed = true;
+        self.added.notify_all();
+    }
 }
 
 /// What an art thread finished
@@ -472,35 +544,49 @@ pub struct ArtCache {
     tints: RefCell<HashMap<Art, Color>>,
     manifest: RefCell<ManifestState>,
     /// Where requests go, `None` to fetch on the spot (for snapshots, which draw one frame)
-    jobs: Option<mpsc::Sender<Job>>,
+    jobs: Option<Arc<Queue>>,
+    /// Art asked to be fetched ahead this run, which isn't asked for again
+    warmed: RefCell<HashSet<Art>>,
+    /// Art handed to Rune that it's still preparing, which the window hears of once it's ready
+    preparing: RefCell<Vec<Image>>,
     /// What the art threads finished, for [`ArtCache::take_done`]
     done: Arc<Mutex<Vec<Finished>>>,
+}
+
+impl Drop for ArtCache {
+    fn drop(&mut self) {
+        if let Some(jobs) = &self.jobs {
+            jobs.close();
+        }
+    }
 }
 
 impl ArtCache {
     /// Fetches on threads of its own, `DOWNLOADS` at once and decoding a few of those at a time
     /// (`DECODING`), and wakes the window with `waker` when art arrives
     pub fn new(waker: rune::Waker) -> Self {
-        let (jobs, requests) = mpsc::channel::<Job>();
-        let requests = Arc::new(Mutex::new(requests));
+        let jobs = Arc::new(Queue::default());
         let done: Arc<Mutex<Vec<Finished>>> = Arc::default();
         let agent = agent();
         for n in 0..DOWNLOADS {
-            let (requests, done) = (requests.clone(), done.clone());
+            let (jobs, done) = (jobs.clone(), done.clone());
             let (wake, agent) = (waker.clone(), agent.clone());
             std::thread::Builder::new()
                 .name(format!("warp-art-{n}"))
                 .spawn(move || {
-                    loop {
-                        // The queue is held only while taking from it, so the others wait for
-                        // work, not for this one's download. Jobs start in the order they're asked
-                        let job = requests.lock().unwrap_or_else(PoisonError::into_inner).recv();
-                        let Ok(job) = job else { break };
+                    // The queue is held only while taking from it, so the others wait for work,
+                    // not for this one's download. Jobs start in the order they're asked, what
+                    // the window waits on before what's fetched ahead
+                    while let Some(job) = jobs.pop() {
                         let finished = match job {
                             Job::Manifest => Finished::Manifest(fetch_manifest(&agent)),
                             Job::Art(art, source) => {
-                                let (fetched, tint) = fetch(&agent, art, &source);
+                                let (fetched, tint) = fetch(&agent, art, &source, Want::Pixels);
                                 Finished::Art(Done { art, fetched, tint })
+                            }
+                            Job::Warm(art, source) => {
+                                fetch(&agent, art, &source, Want::Kept);
+                                continue;
                             }
                         };
                         done.lock().unwrap_or_else(PoisonError::into_inner).push(finished);
@@ -517,13 +603,15 @@ impl ArtCache {
         Self::with(waker, None, Arc::default())
     }
 
-    fn with(waker: rune::Waker, jobs: Option<mpsc::Sender<Job>>, done: Arc<Mutex<Vec<Finished>>>) -> Self {
+    fn with(waker: rune::Waker, jobs: Option<Arc<Queue>>, done: Arc<Mutex<Vec<Finished>>>) -> Self {
         Self {
             images: ImageCache::new(waker),
             slots: RefCell::default(),
             tints: RefCell::default(),
             manifest: RefCell::new(ManifestState::NotAsked),
             jobs,
+            warmed: RefCell::default(),
+            preparing: RefCell::default(),
             done,
         }
     }
@@ -550,7 +638,7 @@ impl ArtCache {
         match &self.jobs {
             Some(jobs) => {
                 *state = ManifestState::Loading;
-                jobs.send(Job::Manifest).ok();
+                jobs.push(Job::Manifest);
                 None
             }
             None => {
@@ -561,33 +649,27 @@ impl ArtCache {
         }
     }
 
-    /// The art if it's here, `None` while it's on its way or when it couldn't be had
+    /// The art if it's here and ready to draw, `None` while it's on its way or when it couldn't be
+    /// had. Asks for it when it isn't
     pub fn get(&self, art: Art) -> Option<Image> {
         {
             let slots = self.slots.borrow();
             match slots.get(&art) {
-                Some(Slot::Ready(image)) => return image.error().is_none().then(|| image.clone()),
+                Some(Slot::Ready(image)) => return (image.is_ready() && image.error().is_none()).then(|| image.clone()),
                 Some(Slot::Loading | Slot::Missing) => return None,
                 None => {}
             }
         }
-        // From where the manifest says, under the art's base
-        let manifest = self.manifest()?;
-        let file = art.file(&manifest)?;
-        let source = Source {
-            version: manifest.version(file).to_string(),
-            base: warp_art_base(),
-            file: file.to_string(),
-        };
+        let source = self.source(art)?;
         let mut slots = self.slots.borrow_mut();
         match &self.jobs {
             Some(jobs) => {
                 slots.insert(art, Slot::Loading);
-                jobs.send(Job::Art(art, source)).ok();
+                jobs.push(Job::Art(art, source));
                 None
             }
             None => {
-                let (fetched, tint) = fetch(&agent(), art, &source);
+                let (fetched, tint) = fetch(&agent(), art, &source, Want::Pixels);
                 let image = fetched.map(|fetched| self.install(fetched));
                 if let Some(image) = &image {
                     let _ = image.wait();
@@ -601,16 +683,81 @@ impl ArtCache {
         }
     }
 
+    /// Whether the art is on its way: asked for and not yet ready to draw. Art that couldn't be
+    /// had isn't coming
+    pub fn coming(&self, art: Art) -> bool {
+        match self.slots.borrow().get(&art) {
+            Some(Slot::Loading) => true,
+            Some(Slot::Ready(image)) => !image.is_ready(),
+            Some(Slot::Missing) | None => false,
+        }
+    }
+
+    /// Fetches the art into the cache folder without keeping it, so that asking for it later
+    /// reads it from there rather than waiting on a download and a JPEG XL decode. Runs after
+    /// everything [`ArtCache::get`] asked for
+    pub fn warm(&self, art: Art) {
+        let Some(jobs) = &self.jobs else { return };
+        if self.slots.borrow().contains_key(&art) || self.warmed.borrow().contains(&art) {
+            return;
+        }
+        let Some(source) = self.source(art) else { return };
+        self.warmed.borrow_mut().insert(art);
+        jobs.push(Job::Warm(art, source));
+    }
+
+    /// Lets go of the art `keep` doesn't want, and Rune of its copies once nothing draws them.
+    /// What's still on its way is let go of when it arrives. Asking for it again reads it from the
+    /// cache folder
+    pub fn release(&self, keep: impl Fn(&Art) -> bool) {
+        let mut slots = self.slots.borrow_mut();
+        let mut warmed = self.warmed.borrow_mut();
+        slots.retain(|art, slot| {
+            let kept = keep(art) || matches!(slot, Slot::Missing);
+            if !kept {
+                // Its download is in the cache folder, or on its way there
+                warmed.insert(*art);
+            }
+            kept
+        });
+        let held: HashSet<rune::ImageId> = slots
+            .values()
+            .filter_map(|slot| match slot {
+                Slot::Ready(image) => Some(image.id()),
+                _ => None,
+            })
+            .collect();
+        self.preparing.borrow_mut().retain(|image| held.contains(&image.id()));
+    }
+
+    /// Where the art is read from, as the manifest says
+    fn source(&self, art: Art) -> Option<Source> {
+        let manifest = self.manifest()?;
+        let file = art.file(&manifest)?;
+        Some(Source {
+            version: manifest.version(file).to_string(),
+            base: warp_art_base(),
+            file: file.to_string(),
+        })
+    }
+
     /// The color of a banner's backdrop, once it's here: the banner's own accent
     pub fn tint(&self, item: u32) -> Option<Color> {
         self.tints.borrow().get(&Art::Layer(item, Layer::Backdrop)).copied()
     }
 
-    /// Hands what the threads finished to Rune. True when there was any
+    /// Hands what the threads finished to Rune. True when there was any, or when art Rune was
+    /// preparing became ready to draw
     pub fn take_done(&self) -> bool {
+        let prepared = {
+            let mut preparing = self.preparing.borrow_mut();
+            let before = preparing.len();
+            preparing.retain(|image| !image.is_ready());
+            preparing.len() < before
+        };
         let done = std::mem::take(&mut *self.done.lock().unwrap_or_else(PoisonError::into_inner));
         if done.is_empty() {
-            return false;
+            return prepared;
         }
         let (mut slots, mut tints) = (self.slots.borrow_mut(), self.tints.borrow_mut());
         for finished in done {
@@ -622,8 +769,18 @@ impl ArtCache {
                     if let Some(tint) = tint {
                         tints.insert(art, accent_of_rgb(tint));
                     }
+                    // Released while it loaded
+                    if !matches!(slots.get(&art), Some(Slot::Loading)) {
+                        continue;
+                    }
                     let slot = match fetched {
-                        Some(fetched) => Slot::Ready(self.install(fetched)),
+                        Some(fetched) => {
+                            let image = self.install(fetched);
+                            if !image.is_ready() {
+                                self.preparing.borrow_mut().push(image.clone());
+                            }
+                            Slot::Ready(image)
+                        }
                         None => Slot::Missing,
                     };
                     slots.insert(art, slot);
@@ -694,6 +851,7 @@ fn fetch_manifest(agent: &ureq::Agent) -> Option<Manifest> {
     let kept = cache_dir().map(|dir| dir.join("warp-index.json"));
     // Never cached at the edge, it's how a new version is found out
     let fresh = read_warp_art(agent, &warp_art_base(), "index.json", None);
+    let is_fresh = fresh.is_some();
     let bytes = match fresh {
         Some(bytes) => {
             if let Some(path) = &kept {
@@ -703,15 +861,56 @@ fn fetch_manifest(agent: &ureq::Agent) -> Option<Manifest> {
         }
         None => std::fs::read(kept?).ok()?,
     };
-    Manifest::parse(&bytes)
+    let manifest = Manifest::parse(&bytes)?;
+    // Art from `RQA_WARP_ART` shares the cache folder: its manifest doesn't name the bucket's art
+    if is_fresh
+        && warp_art_base() == WARP_ART_URL
+        && let Some(dir) = cache_dir()
+    {
+        prune(&dir, &manifest);
+    }
+    Some(manifest)
 }
 
-/// The art from the cache folder, or downloaded into it, and for a banner's backdrop its color
-fn fetch(agent: &ureq::Agent, art: Art, source: &Source) -> (Option<Fetched>, Option<[f32; 3]>) {
+/// Removes the art in the cache folder that `manifest` doesn't name: older versions of what it
+/// has, and what it no longer has
+fn prune(dir: &std::path::Path, manifest: &Manifest) {
+    let wanted = manifest.cache_names();
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.starts_with("warp-") && name.ends_with(".qoi") && !wanted.contains(name) {
+            if std::fs::remove_file(entry.path()).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::debug!(removed, "removed old art from the cache");
+    }
+}
+
+/// What [`fetch`] is for
+#[derive(Clone, Copy, PartialEq)]
+enum Want {
+    /// The art's pixels, to draw
+    Pixels,
+    /// Only the art in the cache folder: nothing is read when it's there already
+    Kept,
+}
+
+/// The art from the cache folder, or downloaded into it, and for a banner's backdrop its color.
+/// For [`Want::Kept`], only into the cache folder, and nothing comes back
+fn fetch(agent: &ureq::Agent, art: Art, source: &Source, want: Want) -> (Option<Fetched>, Option<[f32; 3]>) {
     let Source { version, base, file } = source;
     let (version, file) = (version.as_str(), file.as_str());
     let cached = cache_dir().map(|dir| dir.join(art.cache_name(file, version)));
     let backdrop = matches!(art, Art::Layer(_, Layer::Backdrop));
+    if want == Want::Kept && cached.as_ref().is_some_and(|path| path.exists()) {
+        return (None, None);
+    }
     if let Some(path) = &cached
         && let Ok(bytes) = std::fs::read(path)
     {
@@ -746,13 +945,16 @@ fn fetch(agent: &ureq::Agent, art: Art, source: &Source) -> (Option<Fetched>, Op
     } else {
         image
     };
-    let tint = backdrop.then(|| mean_color(&image));
     if let Some(path) = cached {
         let mut qoi = Vec::new();
         if image.write_to(&mut std::io::Cursor::new(&mut qoi), image::ImageFormat::Qoi).is_ok() {
             keep(&path, &qoi);
         }
     }
+    if want == Want::Kept {
+        return (None, None);
+    }
+    let tint = backdrop.then(|| mean_color(&image));
     (Some(rgba(image)), tint)
 }
 
@@ -931,6 +1133,34 @@ mod tests {
         assert_eq!(name(Art::Layer(1511, Layer::Main)), "warp-b-characters-1511-avatar.qoi");
         // Nothing from the manifest reaches outside the cache folder
         assert_eq!(name(Art::Item(102)), "warp-------evil-items-102.qoi");
+    }
+
+    #[test]
+    fn only_art_the_manifest_names_is_kept() {
+        let manifest = Manifest::parse(MANIFEST).unwrap();
+        let dir = std::env::temp_dir().join(format!("rqa-art-prune-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let named = Art::Portrait(1511).cache_name("characters/1511/portrait.jxl", manifest.version("characters/1511/portrait.jxl"));
+        let layer = Art::Layer(1511, Layer::Main).cache_name("characters/1511/avatar.jxl", "b");
+        for name in [
+            named.as_str(),
+            layer.as_str(),
+            "warp-0ld0ld0ld0ld0ld0-characters-1511-portrait-2048.qoi",
+            "other.qoi",
+        ] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        prune(&dir, &manifest);
+        let mut left: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        left.sort();
+        std::fs::remove_dir_all(&dir).unwrap();
+        // An older version goes; what isn't the art's own is left alone
+        let mut kept = vec!["other.qoi".to_string(), layer, named];
+        kept.sort();
+        assert_eq!(left, kept);
     }
 
     #[test]

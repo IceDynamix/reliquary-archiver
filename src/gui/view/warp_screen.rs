@@ -534,12 +534,22 @@ fn stage(s: &Ui, view: &View, width: f32, height: f32, fit: Fit, t: &Theme) -> E
     {
         let (k, ox, oy) = art_transform(&main, [width, height], fit);
         let order = [Layer::Back, Layer::Main, Layer::Front, Layer::Front2];
-        for (i, layer) in order.into_iter().enumerate() {
+        let images = order.map(|layer| {
+            art.layer(layer)
+                .filter(|placed| placed.on_screen.is_some())
+                .and_then(|_| s.art.as_ref()?.get(Art::Layer(item, layer)))
+        });
+        // The layers come in together, so the art arrives whole rather than a piece at a time
+        if order
+            .iter()
+            .any(|&layer| s.art.as_ref().is_some_and(|a| a.coming(Art::Layer(item, layer))))
+        {
+            return stage;
+        }
+        for (i, (layer, image)) in order.into_iter().zip(images).enumerate() {
             let Some(placed) = art.layer(layer) else { continue };
             let Some(on_screen) = placed.on_screen else { continue };
-            let Some(image) = s.art.as_ref().and_then(|a| a.get(Art::Layer(item, layer))) else {
-                continue;
-            };
+            let Some(image) = image else { continue };
             let scale = on_screen[2] / placed.canvas[0] * k;
             let (x, y) = (
                 ox + (on_screen[0] + placed.rect[0] * on_screen[2] / placed.canvas[0]) * k,
@@ -689,6 +699,12 @@ fn rail(s: &Ui, summary: &Summary, selected: Pool, fit: Fit, t: &Theme) -> El {
             .cursor(rune::Cursor::Pointer)
             .size(w, h)
             .on_press_tx(move |s: &mut Ui, tx: &mut Tx| crate::gui::state::pick_warp(s, pool, tx))
+            // Its art loads on hover, to be there when it's picked
+            .on_hover_change(move |s: &mut Ui, on, _| {
+                if on {
+                    s.point_at_warp(pool);
+                }
+            })
             .child(ticket_figures(stats, chosen, full, t))
             .child(rail_ticket(s, summary, stats, chosen, h, t))
     });
@@ -722,7 +738,7 @@ fn rail_ticket(s: &Ui, summary: &Summary, stats: &PoolStats, chosen: bool, h: f3
     let pool = stats.pool;
     // The picked 5 star's banner when several run, so the ticket follows the pick
     let ticket = Ticket::of(summary, pool, s.warps.featured.get(&pool).copied());
-    // Both of a ticket's pictures (preloaded when the warps come in, see `Ui::preload_warp_art`)
+    // Both of a ticket's pictures (held from when the warps come in, see `Ui::preload_warp_art`)
     let picture = |selected: bool| ticket.and_then(|ticket| s.art.as_ref()?.get(Art::Ticket(ticket, selected)));
     let (plain, framed) = (picture(false), picture(true));
     let plain_size = plain.as_ref().and_then(image_size).unwrap_or(SPRITE);
