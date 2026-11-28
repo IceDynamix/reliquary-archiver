@@ -344,6 +344,8 @@ fn handle_session_event(state: &mut RootState, event: SessionEvent) {
         }
         // Logins reach the GUI through the account manager, as WorkerEvent::AccountLoggedIn
         SessionEvent::AccountSeen { .. } | SessionEvent::LoginFinished => {}
+        // This window doesn't keep warps
+        SessionEvent::Warp(_) => {}
     }
 }
 

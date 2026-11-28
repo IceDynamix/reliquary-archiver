@@ -28,6 +28,8 @@ mod logging;
 mod merge;
 mod session;
 mod stall;
+#[allow(dead_code)]
+mod warps;
 
 #[derive(Parser, Debug, Clone)]
 struct Args {
