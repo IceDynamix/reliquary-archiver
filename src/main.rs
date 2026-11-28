@@ -1,5 +1,4 @@
 #![cfg_attr(all(windows, feature = "gui"), windows_subsystem = "windows")]
-extern crate core;
 
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
@@ -19,7 +18,7 @@ mod rgui;
 #[cfg(windows)]
 mod update;
 
-#[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
+#[cfg(pktmon_only)]
 mod elevation;
 
 mod accounts;
@@ -62,7 +61,7 @@ struct Args {
     #[arg(short = 'p', long, default_value_t = 23313)]
     websocket_port: u16,
 
-    /// How verbose the output should be, can be set up to 3 times. Has no effect if RUST_LOG is set
+    /// How verbose the output should be, can be set up to 2 times. Has no effect if RUST_LOG is set
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
 
@@ -116,28 +115,12 @@ async fn main() {
         error!("Backtrace: {:#?}", backtrace);
     }));
 
-    // Attach to parent console on Windows GUI builds
-    // This is needed for --help output and headless mode to be visible
-    // AttachConsole fails if no parent console exists (e.g. double-clicked from Explorer)
-    #[cfg(all(windows, feature = "gui"))]
-    let has_console =
-        unsafe { windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS).is_ok() };
+    let args = parse_args();
 
-    let args = Args::parse();
-
-    // Detach from parent terminal if requested
-    #[cfg(all(windows, feature = "gui"))]
-    if args.detach {
-        unsafe { windows::Win32::System::Console::FreeConsole().ok() };
+    if let Err(e) = logging::tracing_init(args.verbose, args.log_path.as_deref()) {
+        error!("Could not create the log file: {}", e);
+        return;
     }
-
-    // Allocate a console for headless mode if AttachConsole didn't work
-    #[cfg(all(windows, feature = "gui"))]
-    if args.headless && !has_console && !args.detach {
-        unsafe { windows::Win32::System::Console::AllocConsole().ok() };
-    }
-
-    logging::tracing_init(args.verbose, args.log_path.as_deref());
 
     debug!(?args);
 
@@ -152,25 +135,58 @@ async fn main() {
     }
 }
 
+/// Parses the arguments, with a console to show them in.
+///
+/// Windows GUI builds don't get a console of their own. They attach to the parent's so that --help
+/// and headless mode are visible, let go of it for --detach, and open one for headless mode when
+/// there is no parent console (e.g. when double-clicked from Explorer).
+fn parse_args() -> Args {
+    #[cfg(all(windows, feature = "gui"))]
+    {
+        use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AllocConsole, AttachConsole, FreeConsole};
+
+        let has_console = unsafe { AttachConsole(ATTACH_PARENT_PROCESS).is_ok() };
+        let args = Args::parse();
+        if args.detach {
+            let _ = unsafe { FreeConsole() };
+        } else if args.headless && !has_console {
+            let _ = unsafe { AllocConsole() };
+        }
+        args
+    }
+
+    #[cfg(not(all(windows, feature = "gui")))]
+    Args::parse()
+}
+
+/// Whether capturing needs administrator rights the program doesn't have
+fn needs_admin() -> bool {
+    #[cfg(pktmon_only)]
+    return !elevation::is_admin();
+
+    #[cfg(not(pktmon_only))]
+    false
+}
+
 async fn run(args: Args) {
+    #[cfg(feature = "gui")]
+    let gui_mode = !args.headless;
+    #[cfg(not(feature = "gui"))]
+    let gui_mode = false;
+
     // Only self update on Windows, since that's the only platform we ship releases for
     // In GUI mode, the update check is handled by the GUI after it launches
     #[cfg(windows)]
+    if !gui_mode
+        && !args.no_update
+        && !std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1")
+        && let Err(e) = update::update_interactive(args.auth_token.as_deref(), args.always_update)
     {
-        #[cfg(feature = "gui")]
-        let gui_mode = !args.headless;
-        #[cfg(not(feature = "gui"))]
-        let gui_mode = false;
-
-        if !gui_mode && !args.no_update && !std::env::var("NO_SELF_UPDATE").is_ok_and(|v| v == "1") {
-            if let Err(e) = update::update_interactive(args.auth_token.as_deref(), args.always_update) {
-                error!("Failed to update: {}", e);
-            }
-        }
+        error!("Failed to update: {}", e);
     }
 
-    #[cfg(all(not(feature = "pcap"), feature = "pktmon"))]
-    if !elevation::is_admin() {
+    if needs_admin() {
+        #[cfg(pktmon_only)]
         elevation::prompt_and_escalate();
         return;
     }
@@ -184,7 +200,7 @@ async fn run(args: Args) {
     };
 
     #[cfg(feature = "gui")]
-    if !args.headless {
+    if gui_mode {
         // The GUI taps traffic for as long as it runs, recordings are opened from inside it
         let tap = match source_spec {
             SourceSpec::Tap(tap) => tap,
@@ -197,10 +213,11 @@ async fn run(args: Args) {
         rgui::run(tap).unwrap();
 
         // Check if we need to spawn the updated version after GUI exits
-        if update::should_spawn_after_exit() {
-            if let Err(e) = update::spawn_updated_version() {
-                error!("Failed to spawn updated version: {}", e);
-            }
+        #[cfg(windows)]
+        if update::should_spawn_after_exit()
+            && let Err(e) = update::spawn_updated_version()
+        {
+            error!("Failed to spawn updated version: {}", e);
         }
         return;
     }
