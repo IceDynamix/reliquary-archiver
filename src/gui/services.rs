@@ -131,8 +131,9 @@ impl Services {
     }
 
     /// Hands `command` to the warp database
-    pub fn warp_command(&self, command: WarpCommand) {
-        self.warps.send(command);
+    /// Sends the command, and returns its job ([`crate::warps::service::Job`])
+    pub fn warp_command(&self, command: WarpCommand) -> crate::warps::service::Job {
+        self.warps.send(command)
     }
 
     pub fn select_account(&self, uid: u32) {

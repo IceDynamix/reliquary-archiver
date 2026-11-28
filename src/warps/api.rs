@@ -40,7 +40,7 @@ impl HistoryKey {
 
     /// The server an account's history is on
     pub fn for_account(uid: u32, authkey: String) -> Self {
-        Self::for_region(super::is_mainland(uid), authkey)
+        Self::for_region(super::Uid(uid).is_mainland(), authkey)
     }
 }
 

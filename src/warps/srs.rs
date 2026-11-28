@@ -23,14 +23,14 @@ pub struct Profile {
     pub pulls: Vec<Pull>,
     /// What each banner featured, from the outcomes the site recorded
     pub rate_ups: RateUps,
-    /// The last two digits all its pull ids end in, if they agree
-    pub uid_suffix: Option<u32>,
+    /// How all its pull ids end ([`super::id_suffix`]), if they agree
+    pub uid_suffix: Option<i64>,
 }
 
 impl Profile {
     /// Whether the pulls can be the account's: their ids end in the uid's last two digits
     pub fn fits(&self, uid: u32) -> bool {
-        self.uid_suffix == Some(uid % 100)
+        self.uid_suffix == Some(super::Uid(uid).id_suffix())
     }
 
     /// The newest pull's time
@@ -95,9 +95,9 @@ pub fn parse(text: &str) -> Result<Vec<Profile>, String> {
         if pulls.is_empty() {
             continue;
         }
-        let suffixes: HashSet<i64> = pulls.iter().filter_map(|p| p.id).map(|id| id.rem_euclid(100)).collect();
+        let suffixes: HashSet<i64> = pulls.iter().filter_map(|p| p.id).map(super::id_suffix).collect();
         let uid_suffix = match suffixes.into_iter().collect::<Vec<_>>()[..] {
-            [only] => u32::try_from(only).ok(),
+            [only] => Some(only),
             _ => None,
         };
         profiles.push(Profile {

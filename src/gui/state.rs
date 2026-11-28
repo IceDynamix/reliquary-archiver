@@ -92,6 +92,8 @@ pub struct Warps {
     pub summaries: HashMap<u32, Summary>,
     /// What the database is busy with, e.g. a sync
     pub busy: Option<String>,
+    /// The command `busy` is for, which alone ends it
+    pub busy_job: Option<crate::warps::service::Job>,
     /// The pool the warp screen shows
     pub pool: Pool,
     /// The warp screen's view of it: its banner, or scrolled down to its history, or further to
@@ -308,6 +310,7 @@ impl Default for Warps {
             accounts: Vec::new(),
             summaries: HashMap::new(),
             busy: None,
+            busy_job: None,
             pool: Pool::Character,
             page: WarpPage::Banner,
             snap: Snap::default(),
@@ -779,10 +782,23 @@ impl Ui {
         Some((art, warp_art(summary, &held, has)))
     }
 
-    fn warp_command(&self, command: WarpCommand) {
-        if let Some(services) = &self.services {
-            services.warp_command(command);
+    fn warp_command(&self, command: WarpCommand) -> Option<crate::warps::service::Job> {
+        Some(self.services.as_ref()?.warp_command(command))
+    }
+
+    /// What a command is doing, `None` once it's done. Only the command the busy state is for
+    /// ends it or says what it's doing: one queued ahead of it ending doesn't
+    fn warp_busy(&mut self, job: crate::warps::service::Job, what: Option<String>) {
+        if self.warps.busy_job.is_none_or(|current| current == job) {
+            self.warps.busy_job = what.is_some().then_some(job);
+            self.warps.busy = what;
         }
+    }
+
+    /// Shows `what` as busy until the command it's for says it's done
+    fn warp_command_busy(&mut self, command: WarpCommand, what: &str) {
+        self.warps.busy = Some(what.into());
+        self.warps.busy_job = self.warp_command(command);
     }
 
     /// Takes what the warp database reports
@@ -810,7 +826,7 @@ impl Ui {
                 self.warps.summaries.insert(summary.uid, *summary);
                 self.preload_warp_art();
             }
-            WarpUpdate::Busy(busy) => self.warps.busy = busy,
+            WarpUpdate::Busy { job, what } => self.warp_busy(job, what),
             WarpUpdate::Notice { title, detail, tone } => self.notify(title, detail, tone.is_error(), None, tx),
             WarpUpdate::ChooseProfile { path, uid, profiles } => {
                 self.warps.choose = Some(ProfilePick { path, uid, profiles });
@@ -823,14 +839,12 @@ impl Ui {
 
     pub fn sync_warps(&mut self) {
         if let Some(uid) = self.warps_uid() {
-            self.warps.busy = Some("Syncing…".into());
-            self.warp_command(WarpCommand::Sync(uid));
+            self.warp_command_busy(WarpCommand::Sync(uid), "Syncing…");
         }
     }
 
     pub fn find_cached_key(&mut self) {
-        self.warps.busy = Some("Looking in the game's cache…".into());
-        self.warp_command(WarpCommand::FindCachedKey);
+        self.warp_command_busy(WarpCommand::FindCachedKey, "Looking in the game's cache…");
     }
 
     pub fn use_history_link(&mut self) {
@@ -839,8 +853,7 @@ impl Ui {
             return;
         }
         self.warps.link_edit.replace_text("");
-        self.warps.busy = Some("Checking the link…".into());
-        self.warp_command(WarpCommand::UseLink(link));
+        self.warp_command_busy(WarpCommand::UseLink(link), "Checking the link…");
     }
 
     /// Asks for a Star Rail Station backup, then imports it into the account the tracker shows
@@ -873,7 +886,7 @@ impl Ui {
             .filter("CSV files", &["csv"])
         };
         self.warp_file(tx, Dialog::Save, options, |s, path, uid| {
-            s.warp_command(WarpCommand::ExportCsv { path, uid })
+            s.warp_command(WarpCommand::ExportCsv { path, uid });
         });
     }
 
@@ -888,7 +901,7 @@ impl Ui {
             .filter("CSV files", &["csv"])
         };
         self.warp_file(tx, Dialog::Open, options, |s, path, uid| {
-            s.warp_command(WarpCommand::ImportCsv { path, uid })
+            s.warp_command(WarpCommand::ImportCsv { path, uid });
         });
     }
 
@@ -1429,6 +1442,23 @@ mod tests {
         // A warp pointed at on the rail is held too
         let art = warp_art(&summary, &[Pool::LightCone, Pool::Character], has);
         assert!(art.now.contains(&Art::Layer(1511, Layer::Main)) && art.later.is_empty());
+    }
+
+    #[test]
+    fn only_the_command_the_busy_state_is_for_ends_it() {
+        let mut s = ui();
+        s.warps.busy = Some("Syncing…".into());
+        s.warps.busy_job = Some(5);
+        // A command queued ahead of it finishing
+        s.warp_busy(4, None);
+        assert_eq!(s.warps.busy.as_deref(), Some("Syncing…"));
+        s.warp_busy(5, Some("Syncing Character warps… 20".into()));
+        assert_eq!(s.warps.busy.as_deref(), Some("Syncing Character warps… 20"));
+        s.warp_busy(5, None);
+        assert_eq!((s.warps.busy.as_deref(), s.warps.busy_job), (None, None));
+        // With nothing shown, any command can say what it's doing
+        s.warp_busy(6, Some("Reading the backup…".into()));
+        assert_eq!(s.warps.busy_job, Some(6));
     }
 
     const AT_TOP: PageScroll = PageScroll {

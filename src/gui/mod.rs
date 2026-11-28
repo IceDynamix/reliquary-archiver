@@ -275,7 +275,9 @@ async fn forward_worker(app: AppHandle<Ui>, manager: Arc<Mutex<MultiAccountManag
                 traffic = false;
                 app.update(move |s, tx| s.capture_failed(message, tx));
             }
-            WorkerEvent::Session(SessionEvent::Warp(event)) => warps.send(WarpCommand::Event(event)),
+            WorkerEvent::Session(SessionEvent::Warp(event)) => {
+                warps.send(WarpCommand::Event(event));
+            }
             WorkerEvent::Session(event) => app.update_if(move |s, _| s.session_event(&event)),
             WorkerEvent::AccountLoggedIn { uid } => {
                 app.update(move |s, _| s.account_logged_in(uid));

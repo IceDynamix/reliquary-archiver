@@ -337,7 +337,7 @@ impl Store {
         for pull in pulls {
             let Some(id) = pull.id else { continue };
             // Another account's pull, from a backup profile or history that isn't this account's
-            if !super::id_belongs_to(id, uid) {
+            if !super::Uid(uid).owns(id) {
                 continue;
             }
             let updated = tx.execute("UPDATE pulls SET sources = sources | ?3 WHERE uid = ?1 AND id = ?2", params![

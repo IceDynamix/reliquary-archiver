@@ -6,6 +6,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -97,8 +98,12 @@ pub enum Update {
     /// Accounts with warps kept, the latest first
     Accounts(Vec<u32>),
     Summary(Box<Summary>),
-    /// What's running, `None` when it's done
-    Busy(Option<String>),
+    /// What the command `job` is doing, `None` when it's done. A command's job is what
+    /// [`WarpService::send`] returned for it
+    Busy {
+        job: Job,
+        what: Option<String>,
+    },
     Notice {
         title: String,
         detail: Option<String>,
@@ -238,10 +243,14 @@ impl KeyState {
     }
 }
 
+/// Which command something is about: each one sent gets the next number
+pub type Job = u64;
+
 /// The handle the rest of the app talks to the service through
 #[derive(Clone)]
 pub struct WarpService {
-    tx: mpsc::Sender<Command>,
+    tx: mpsc::Sender<(Job, Command)>,
+    sent: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl WarpService {
@@ -268,11 +277,14 @@ impl WarpService {
                 }
             })
             .expect("couldn't start the warp thread");
-        WarpService { tx }
+        WarpService { tx, sent: Arc::default() }
     }
 
-    pub fn send(&self, command: Command) {
-        self.tx.send(command).ok();
+    /// Queues the command, and returns the job [`Update::Busy`] tells of it by
+    pub fn send(&self, command: Command) -> Job {
+        let job = self.sent.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        self.tx.send((job, command)).ok();
+        job
     }
 }
 
@@ -283,6 +295,8 @@ struct Worker {
     due: HashMap<u32, Instant>,
     /// Accounts whose last full sync failed, the next one is full again
     full_pending: HashSet<u32>,
+    /// The command being handled, 0 for what the worker does on its own
+    job: Job,
 }
 
 impl Worker {
@@ -292,10 +306,11 @@ impl Worker {
             report,
             due: HashMap::new(),
             full_pending: HashSet::new(),
+            job: 0,
         }
     }
 
-    fn run(mut self, rx: mpsc::Receiver<Command>) {
+    fn run(mut self, rx: mpsc::Receiver<(Job, Command)>) {
         self.report_accounts();
         // Live pulls left waiting last time get looked for again
         if let Ok(accounts) = self.store.accounts() {
@@ -311,7 +326,11 @@ impl Worker {
                 .min()
                 .map_or(Duration::from_secs(3600), |at| at.saturating_duration_since(Instant::now()));
             match rx.recv_timeout(wait) {
-                Ok(command) => self.handle(command),
+                Ok((job, command)) => {
+                    self.job = job;
+                    self.handle(command);
+                    self.job = 0;
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     let now = Instant::now();
                     let due: Vec<u32> = self.due.iter().filter(|(_, at)| **at <= now).map(|(uid, _)| *uid).collect();
@@ -506,7 +525,7 @@ impl Worker {
                 |id| known.contains(&id),
                 |count| {
                     if !quiet {
-                        (self.report)(Update::Busy(Some(format!("Syncing {label} warps… {}", before + count))));
+                        self.busy(Some(format!("Syncing {label} warps… {}", before + count)));
                     }
                 },
             );
@@ -732,7 +751,7 @@ impl Worker {
             return self.notice("The file has no warps with ids in it", None, Tone::Error);
         }
         // Ids end in the account's last two digits, a file of another account's pulls is turned away
-        if let Some(pull) = read.pulls.iter().find(|p| !super::id_belongs_to(p.id.unwrap_or_default(), uid)) {
+        if let Some(pull) = read.pulls.iter().find(|p| !super::Uid(uid).owns(p.id.unwrap_or_default())) {
             let detail = format!("Pull {} doesn't match UID {uid}", pull.id.unwrap_or_default());
             return self.notice("Those are another account's warps", Some(detail), Tone::Error);
         }
@@ -773,7 +792,7 @@ impl Worker {
     }
 
     fn busy(&self, what: Option<String>) {
-        (self.report)(Update::Busy(what));
+        (self.report)(Update::Busy { job: self.job, what });
     }
 
     fn notice(&self, title: &str, detail: Option<String>, tone: Tone) {
@@ -986,7 +1005,7 @@ mod tests {
         let mut worker = Worker::new(
             Store::open_in_memory().unwrap(),
             Box::new(move |update| {
-                if let Update::Busy(what) = update {
+                if let Update::Busy { what, .. } = update {
                     heard.lock().unwrap().push(what);
                 }
             }),

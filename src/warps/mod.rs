@@ -239,15 +239,32 @@ pub struct BannerInfo {
 /// How far apart consecutive pull ids are: the sequence sits above the uid's two digits
 pub const ID_STEP: i64 = 100;
 
-/// The last two digits of a pull id are the last two of the account's uid
-pub fn id_belongs_to(id: i64, uid: u32) -> bool {
-    id.rem_euclid(ID_STEP) == i64::from(uid) % ID_STEP
+/// The part of a pull id that tells whose it is: the last two digits, the account uid's last two
+pub fn id_suffix(id: i64) -> i64 {
+    id.rem_euclid(ID_STEP)
 }
 
-/// Mainland China accounts start with 1, 2 or 5 and use their own servers
-pub fn is_mainland(uid: u32) -> bool {
-    let first_digit = uid.checked_ilog10().map_or(0, |digits| uid / 10u32.pow(digits));
-    matches!(first_digit, 1 | 2 | 5)
+/// An account's uid, and what it tells: the servers it plays on, and how its pull ids end
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Uid(pub u32);
+
+impl Uid {
+    /// Mainland China accounts start with 1, 2 or 5 and use their own servers
+    pub fn is_mainland(self) -> bool {
+        let uid = self.0;
+        let first_digit = uid.checked_ilog10().map_or(0, |digits| uid / 10u32.pow(digits));
+        matches!(first_digit, 1 | 2 | 5)
+    }
+
+    /// How every pull id of the account ends ([`id_suffix`])
+    pub fn id_suffix(self) -> i64 {
+        i64::from(self.0) % ID_STEP
+    }
+
+    /// Whether the pull id can be the account's
+    pub fn owns(self, id: i64) -> bool {
+        id_suffix(id) == self.id_suffix()
+    }
 }
 
 /// A `2024-05-01 12:00:00` time as Unix seconds, reading it as UTC
@@ -275,7 +292,8 @@ mod tests {
 
     #[test]
     fn ids_end_in_the_uids_last_two_digits() {
-        assert!(id_belongs_to(1777245000000166886, 602857786));
-        assert!(!id_belongs_to(1777245000000166886, 602857785));
+        assert!(Uid(602857786).owns(1777245000000166886));
+        assert!(!Uid(602857785).owns(1777245000000166886));
+        assert!(Uid(100000001).is_mainland() && !Uid(602857786).is_mainland());
     }
 }
